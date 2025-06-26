@@ -1,0 +1,48 @@
+[package]
+name = "mothership-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "mothership"
+path = "src/main.rs"
+
+[dependencies]
+# Workspace dependencies
+mothership-common = { path = "../mothership-common" }
+
+# CLI framework
+clap = { workspace = true }
+
+# HTTP client
+reqwest = { workspace = true }
+
+# WebSocket client
+tokio-tungstenite = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# File system
+notify = { workspace = true }
+walkdir = { workspace = true }
+
+# Utilities
+anyhow = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+dirs = { workspace = true }
+dotenvy = { workspace = true }
+urlencoding = "2.1"
+
+# Terminal/UI
+colored = "2.0"
+
+# System info
+libc = "0.2"
+hostname = "0.3"
+open = "5.0" 

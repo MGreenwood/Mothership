@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  mothership-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    ports:
+      - "${MOTHERSHIP_PORT:-7523}:7523"
+    environment:
+      - MOTHERSHIP_PORT=7523
+      - RUST_LOG=${RUST_LOG:-info}
+      - JWT_SECRET=${JWT_SECRET}
+      - ADMIN_SECRET=${ADMIN_SECRET}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID}
+      - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}
+      # OAuth callback URLs for Docker
+      - OAUTH_BASE_URL=http://localhost:7523
+    env_file:
+      - .env
+    networks:
+      - mothership-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:7523/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  auth-server:
+    build:
+      context: ./auth-server
+      dockerfile: Dockerfile
+    ports:
+      - "${AUTH_SERVER_PORT:-3001}:3000"
+    environment:
+      - PORT=3000
+      - MOTHERSHIP_API=http://mothership-server:7523
+      - NODE_ENV=production
+    env_file:
+      - .env
+    depends_on:
+      mothership-server:
+        condition: service_healthy
+    networks:
+      - mothership-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  mothership-network:
+    driver: bridge 

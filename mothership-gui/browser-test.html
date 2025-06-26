@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mothership GUI - Browser Test</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a1a;
+            color: #ffffff;
+            overflow: hidden;
+        }
+
+        .app-container {
+            display: flex;
+            height: 100vh;
+            flex-direction: column;
+        }
+
+        .toolbar {
+            background: #2d2d2d;
+            border-bottom: 1px solid #404040;
+            padding: 8px 16px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            font-size: 14px;
+        }
+
+        .toolbar-section {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .toolbar button {
+            background: #404040;
+            border: 1px solid #555;
+            color: #ffffff;
+            padding: 4px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        .toolbar button:hover {
+            background: #505050;
+        }
+
+        .toolbar button.active {
+            background: #007acc;
+            border-color: #007acc;
+        }
+
+        .main-content {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+
+        .sidebar {
+            width: 280px;
+            background: #252526;
+            border-right: 1px solid #404040;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .sidebar-header {
+            padding: 12px 16px;
+            border-bottom: 1px solid #404040;
+            font-weight: 600;
+            font-size: 13px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .file-explorer, .project-list {
+            flex: 1;
+            overflow-y: auto;
+        }
+
+        .file-item, .project-item {
+            padding: 6px 16px;
+            cursor: pointer;
+            font-size: 13px;
+            border-bottom: 1px solid #333;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .file-item:hover, .project-item:hover {
+            background: #2a2d2e;
+        }
+
+        .file-item.active, .project-item.active {
+            background: #37373d;
+            border-left: 3px solid #007acc;
+        }
+
+        .file-icon {
+            width: 16px;
+            height: 16px;
+            opacity: 0.8;
+        }
+
+        .editor-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .editor-tabs {
+            background: #2d2d2d;
+            border-bottom: 1px solid #404040;
+            padding: 0 16px;
+            display: flex;
+            align-items: center;
+            min-height: 35px;
+        }
+
+        .editor-tab {
+            padding: 6px 12px;
+            background: #3c3c3c;
+            border: 1px solid #404040;
+            border-bottom: none;
+            margin-right: 2px;
+            font-size: 13px;
+            cursor: pointer;
+        }
+
+        .editor-tab.active {
+            background: #1e1e1e;
+            border-color: #007acc;
+        }
+
+        #monaco-editor {
+            flex: 1;
+            min-height: 0;
+        }
+
+        .status-bar {
+            background: #007acc;
+            color: white;
+            padding: 4px 16px;
+            font-size: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .vim-mode-indicator {
+            background: #dc3545;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-weight: bold;
+            font-size: 11px;
+        }
+
+        .vim-mode-indicator.normal {
+            background: #28a745;
+        }
+
+        .vim-mode-indicator.insert {
+            background: #007bff;
+        }
+
+        .vim-mode-indicator.visual {
+            background: #fd7e14;
+        }
+
+        .loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex: 1;
+            font-size: 16px;
+            color: #888;
+        }
+
+        .error {
+            color: #ff6b6b;
+            background: #2d1b1b;
+            padding: 12px;
+            margin: 8px;
+            border-radius: 4px;
+            border-left: 4px solid #ff6b6b;
+        }
+
+        .warning-banner {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            background: #ff9800;
+            color: white;
+            padding: 8px;
+            text-align: center;
+            z-index: 1000;
+            font-size: 14px;
+        }
+
+        .demo-project {
+            padding: 6px 16px;
+            cursor: pointer;
+            font-size: 13px;
+            border-bottom: 1px solid #333;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .demo-project:hover {
+            background: #2a2d2e;
+        }
+    </style>
+</head>
+<body>
+    <div class="warning-banner">
+        ⚠️ Browser Test Mode - Full functionality requires the Tauri desktop app
+    </div>
+
+    <div class="app-container" style="margin-top: 40px;">
+        <div class="toolbar">
+            <div class="toolbar-section">
+                <span style="font-weight: bold; color: #007acc;">🚀 Mothership (Browser Test)</span>
+            </div>
+            <div class="toolbar-section">
+                <button id="auth-btn">Authenticate</button>
+                <button id="refresh-btn">Refresh</button>
+                <button id="checkpoint-btn">Checkpoint</button>
+            </div>
+            <div class="toolbar-section" style="margin-left: auto;">
+                <button id="vim-toggle" class="active">Vim Mode</button>
+            </div>
+        </div>
+
+        <div class="main-content">
+            <div class="sidebar">
+                <div class="sidebar-header">Projects</div>
+                <div class="project-list" id="project-list">
+                    <div class="demo-project" onclick="loadDemoProject()">
+                        <span style="color: #007acc;">📁</span>
+                        <div>
+                            <div style="font-weight: 500;">Demo Project</div>
+                            <div style="font-size: 11px; color: #888; margin-top: 2px;">
+                                Browser test project
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="sidebar-header">Files</div>
+                <div class="file-explorer" id="file-explorer">
+                    <div class="loading">Click on Demo Project above</div>
+                </div>
+            </div>
+
+            <div class="editor-container">
+                <div class="editor-tabs" id="editor-tabs">
+                    <span style="color: #888; font-size: 13px;">No file open</span>
+                </div>
+                <div id="monaco-editor"></div>
+            </div>
+        </div>
+
+        <div class="status-bar">
+            <div>
+                <span id="current-file">No file selected</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <span class="vim-mode-indicator normal" id="vim-mode">NORMAL</span>
+                <span id="cursor-position">Ln 1, Col 1</span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Simple demo without Monaco for testing the UI
+        function loadDemoProject() {
+            document.getElementById('file-explorer').innerHTML = `
+                <div class="file-item" onclick="openDemoFile('src')">
+                    <span class="file-icon">📁</span>
+                    <div style="flex: 1;">
+                        <div style="font-weight: 500;">src</div>
+                    </div>
+                </div>
+                <div class="file-item" onclick="openDemoFile('main.js')">
+                    <span class="file-icon">📄</span>
+                    <div style="flex: 1;">
+                        <div>main.js</div>
+                        <div style="font-size: 11px; color: #888;">2.5 KB</div>
+                    </div>
+                </div>
+                <div class="file-item" onclick="openDemoFile('package.json')">
+                    <span class="file-icon">📋</span>
+                    <div style="flex: 1;">
+                        <div>package.json</div>
+                        <div style="font-size: 11px; color: #888;">1.2 KB</div>
+                    </div>
+                </div>
+            `
+        }
+
+        function openDemoFile(filename) {
+            document.getElementById('current-file').textContent = filename
+            document.getElementById('editor-tabs').innerHTML = `
+                <div class="editor-tab active">
+                    <span>${filename}</span>
+                </div>
+            `
+            document.getElementById('monaco-editor').innerHTML = `
+                <div style="padding: 20px; color: #888; font-family: monospace;">
+                    <h3 style="color: #007acc; margin-bottom: 10px;">Browser Test Mode</h3>
+                    <p>This demonstrates the UI layout and basic functionality.</p>
+                    <br>
+                    <p>For full Monaco editor with vim mode, install dependencies and run:</p>
+                    <pre style="background: #333; padding: 10px; margin: 10px 0; border-radius: 4px;">npm install
+npm run dev</pre>
+                    <p>Then use the Tauri desktop application for complete functionality.</p>
+                    <br>
+                    <p style="color: #28a745;">✅ UI Layout Working</p>
+                    <p style="color: #28a745;">✅ Responsive Design</p>
+                    <p style="color: #28a745;">✅ Dark Theme</p>
+                    <p style="color: #ff9800;">⚠️ Monaco Editor: Requires npm install</p>
+                    <p style="color: #ff9800;">⚠️ Vim Mode: Requires npm install</p>
+                    <p style="color: #ff9800;">⚠️ File Operations: Requires Tauri app</p>
+                </div>
+            `
+        }
+
+        // Demo button handlers
+        document.getElementById('auth-btn').onclick = function() {
+            alert('Authentication requires the Tauri desktop app')
+        }
+
+        document.getElementById('refresh-btn').onclick = function() {
+            loadDemoProject()
+        }
+
+        document.getElementById('checkpoint-btn').onclick = function() {
+            alert('Checkpoint creation requires the Tauri desktop app')
+        }
+
+        document.getElementById('vim-toggle').onclick = function() {
+            const btn = this
+            if (btn.classList.contains('active')) {
+                btn.classList.remove('active')
+                btn.textContent = 'Normal Mode'
+                document.getElementById('vim-mode').textContent = 'NORMAL'
+            } else {
+                btn.classList.add('active')
+                btn.textContent = 'Vim Mode'
+                document.getElementById('vim-mode').textContent = 'VIM'
+            }
+        }
+    </script>
+</body>
+</html> 

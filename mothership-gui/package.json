@@ -1,0 +1,19 @@
+{
+  "name": "mothership-gui-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^1.5.0",
+    "monaco-editor": "^0.45.0",
+    "monaco-vim": "^0.4.0"
+  },
+      "devDependencies": {
+      "vite": "^5.0.0"
+    }
+}
