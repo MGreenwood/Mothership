@@ -1,6 +1,28 @@
 version: '3.8'
 
 services:
+  postgres:
+    image: postgres:16
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    environment:
+      - POSTGRES_DB=mothership
+      - POSTGRES_USER=mothership
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-mothership_dev}
+    env_file:
+      - .env
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d/
+    networks:
+      - mothership-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mothership -d mothership"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
   mothership-server:
     build:
       context: .
@@ -18,8 +40,13 @@ services:
       - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}
       # OAuth callback URLs for Docker
       - OAUTH_BASE_URL=http://localhost:7523
+      # Database configuration
+      - DATABASE_URL=postgresql://mothership:${POSTGRES_PASSWORD:-mothership_dev}@postgres:5432/mothership
     env_file:
       - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
     networks:
       - mothership-network
     healthcheck:
@@ -55,4 +82,7 @@ services:
 
 networks:
   mothership-network:
-    driver: bridge 
+    driver: bridge
+
+volumes:
+  postgres_data: 

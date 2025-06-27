@@ -8,6 +8,7 @@ mod auth;
 mod gateway;
 mod beam;
 mod sync;
+mod file_watcher;
 
 use config::ConfigManager;
 
@@ -32,6 +33,11 @@ enum Commands {
     Gateway {
         #[command(subcommand)]
         action: GatewayAction,
+    },
+    /// Deploy a new project in current directory
+    Deploy {
+        /// Project name (optional, defaults to directory name)
+        name: Option<String>,
     },
     /// Beam into a project for development
     Beam {
@@ -112,6 +118,24 @@ async fn main() -> Result<()> {
                     gateway::handle_gateway_create(&config_manager, name, dir).await?;
                 }
             }
+        }
+        Commands::Deploy { name } => {
+            // Validate authentication before deploy operations
+            if let Err(e) = validate_authentication(&config_manager).await {
+                print_auth_error(&e.to_string());
+                return Ok(());
+            }
+
+            let current_dir = std::env::current_dir()?;
+            let project_name = name.unwrap_or_else(|| {
+                current_dir.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("mothership-project")
+                    .to_string()
+            });
+
+            println!("{}", format!("🚀 Deploying {}...", project_name).cyan().bold());
+            gateway::handle_gateway_create(&config_manager, project_name, current_dir).await?;
         }
         Commands::Beam { project, rift } => {
             // Validate authentication before beam operations
@@ -199,7 +223,15 @@ async fn validate_authentication(config_manager: &ConfigManager) -> Result<()> {
 fn get_http_client(config: &ClientConfig) -> reqwest::Client {
     let mut headers = reqwest::header::HeaderMap::new();
     
-    if let Some(token) = &config.auth_token {
+    // First try to get token from new OAuth credentials format
+    let token = if let Some(oauth_token) = get_oauth_token() {
+        Some(oauth_token)
+    } else {
+        // Fallback to old config format
+        config.auth_token.clone()
+    };
+    
+    if let Some(token) = token {
         headers.insert(
             reqwest::header::AUTHORIZATION,
             reqwest::header::HeaderValue::from_str(&format!("Bearer {}", token))
@@ -211,6 +243,32 @@ fn get_http_client(config: &ClientConfig) -> reqwest::Client {
         .default_headers(headers)
         .build()
         .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+/// Helper function to get OAuth token from credentials.json
+fn get_oauth_token() -> Option<String> {
+    use serde::{Deserialize, Serialize};
+    
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct StoredCredentials {
+        access_token: String,
+        user_email: Option<String>,
+        user_name: Option<String>,
+        stored_at: String,
+    }
+    
+    let credentials_path = dirs::config_dir()?
+        .join("mothership")
+        .join("credentials.json");
+        
+    if !credentials_path.exists() {
+        return None;
+    }
+    
+    let credentials_content = std::fs::read_to_string(&credentials_path).ok()?;
+    let credentials: StoredCredentials = serde_json::from_str(&credentials_content).ok()?;
+    
+    Some(credentials.access_token)
 }
 
 /// Pretty print authentication errors with helpful instructions

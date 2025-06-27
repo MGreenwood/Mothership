@@ -4,9 +4,10 @@ use mothership_common::{
     protocol::{ApiResponse, BeamRequest, BeamResponse},
     Project, ProjectId,
 };
+
 use uuid::Uuid;
 
-use crate::{config::ConfigManager, get_http_client, print_api_error, print_info, print_success};
+use crate::{config::ConfigManager, file_watcher::FileWatcher, get_http_client, print_api_error, print_info, print_success};
 
 pub async fn handle_beam(
     config_manager: &ConfigManager,
@@ -80,16 +81,26 @@ pub async fn handle_beam(
         // TODO: Implement file sync
     }
 
-    // TODO: Start background sync process
-    print_info("Real-time sync would start here (not yet implemented)");
-    print_info(&format!("Checkpoints available: {}", beam_data.checkpoint_count));
-
-    // For now, just show success
+    // Start file watcher for real-time sync
+    let current_dir = std::env::current_dir()?;
+    let project_path = current_dir; // Use current directory as project path
+    
+    print_info(&format!("Starting file watcher for: {}", project_path.display()));
+    
+    let file_watcher = FileWatcher::new(
+        project_path,
+        beam_data.rift_id.to_string(),
+        config.mothership_url.clone(),
+    );
+    
+    // Start watching (this will run indefinitely)
     println!("\n{}", "🎉 You're now connected to the project!".green().bold());
-    println!("{}", "In a full implementation:".dimmed());
-    println!("{}", "  • Files would sync to your local workspace".dimmed());
-    println!("{}", "  • Real-time collaboration would be active".dimmed());
-    println!("{}", "  • Auto-checkpointing would be running".dimmed());
+    println!("{}", "🔍 File watcher is starting...".cyan());
+    println!("{}", "💡 Edit files in this directory - changes will sync automatically".dimmed());
+    println!("{}", "⏹️  Press Ctrl+C to stop watching".dimmed());
+    
+    // This will block and run the file watcher
+    file_watcher.start_watching().await?;
 
     Ok(())
 } 

@@ -30,6 +30,7 @@ tower-http = { version = "0.5", features = ["cors"] }
 # Mothership core dependencies
 mothership-common = { path = "../mothership-common" }
 reqwest = { version = "0.11", features = ["json"] }
+dirs = "5.0"
 
 [features]
 # This feature is used for production builds or when `devPath` points to the filesystem

@@ -94,6 +94,7 @@ pub struct Claims {
     pub sub: String,           // Subject (user_id)
     pub machine_id: String,    // Machine identifier
     pub username: String,      // Username for display
+    pub email: Option<String>, // User email (for OAuth user recreation)
     pub iat: i64,             // Issued at
     pub exp: i64,             // Expiration time
     pub aud: String,          // Audience (mothership)

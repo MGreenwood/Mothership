@@ -100,6 +100,7 @@ impl AuthService {
             sub: user_id.to_string(),
             machine_id: flow.machine_id.clone(),
             username: username.clone(),
+            email: None, // Device flow doesn't have email information
             iat: Utc::now().timestamp(),
             exp: (Utc::now() + Duration::days(30)).timestamp(), // 30 day expiration
             aud: "mothership".to_string(),

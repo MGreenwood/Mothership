@@ -1,0 +1,5 @@
+[sqlx]
+# Enable offline mode for Docker builds
+offline = true
+# Set database URL for compile-time checks (not used in offline mode)
+database_url = "postgresql://mothership:mothership_dev@localhost:5432/mothership" 

@@ -2,6 +2,7 @@ FROM rust:latest as builder
 
 WORKDIR /app
 COPY . .
+ENV SQLX_OFFLINE=true
 RUN cargo build --release --bin mothership-server
 
 FROM debian:bookworm-slim
@@ -13,8 +14,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 COPY --from=builder /app/target/release/mothership-server /app/mothership-server
 
-# Copy the static OAuth success page
-COPY oauth-success.html /app/oauth-success.html
+# OAuth success page is served from inline template in Rust code
 
 EXPOSE 7523
 CMD ["./mothership-server"] 

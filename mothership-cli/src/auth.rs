@@ -1,7 +1,7 @@
 use anyhow::Result;
 use colored::*;
 use mothership_common::auth::{OAuthRequest, OAuthResponse, OAuthProvider};
-use std::io;
+
 use uuid;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -159,14 +159,6 @@ async fn try_auto_login(config_manager: &ConfigManager) -> Result<bool> {
         .await?;
 
     if response.status().is_success() {
-        // Update the old config format with the valid token
-        config_manager.save_auth(
-            credentials.access_token,
-            "".to_string(), // refresh token not used
-            credentials.user_name.unwrap_or_default(),
-            uuid::Uuid::new_v4(), // placeholder, will be replaced by proper user ID from server
-        )?;
-        
         println!("{}", "   ✅ Stored credentials are valid!".green());
         Ok(true)
     } else {
@@ -235,7 +227,7 @@ async fn clear_stored_credentials(config_manager: &ConfigManager) -> Result<()> 
 }
 
 /// Get credentials file path (same location as GUI)
-fn get_credentials_file_path(config_manager: &ConfigManager) -> Result<PathBuf> {
+fn get_credentials_file_path(_config_manager: &ConfigManager) -> Result<PathBuf> {
     let app_data_dir = dirs::config_dir()
         .ok_or_else(|| anyhow::anyhow!("Could not find config directory"))?
         .join("mothership");

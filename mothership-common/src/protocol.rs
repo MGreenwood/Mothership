@@ -1,6 +1,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::collections::HashMap;
+
 
 use crate::{CheckpointId, FileChange, ProjectId, RiftId, UserId};
 
@@ -111,6 +113,14 @@ pub enum SyncMessage {
     AuthResponse {
         token: String,
     },
+
+    /// Server notifies about Rift joined
+    RiftJoined {
+        rift_id: RiftId,
+        current_files: HashMap<PathBuf, String>,
+        participants: Vec<String>,
+        last_checkpoint: Option<CheckpointId>,
+    },
 }
 
 /// File data for synchronization
@@ -195,7 +205,6 @@ impl<T> ApiResponse<T> {
 /// Gateway listing request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayRequest {
-    pub user_id: UserId,
     pub include_inactive: bool,
 }
 

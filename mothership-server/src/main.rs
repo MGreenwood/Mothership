@@ -16,14 +16,16 @@ use tracing::{error, info, warn};
 
 mod auth;
 mod database;
-mod sync;
 mod handlers;
 mod oauth;
+mod sync;
+mod storage;
 
 use auth::AuthService;
 use database::Database;
-use sync::SyncManager;
+use sync::SyncState;
 use oauth::OAuthService;
+use storage::StorageEngine;
 
 /// Application state shared across all handlers
 #[derive(Clone)]
@@ -31,7 +33,7 @@ pub struct AppState {
     pub db: Database,
     pub auth: AuthService,
     pub oauth: OAuthService,
-    pub sync: Arc<SyncManager>,
+    pub sync: SyncState,
 }
 
 #[tokio::main]
@@ -66,8 +68,20 @@ async fn main() -> anyhow::Result<()> {
 
     info!("🚀 Starting Mothership Server on port {}", port);
 
-    // Initialize database (for now, we'll use in-memory)
-    let db = Database::new().await?;
+    // Initialize PostgreSQL database
+    let database_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| {
+            warn!("DATABASE_URL not set, using default PostgreSQL connection");
+            "postgresql://mothership:mothership_dev@postgres:5432/mothership".to_string()
+        });
+    
+    let db = Database::new(&database_url).await?;
+    
+    // Ensure database schema exists
+    if let Err(e) = db.ensure_schema().await {
+        error!("Failed to ensure database schema: {}", e);
+        std::process::exit(1);
+    }
     
     // Initialize auth service
     let auth = AuthService::new(jwt_secret);
@@ -80,7 +94,14 @@ async fn main() -> anyhow::Result<()> {
     });
     
     // Initialize sync manager
-    let sync = Arc::new(SyncManager::new());
+    // Initialize storage engine
+    let storage_root = PathBuf::from("./storage");
+    let storage = Arc::new(StorageEngine::new(storage_root).await?);
+    info!("✅ Storage engine initialized");
+
+    // Initialize sync state with storage
+    let sync = SyncState::new(db.clone(), storage.clone());
+    info!("✅ Sync state initialized");
 
     let state = AppState { db, auth, oauth, sync };
 
@@ -218,8 +239,36 @@ async fn auth_check(
                     Ok(Json(ApiResponse::success(response)))
                 }
                 Ok(None) => {
-                    // User no longer exists
-                    Err(StatusCode::NOT_FOUND)
+                    // User no longer exists in database (likely due to server restart with in-memory DB)
+                    // Recreate the user from JWT claims if this is an OAuth token
+                    info!("User {} not found in database, attempting to recreate from JWT claims", claims.username);
+                    
+                    if claims.machine_id == "web-oauth" {
+                        // This is an OAuth token, recreate the user with the ORIGINAL user ID from JWT
+                        let email = claims.email.clone().unwrap_or_else(|| format!("{}@oauth.mothership", claims.username));
+                        match state.db.create_user_with_id(user_id, claims.username.clone(), email, UserRole::User).await {
+                            Ok(recreated_user) => {
+                                info!("✅ Successfully recreated OAuth user: {} (ID: {})", recreated_user.username, recreated_user.id);
+                                
+                                let response = AuthCheckResponse {
+                                    authenticated: true,
+                                    user_id: recreated_user.id,
+                                    username: recreated_user.username,
+                                    email: recreated_user.email,
+                                    role: recreated_user.role,
+                                    machine_id: claims.machine_id,
+                                };
+                                Ok(Json(ApiResponse::success(response)))
+                            }
+                            Err(e) => {
+                                error!("❌ Failed to recreate OAuth user: {}", e);
+                                Err(StatusCode::INTERNAL_SERVER_ERROR)
+                            }
+                        }
+                    } else {
+                        // Non-OAuth token, user really doesn't exist
+                        Err(StatusCode::NOT_FOUND)
+                    }
                 }
                 Err(_) => {
                     // Database error
@@ -299,22 +348,32 @@ async fn oauth_callback_handler(
             );
 
             // Check if user exists, create if not
-            let user = if let Some(existing_user) = state.db.get_user_by_email(&profile.email).await.unwrap_or(None) {
-                existing_user
-            } else {
-                // Create new user from OAuth profile
-                let username = profile.username.clone()
-                    .unwrap_or_else(|| profile.email.split('@').next().unwrap_or("user").to_string());
-                
-                match state.db.create_user(username, profile.email.clone(), UserRole::User).await {
-                    Ok(user) => {
-                        info!("Created new user from OAuth: {} ({})", user.username, user.email);
-                        user
+            let user = match state.db.get_user_by_email(&profile.email).await {
+                Ok(Some(existing_user)) => {
+                    info!("Found existing user: {} ({})", existing_user.username, existing_user.email);
+                    existing_user
+                }
+                Ok(None) => {
+                    // Create new user from OAuth profile
+                    let username = profile.username.clone()
+                        .unwrap_or_else(|| profile.email.split('@').next().unwrap_or("user").to_string());
+                    
+                    info!("Creating new user from OAuth: {} ({})", username, profile.email);
+                    
+                    match state.db.create_user(username, profile.email.clone(), UserRole::User).await {
+                        Ok(user) => {
+                            info!("✅ Successfully created new user: {} (ID: {})", user.username, user.id);
+                            user
+                        }
+                        Err(e) => {
+                            error!("❌ Failed to create user from OAuth: {}", e);
+                            return Ok(axum::response::Redirect::to("http://localhost:7523/auth/error?message=Failed to create user"));
+                        }
                     }
-                    Err(e) => {
-                        error!("Failed to create user from OAuth: {}", e);
-                        return Ok(axum::response::Redirect::to("http://localhost:7523/auth/error?message=Failed to create user"));
-                    }
+                }
+                Err(e) => {
+                    error!("❌ Database error during user lookup: {}", e);
+                    return Ok(axum::response::Redirect::to("http://localhost:7523/auth/error?message=Database error"));
                 }
             };
 
@@ -323,6 +382,7 @@ async fn oauth_callback_handler(
                 sub: user.id.to_string(),
                 machine_id: "web-oauth".to_string(), // For OAuth, we don't have a specific machine
                 username: user.username.clone(),
+                email: Some(user.email.clone()), // Include email for user recreation
                 iat: chrono::Utc::now().timestamp(),
                 exp: (chrono::Utc::now() + chrono::Duration::days(30)).timestamp(),
                 aud: "mothership".to_string(),
@@ -422,10 +482,10 @@ async fn oauth_success_page(
     <script>
         console.log('OAuth Success - Script loaded successfully!');
         
-        // Token data
-        const token = {};
-        const user = {};
-        const email = {};
+        // Token data  
+        const token = '{}';
+        const user = '{}';
+        const email = '{}';
         
         console.log('OAuth Success - Token received:', token ? token.substring(0, 20) + '...' : 'NO TOKEN');
         console.log('OAuth Success - User:', user);
@@ -448,7 +508,7 @@ async fn oauth_success_page(
             
             for (const callback of callbacks) {{
                 try {{
-                    console.log(`🔍 Trying ${callback.name} callback...`);
+                    console.log(`🔍 Trying ${{callback.name}} callback...`);
                     
                     let response;
                     if (callback.method === 'POST') {{
@@ -464,18 +524,18 @@ async fn oauth_success_page(
                     }}
                     
                     if (response.ok) {{
-                        console.log(`✅ ${callback.name} callback successful!`);
+                        console.log(`✅ ${{callback.name}} callback successful!`);
                         successCount++;
                     }} else {{
-                        console.log(`⚠️ ${callback.name} callback failed: HTTP ${response.status}`);
+                        console.log(`⚠️ ${{callback.name}} callback failed: HTTP ${{response.status}}`);
                     }}
                 }} catch (error) {{
-                    console.log(`⚠️ ${callback.name} callback failed: ${error.message}`);
+                    console.log(`⚠️ ${{callback.name}} callback failed: ${{error.message}}`);
                 }}
             }}
             
             if (successCount > 0) {{
-                document.getElementById('status').innerHTML = `✅ Authentication completed! Sent to ${successCount} app(s). You can close this window.`;
+                document.getElementById('status').innerHTML = `✅ Authentication completed! Sent to ${{successCount}} app(s). You can close this window.`;
                 setTimeout(() => window.close(), 2000);
             }} else {{
                 console.error('All callback attempts failed, showing manual fallback');
@@ -546,7 +606,7 @@ async fn oauth_success_page(
                         </div>
                     </div>
                     
-                    <script>
+                    <scr' + 'ipt>
                         // Store the raw token value
                         const rawToken = token;
                         
@@ -571,11 +631,38 @@ async fn oauth_success_page(
                             }}
                         }}
                         
-                        // Auto-select the token when the page loads
-                        setTimeout(() => {{
-                            selectAllToken();
-                        }}, 500);
-                    </script>
+                        // Auto-select the token when the page loads with better timing
+                        function autoSelectWhenReady() {{
+                            const textarea = document.getElementById('token-textarea');
+                            if (textarea && textarea.offsetParent !== null) {{
+                                // Element is visible and ready
+                                selectAllToken();
+                                
+                                // Show a subtle indication that text is selected
+                                const status = document.createElement('div');
+                                status.style.cssText = 'margin-top: 10px; padding: 8px; background: #e7f3ff; border-radius: 4px; font-size: 12px; color: #0066cc;';
+                                status.innerHTML = '✨ Token text is now selected and ready to copy!';
+                                textarea.parentNode.appendChild(status);
+                                
+                                // Remove the status after a few seconds
+                                setTimeout(() => {{
+                                    if (status.parentNode) {{
+                                        status.parentNode.removeChild(status);
+                                    }}
+                                }}, 3000);
+                            }} else {{
+                                // Try again in a moment
+                                setTimeout(autoSelectWhenReady, 100);
+                            }}
+                        }}
+                        
+                        // Start checking when DOM is ready
+                        if (document.readyState === 'loading') {{
+                            document.addEventListener('DOMContentLoaded', autoSelectWhenReady);
+                        }} else {{
+                            autoSelectWhenReady();
+                        }}
+                    </scr' + 'ipt>
                 `;
             }}
         }}
@@ -681,7 +768,6 @@ struct CreateGatewayRequest {
     name: String,
     description: String,
     project_path: PathBuf,
-    user_id: uuid::Uuid,
 }
 
 #[derive(serde::Serialize)]
@@ -749,9 +835,58 @@ async fn create_admin_user(
 /// Gateway - list accessible projects
 async fn gateway(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(req): Json<GatewayRequest>,
 ) -> Result<Json<ApiResponse<Vec<GatewayProject>>>, StatusCode> {
-    match state.db.get_user_projects(req.user_id, req.include_inactive).await {
+    // Extract user ID from JWT token instead of requiring it in request
+    let auth_header = headers.get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    if !auth_header.starts_with("Bearer ") {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    let token = auth_header.trim_start_matches("Bearer ");
+    let claims = match state.auth.verify_token(token) {
+        Ok(claims) => claims,
+        Err(_) => return Err(StatusCode::UNAUTHORIZED),
+    };
+    
+    let user_id = uuid::Uuid::parse_str(&claims.sub)
+        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+
+    // Ensure user exists in database (recreate from JWT if needed)
+    match state.db.get_user(user_id).await {
+        Ok(Some(_)) => {
+            // User exists, proceed normally
+        }
+        Ok(None) => {
+            // User no longer exists in database (likely due to server restart)
+            // Recreate the user from JWT claims if this is an OAuth token
+            if claims.machine_id == "web-oauth" {
+                let email = claims.email.clone().unwrap_or_else(|| format!("{}@oauth.mothership", claims.username));
+                match state.db.create_user_with_id(user_id, claims.username.clone(), email, UserRole::User).await {
+                    Ok(_) => {
+                        info!("✅ Successfully recreated OAuth user for gateway listing: {} (ID: {})", claims.username, user_id);
+                    }
+                    Err(e) => {
+                        error!("❌ Failed to recreate OAuth user for gateway listing: {}", e);
+                        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                    }
+                }
+            } else {
+                // Non-OAuth token, user really doesn't exist
+                return Err(StatusCode::UNAUTHORIZED);
+            }
+        }
+        Err(e) => {
+            error!("Database error during gateway listing: {}", e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    match state.db.get_user_projects(user_id, req.include_inactive).await {
         Ok(projects) => Ok(Json(ApiResponse::success(projects))),
         Err(e) => {
             error!("Gateway request failed: {}", e);
@@ -763,16 +898,55 @@ async fn gateway(
 /// Create new gateway project
 async fn create_gateway(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(req): Json<CreateGatewayRequest>,
 ) -> Result<Json<ApiResponse<Project>>, StatusCode> {
-    info!("Gateway creation request: {} for user {}", req.name, req.user_id);
+    // Extract user ID from JWT token
+    let auth_header = headers.get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or(StatusCode::UNAUTHORIZED)?;
 
-    // Verify user exists and is authenticated
-    let user = match state.db.get_user(req.user_id).await {
+    if !auth_header.starts_with("Bearer ") {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    let token = auth_header.trim_start_matches("Bearer ");
+    let claims = match state.auth.verify_token(token) {
+        Ok(claims) => claims,
+        Err(_) => return Err(StatusCode::UNAUTHORIZED),
+    };
+    
+    let user_id = uuid::Uuid::parse_str(&claims.sub)
+        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+
+    info!("Gateway creation request: {} for user {}", req.name, user_id);
+
+    // Verify user exists and is authenticated (recreate from JWT if needed)
+    let user = match state.db.get_user(user_id).await {
         Ok(Some(user)) => user,
         Ok(None) => {
-            warn!("Gateway creation failed: User not found: {}", req.user_id);
-            return Ok(Json(ApiResponse::error("User not found".to_string())));
+            // User no longer exists in database (likely due to server restart)
+            // Recreate the user from JWT claims if this is an OAuth token
+            info!("User {} (ID: {}) not found in database during gateway creation, attempting to recreate from JWT claims", claims.username, user_id);
+            
+            if claims.machine_id == "web-oauth" {
+                // This is an OAuth token, recreate the user with the ORIGINAL user ID from JWT
+                let email = claims.email.clone().unwrap_or_else(|| format!("{}@oauth.mothership", claims.username));
+                match state.db.create_user_with_id(user_id, claims.username.clone(), email, UserRole::User).await {
+                    Ok(recreated_user) => {
+                        info!("✅ Successfully recreated OAuth user for gateway creation: {} (ID: {})", recreated_user.username, recreated_user.id);
+                        recreated_user
+                    }
+                    Err(e) => {
+                        error!("❌ Failed to recreate OAuth user for gateway creation: {}", e);
+                        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                    }
+                }
+            } else {
+                // Non-OAuth token, user really doesn't exist
+                warn!("Gateway creation failed: User not found: {}", user_id);
+                return Ok(Json(ApiResponse::error("User not found".to_string())));
+            }
         }
         Err(e) => {
             error!("Database error during gateway creation: {}", e);
@@ -789,7 +963,7 @@ async fn create_gateway(
     }
 
     // Create the project
-    match state.db.create_project(req.name.clone(), req.description.clone(), vec![req.user_id]).await {
+    match state.db.create_project(req.name.clone(), req.description.clone(), vec![user_id]).await {
         Ok(project) => {
             info!("Created gateway project: {} (ID: {}) for user: {}", 
                 project.name, project.id, user.username);
@@ -871,13 +1045,11 @@ async fn beam_into_project(
 async fn websocket_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
-    Path(rift_id): Path<String>,
+    Path(_rift_id): Path<String>,
 ) -> Response {
-    info!("WebSocket connection request for rift: {}", rift_id);
+    info!("WebSocket connection request");
     
     ws.on_upgrade(move |socket| async move {
-        if let Err(e) = sync::handle_websocket(state, socket, rift_id).await {
-            error!("WebSocket error: {}", e);
-        }
+        sync::handle_websocket(socket, state.sync).await;
     })
 } 

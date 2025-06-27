@@ -43,4 +43,7 @@ dotenvy = { workspace = true }
 # OAuth2 for Google/GitHub
 oauth2 = "4.4"
 reqwest = { workspace = true }
-urlencoding = "2.1" 
+urlencoding = "2.1"
+
+# Cryptography for content hashing
+sha2 = "0.10" 

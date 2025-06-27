@@ -5,6 +5,8 @@ use mothership_common::{
     GatewayProject, Project,
 };
 use std::path::PathBuf;
+use std::fs;
+use serde::{Serialize, Deserialize};
 
 use crate::{config::ConfigManager, get_http_client, print_api_error, print_info, print_success};
 
@@ -18,10 +20,7 @@ pub async fn handle_gateway(config_manager: &ConfigManager, include_inactive: bo
     let config = config_manager.load_config()?;
     let client = get_http_client(&config);
 
-    let user_id = config.user_id.ok_or_else(|| anyhow!("No user ID found"))?;
-
     let gateway_request = GatewayRequest {
-        user_id,
         include_inactive,
     };
 
@@ -105,9 +104,16 @@ pub async fn handle_gateway_create(
         return Err(anyhow!("Path is not a directory: {}", dir.display()));
     }
 
+    // Check if we're already inside a gateway
+    if let Some(gateway_root) = find_gateway_root(&dir) {
+        return Err(anyhow!(
+            "Cannot create gateway inside another gateway.\nExisting gateway found at: {}\n\nTo create a new gateway, choose a directory outside of any existing gateway.",
+            gateway_root.display()
+        ));
+    }
+
     let config = config_manager.load_config()?;
     let client = get_http_client(&config);
-    let user_id = config.user_id.ok_or_else(|| anyhow!("No user ID found"))?;
 
     print_info(&format!("Creating gateway '{}' for directory: {}", name, dir.display()));
 
@@ -116,7 +122,6 @@ pub async fn handle_gateway_create(
         name: name.clone(),
         description: format!("Gateway for {}", dir.display()),
         project_path: dir.clone(),
-        user_id,
     };
 
     let create_url = format!("{}/gateway/create", config.mothership_url);
@@ -141,7 +146,12 @@ pub async fn handle_gateway_create(
     print_info(&format!("Project ID: {}", project.id));
     print_info(&format!("Tracking directory: {}", dir.display()));
     
-    // TODO: Start file watching and change tracking
+    // Create .mothership directory with metadata
+    if let Err(e) = create_gateway_metadata(&dir, &project, &config.mothership_url) {
+        print_api_error(&format!("Warning: Failed to create .mothership directory: {}", e));
+        print_info("Gateway was created successfully on the server, but local metadata may be incomplete.");
+    }
+    
     print_info("File watching will be implemented in the next phase");
     print_info(&format!("Use 'mothership beam {}' to start collaborating", project.id));
 
@@ -153,5 +163,95 @@ struct CreateGatewayRequest {
     name: String,
     description: String,
     project_path: PathBuf,
-    user_id: uuid::Uuid,
+}
+
+/// Local project metadata stored in .mothership directory
+#[derive(Serialize, Deserialize)]
+pub struct ProjectMetadata {
+    project_id: String,
+    project_name: String,
+    created_at: String,
+    mothership_url: String,
+}
+
+/// Check if we're already inside a gateway by looking for .mothership directory
+fn find_gateway_root(start_dir: &PathBuf) -> Option<PathBuf> {
+    let mut current_dir = start_dir.clone();
+    
+    loop {
+        let mothership_dir = current_dir.join(".mothership");
+        if mothership_dir.exists() && mothership_dir.is_dir() {
+            return Some(current_dir);
+        }
+        
+        // Move to parent directory
+        if let Some(parent) = current_dir.parent() {
+            current_dir = parent.to_path_buf();
+        } else {
+            break;
+        }
+    }
+    
+    None
+}
+
+/// Create .mothership directory with project metadata
+fn create_gateway_metadata(
+    project_dir: &PathBuf,
+    project: &Project,
+    mothership_url: &str,
+) -> Result<()> {
+    let mothership_dir = project_dir.join(".mothership");
+    
+    // Create .mothership directory
+    fs::create_dir_all(&mothership_dir)?;
+    
+    // Create project metadata file
+    let metadata = ProjectMetadata {
+        project_id: project.id.to_string(),
+        project_name: project.name.clone(),
+        created_at: chrono::Utc::now().to_rfc3339(),
+        mothership_url: mothership_url.to_string(),
+    };
+    
+    let metadata_file = mothership_dir.join("project.json");
+    let metadata_json = serde_json::to_string_pretty(&metadata)?;
+    fs::write(&metadata_file, metadata_json)?;
+    
+    // Note: Users should add .mothership/ to their project's main .gitignore
+    
+    print_info(&format!("Created .mothership directory at: {}", mothership_dir.display()));
+    
+    Ok(())
+}
+
+/// Read gateway metadata from .mothership directory
+#[allow(dead_code)]
+fn read_gateway_metadata(project_dir: &PathBuf) -> Result<ProjectMetadata> {
+    let mothership_dir = project_dir.join(".mothership");
+    let metadata_file = mothership_dir.join("project.json");
+    
+    if !metadata_file.exists() {
+        return Err(anyhow!("No .mothership/project.json found. This directory is not a Mothership gateway."));
+    }
+    
+    let metadata_content = fs::read_to_string(&metadata_file)?;
+    let metadata: ProjectMetadata = serde_json::from_str(&metadata_content)?;
+    
+    Ok(metadata)
+}
+
+/// Check if the current directory is inside a gateway and return its metadata
+#[allow(dead_code)]
+fn find_current_gateway() -> Result<Option<(PathBuf, ProjectMetadata)>> {
+    let current_dir = std::env::current_dir()?;
+    
+    if let Some(gateway_root) = find_gateway_root(&current_dir) {
+        match read_gateway_metadata(&gateway_root) {
+            Ok(metadata) => Ok(Some((gateway_root, metadata))),
+            Err(_) => Ok(None), // Gateway directory exists but metadata is corrupted/missing
+        }
+    } else {
+        Ok(None)
+    }
 } 

@@ -21,10 +21,14 @@ pub struct User {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, sqlx::Type)]
+#[sqlx(type_name = "user_role", rename_all = "snake_case")]
 pub enum UserRole {
+    #[sqlx(rename = "super_admin")]
     SuperAdmin,  // Can create admins, manage all projects
+    #[sqlx(rename = "admin")]
     Admin,       // Can create projects, manage users
+    #[sqlx(rename = "user")]
     User,        // Regular user
 }
 

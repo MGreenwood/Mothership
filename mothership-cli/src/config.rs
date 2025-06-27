@@ -46,19 +46,32 @@ impl ConfigManager {
         Ok(())
     }
 
-    /// Check if user is authenticated
+    /// Check if user is authenticated (check both old config and new credentials format)
     pub fn is_authenticated(&self) -> Result<bool> {
+        // First check new credentials format
+        let credentials_path = dirs::config_dir()
+            .ok_or_else(|| anyhow::anyhow!("Could not find config directory"))?
+            .join("mothership")
+            .join("credentials.json");
+            
+        if credentials_path.exists() {
+            return Ok(true);
+        }
+        
+        // Fallback to old config format
         let config = self.load_config()?;
         Ok(config.auth_token.is_some() && config.user_id.is_some())
     }
 
     /// Get the config file path for display
-    pub fn config_path(&self) -> &PathBuf {
+    #[allow(dead_code)]
+    fn config_path(&self) -> &PathBuf {
         &self.config_path
     }
 
     /// Update just the auth token and user ID
-    pub fn update_auth(&self, token: String, user_id: uuid::Uuid) -> Result<()> {
+    #[allow(dead_code)]
+    fn update_auth(&self, token: String, user_id: uuid::Uuid) -> Result<()> {
         let mut config = self.load_config()?;
         config.auth_token = Some(token);
         config.user_id = Some(user_id);
@@ -66,7 +79,8 @@ impl ConfigManager {
     }
 
     /// Save authentication data (alias for OAuth compatibility)
-    pub fn save_auth(&self, access_token: String, _refresh_token: String, _username: String, user_id: uuid::Uuid) -> Result<()> {
+    #[allow(dead_code)]
+    fn save_auth(&self, access_token: String, _refresh_token: String, _username: String, user_id: uuid::Uuid) -> Result<()> {
         // For now, we just store the access token and user ID
         // In a full implementation, we'd store the refresh token and username too
         self.update_auth(access_token, user_id)
@@ -81,7 +95,8 @@ impl ConfigManager {
     }
 
     /// Get workspace directory for a project
-    pub fn get_project_workspace(&self, project_name: &str) -> Result<PathBuf> {
+    #[allow(dead_code)]
+    fn get_project_workspace(&self, project_name: &str) -> Result<PathBuf> {
         let config = self.load_config()?;
         let workspace = config.local_workspace.join(project_name);
         

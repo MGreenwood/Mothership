@@ -46,11 +46,13 @@ pub struct AppState {
 }
 
 // Helper functions for credential storage
-fn get_credentials_file_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let app_data_dir = app.path().app_data_dir()
-        .map_err(|e| format!("Failed to get app data directory: {}", e))?;
+fn get_credentials_file_path(_app: &AppHandle) -> Result<PathBuf, String> {
+    // Use the SAME path as CLI for credential consistency
+    let app_data_dir = dirs::config_dir()
+        .ok_or_else(|| "Could not find config directory".to_string())?
+        .join("mothership");
     
-    println!("🔍 App data directory: {}", app_data_dir.display());
+    println!("🔍 App data directory (matching CLI): {}", app_data_dir.display());
     
     // Ensure the directory exists
     if !app_data_dir.exists() {
@@ -62,7 +64,7 @@ fn get_credentials_file_path(app: &AppHandle) -> Result<PathBuf, String> {
     }
     
     let credentials_path = app_data_dir.join("credentials.json");
-    println!("🔍 Credentials file path: {}", credentials_path.display());
+    println!("🔍 Credentials file path (matching CLI): {}", credentials_path.display());
     
     Ok(credentials_path)
 }
@@ -345,7 +347,6 @@ async fn load_projects(state: State<'_, AppState>) -> Result<Vec<GatewayProject>
 
     // Now load projects for the correct user
     let gateway_request = mothership_common::protocol::GatewayRequest {
-        user_id: user_info.user_id,
         include_inactive: false,
     };
 
@@ -700,20 +701,18 @@ async fn create_gateway(
         return Err("User not authenticated".to_string());
     }
 
-    // Now create the gateway with the correct user_id
+    // Now create the gateway
     #[derive(serde::Serialize)]
     struct ServerCreateGatewayRequest {
         name: String,
         description: String,
         project_path: std::path::PathBuf,
-        user_id: uuid::Uuid,
     }
 
     let gateway_request = ServerCreateGatewayRequest {
         name: request.name,
         description: request.description,
         project_path: std::path::PathBuf::from(request.project_path),
-        user_id: user_info.user_id,
     };
 
     let response = client
