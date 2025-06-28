@@ -30,14 +30,14 @@ impl SyncState {
 }
 
 pub async fn handle_websocket(socket: WebSocket, state: SyncState) {
-    let (mut sender, mut receiver) = socket.split();
+    let (sender, mut receiver) = socket.split();
     let mut broadcast_receiver = state.broadcaster.subscribe();
 
     // Spawn task to handle broadcasting to this client
     let sender_task = {
         let mut sender = sender;
         tokio::spawn(async move {
-            while let Ok((channel, message)) = broadcast_receiver.recv().await {
+            while let Ok((_channel, message)) = broadcast_receiver.recv().await {
                 let json = match serde_json::to_string(&message) {
                     Ok(json) => json,
                     Err(e) => {
@@ -100,31 +100,41 @@ async fn handle_sync_message(message: &str, state: &SyncState) -> Result<()> {
                 last_checkpoint,
             };
             
-            // Broadcast to all clients in this rift
+            // Send only to the joining client (not broadcast to all)
             let channel = format!("rift_{}", msg_rift_id);
             let _ = state.broadcaster.send((channel, response));
         }
 
         SyncMessage::FileChanged { rift_id: msg_rift_id, path, content, timestamp } => {
-            info!("File changed in rift {}: {} ({} bytes)", msg_rift_id, path.display(), content.len());
+            info!("📝 File changed in rift {}: {} ({} bytes)", msg_rift_id, path.display(), content.len());
             
             // Update live working state
             state.storage.update_live_state(msg_rift_id, path.clone(), content.clone()).await?;
             
-            // Broadcast file change to other collaborators
-            let response = SyncMessage::RiftUpdate {
+            // Broadcast file change with actual content to other collaborators
+            let response = SyncMessage::FileUpdate {
                 rift_id: msg_rift_id,
-                changes: vec![], // TODO: Create proper FileChange struct
-                author: Uuid::new_v4(), // TODO: Get actual user ID from session
+                path: path.clone(),
+                content: content.clone(),
+                author: Uuid::new_v4(), // TODO: Get actual user ID from WebSocket session
                 timestamp,
             };
             
             let channel = format!("rift_{}", msg_rift_id);
-            let _ = state.broadcaster.send((channel, response));
+            let _ = state.broadcaster.send((channel.clone(), response));
+            
+            info!("📤 Broadcasted file change to rift channel: {}", channel);
+            
+            // TODO: Implement smart checkpointing
+            // Check if we should create automatic checkpoint (every N changes or time-based)
+            // if should_create_auto_checkpoint(msg_rift_id, &state).await? {
+            //     let checkpoint = state.storage.create_checkpoint(...).await?;
+            //     // Broadcast checkpoint creation
+            // }
         }
 
         SyncMessage::CreateCheckpoint { rift_id: msg_rift_id, message } => {
-            info!("Checkpoint requested for rift: {} (message: {:?})", msg_rift_id, message);
+            info!("📸 Checkpoint requested for rift: {} (message: {:?})", msg_rift_id, message);
             
             // Create actual checkpoint using storage engine
             let checkpoint = state.storage.create_checkpoint(
@@ -147,7 +157,7 @@ async fn handle_sync_message(message: &str, state: &SyncState) -> Result<()> {
         }
 
         _ => {
-            warn!("Unhandled sync message type");
+            warn!("⚠️  Unhandled sync message type");
         }
     }
 

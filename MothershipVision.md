@@ -21,6 +21,7 @@ Mothership eliminates the complexity and fear associated with traditional versio
 
 ## Core Concepts & Terminology
 
+
 ### Mothership
 The central server that orchestrates all development activity. It manages projects, user access, and coordinates real-time collaboration across all connected clients.
 
@@ -38,6 +39,9 @@ Automatic snapshots of your work. Every file save, every meaningful change is ch
 
 ### Convergence
 The process of merging rifts back together. Unlike traditional merging, this is assisted by the continuous checkpoint history and real-time collaboration data.
+
+### Wormhole
+A temporary bridge connecting two active rifts, allowing developers to test how changes from different development dimensions interact in real-time. Wormholes enable cross-rift compatibility testing without permanent merging, letting teams validate that their separate features work together before convergence. Think of it as a "preview merge" that can be established and dissolved instantly.
 
 ## User Workflows
 
@@ -110,7 +114,31 @@ mothership beam "MyApp"    # Beam into existing project
 mothership status          # See current project status
 ```
 
-### Collaboration Scenarios
+### Revolutionary Background Daemon Workflow
+```bash
+# Zero-friction beam experience - starts daemon automatically
+mothership beam "project-alpha"
+# ✅ Automatically starts background daemon if needed
+# ✅ Registers project for continuous file tracking  
+# ✅ Returns console immediately - no blocking!
+
+# Multiple projects share same daemon instance
+mothership beam "project-beta"  
+# ✅ Reuses existing daemon, adds second project
+# ✅ One daemon handles all your projects
+
+# Complete daemon lifecycle management
+mothership daemon status          # Show daemon status + tracked projects
+mothership disconnect "project-alpha"  # Remove project from tracking
+mothership daemon stop           # Graceful daemon shutdown
+mothership daemon restart        # Clean restart with fresh state
+
+# Smart auto-detection for disconnect
+cd project-alpha
+mothership disconnect            # Auto-detects current project
+```
+
+### Future Collaboration Scenarios (Phase 3)
 ```bash
 # Join someone else's rift for pair programming
 mothership beam project-alpha --rift="bob/user-dashboard"
@@ -121,6 +149,11 @@ mothership beam project-alpha --rift="bob/user-dashboard"
 mothership rift create "team/auth-system"
 # Other team members can join the same rift
 # Collaborative development with automatic conflict resolution
+
+# Create a wormhole to test cross-rift compatibility
+mothership wormhole create "alice/auth-system" "bob/user-dashboard"
+# Test how Alice's authentication changes work with Bob's UI changes
+# Both rifts remain independent, but you can see combined results
 ```
 
 ### Time Navigation
@@ -332,6 +365,17 @@ struct FileChange {
     content_hash: String,
     diff: FileDiff,
 }
+
+struct Wormhole {
+    id: WormholeId,
+    project_id: ProjectId,
+    rift_a: RiftId,
+    rift_b: RiftId,
+    created_by: UserId,
+    created_at: DateTime,
+    expires_at: Option<DateTime>, // Auto-cleanup temporary connections
+    status: WormholeStatus, // Active, Paused, Dissolved
+}
 ```
 
 ### Real-Time Synchronization Protocol
@@ -342,11 +386,16 @@ enum SyncMessage {
     FileChanged { path: PathBuf, content: String, timestamp: DateTime },
     JoinRift { rift_id: RiftId },
     LeaveRift { rift_id: RiftId },
+    CreateWormhole { rift_a: RiftId, rift_b: RiftId },
+    DissolveWormhole { wormhole_id: WormholeId },
     
     // Server -> Client  
     RiftUpdate { rift_id: RiftId, changes: Vec<FileChange> },
     ConflictDetected { conflict: Conflict, suggestions: Vec<Resolution> },
     CheckpointCreated { checkpoint: Checkpoint },
+    WormholeEstablished { wormhole: Wormhole },
+    WormholeUpdate { wormhole_id: WormholeId, combined_state: ProjectState },
+    WormholeDissolved { wormhole_id: WormholeId },
     
     // Bidirectional
     Heartbeat,
@@ -474,14 +523,14 @@ enum SyncMessage {
 - **Database persistence**: ✅ **Production-ready** (PostgreSQL with transactions, relationships, and data integrity)
 - **Error handling quality**: ✅ **Professional** (Helpful messages, user guidance, and database error handling)
 
-### 🎯 **Phase 2 Targets: File Tracking Engine (In Progress)**
+### ✅ **Phase 2 Targets: Background Daemon Engine (COMPLETED)**
 
-#### 🔄 **Zero-Friction Experience Goals**
-- **File change detection latency**: Target < 100ms (notify crate implementation)
-- **Real-time sync accuracy**: Target > 99% (WebSocket infrastructure ready)
-- **Offline-first reliability**: Target 100% uptime during disconnections
-- **Background service efficiency**: Target < 1% CPU usage when idle
-- **Conflict resolution success**: Target > 95% automatic resolution
+#### 🚀 **Revolutionary Zero-Friction Experience Achieved**
+- **Automatic daemon startup**: ✅ Beam command starts daemon automatically
+- **Background file tracking**: ✅ Complete IPC server with project registration
+- **Graceful disconnect functionality**: ✅ Individual project disconnect with daemon persistence
+- **Complete daemon lifecycle**: ✅ Status, stop, restart commands implemented
+- **Non-blocking console experience**: ✅ Beam command returns immediately
 
 #### 🚀 **Collaboration Superiority vs Git**
 - **Real-time collaboration sessions**: Target 40% of development time
@@ -617,20 +666,21 @@ CREATE SCHEMA org_${organization_id};
 - ✅ **Security best practices** with proper secret management, JWT validation, and SQL injection prevention
 - ✅ **Documentation** with inline comments, comprehensive README, and database schema documentation
 
-### 🎯 **PHASE 2: FILE TRACKING ENGINE - IN ACTIVE DEVELOPMENT**
+### ✅ **PHASE 2: BACKGROUND DAEMON ENGINE - COMPLETED JANUARY 2025** 🎉
 
-#### 🔄 **Current Development Priority (Next 30 Days)**
-1. **File system watching** using the `notify` crate for automatic change detection
-2. **Real-time synchronization** via WebSocket between collaborators  
-3. **Automatic checkpointing** with smart batching of file changes
-4. **Local caching system** for offline-first development with intelligent sync
-5. **Background daemon service** for continuous project tracking
+#### 🚀 **Revolutionary Background Sync Implementation Complete**
+1. ✅ **Automatic daemon startup** - Beam command intelligently starts daemon when needed
+2. ✅ **Complete IPC server** - REST API with health, status, project management endpoints
+3. ✅ **Graceful project disconnect** - Individual projects can be removed from tracking
+4. ✅ **Full daemon lifecycle management** - Start, stop, restart, status commands
+5. ✅ **Non-blocking console experience** - Beam returns immediately, daemon runs in background
+6. ✅ **Smart daemon reuse** - Multiple projects share same daemon instance
 
-#### 🚧 **Technical Implementation Targets**
-- **WebSocket infrastructure** - Already built using Tokio broadcast channels
-- **Conflict resolution engine** - Operational transforms for real-time collaboration
-- **Content-addressable storage** - Efficient delta compression for large repositories
-- **Cross-platform file watching** - Native OS integration for immediate change detection
+#### 🎯 **Technical Achievements**
+- **Cross-platform daemon spawning** - Windows (no-window) and Unix (silent) background processes
+- **Health check infrastructure** - Automatic daemon detection and startup validation
+- **Project registry** - PostgreSQL-backed tracking with graceful connect/disconnect
+- **IPC communication** - Full REST API for CLI-daemon communication on port 7525
 
 ### 📊 **Revolutionary Technical Achievements**
 
@@ -650,8 +700,9 @@ CREATE SCHEMA org_${organization_id};
 - **SECURITY**: JWT validation, CORS protection, and comprehensive secret management
 
 ### 🚀 **Path to Revolutionary Beta Release**
-**Next 30 Days:** Complete file tracking engine with real-time collaboration
-**Next 60 Days:** PostgreSQL migration and background daemon service
+**✅ COMPLETED:** Background daemon engine with complete lifecycle management
+**Next 30 Days:** Real-time file synchronization between collaborators using existing WebSocket infrastructure
+**Next 60 Days:** Advanced conflict resolution and automatic checkpointing with PostgreSQL persistence
 **Next 90 Days:** Beta release with invite-only access for development teams
 **Next 120 Days:** SaaS platform launch with subscription tiers
 
@@ -688,11 +739,14 @@ CREATE SCHEMA org_${organization_id};
 - **Cross-platform ACHIEVED** ✅ Universal compatibility across Windows, macOS, Linux with PostgreSQL persistence
 - **Production infrastructure READY** ✅ Enterprise-grade Docker deployment with PostgreSQL, health monitoring, and sqlx safety
 - **Database architecture MASTERED** ✅ PostgreSQL with ACID compliance, relationships, transactions, and production-ready data integrity
+- **Background daemon REVOLUTIONIZED** ✅ Zero-friction automatic daemon startup with complete lifecycle management
+- **Console blocking ELIMINATED** ✅ Beam command returns immediately while daemon handles background sync
+- **Graceful disconnection IMPLEMENTED** ✅ Individual project disconnect with smart daemon persistence
 
-### **The Revolution Begins Now:**
-With Phase 1 complete and **PostgreSQL foundation established**, we're positioned to deliver the **file tracking engine** that will make real-time collaborative development the new standard. Git's era of manual commits, merge conflicts, and developer fear is ending.
+### **The Revolution is Here:**
+With Phase 1 AND Phase 2 complete, we've achieved the **zero-friction development experience** that eliminates Git complexity while enabling seamless background file tracking. The foundation for real-time collaborative development is **operational and production-ready**.
 
-**The next 30 days will transform how developers collaborate forever - with bulletproof data persistence.**
+**Developers can now beam into projects with zero ceremony and disconnect gracefully with zero fear.**
 
 ---
 

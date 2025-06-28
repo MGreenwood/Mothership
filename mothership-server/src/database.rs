@@ -248,31 +248,122 @@ impl Database {
         }))
     }
 
-    /// Create a new rift for a user in a project (simplified implementation)
+    /// Create a new rift for a user in a project
     pub async fn create_rift(
         &self,
-        _project_id: ProjectId,
-        _user_id: UserId,
-        _rift_name: Option<String>,
+        project_id: ProjectId,
+        user_id: UserId,
+        rift_name: Option<String>,
     ) -> Result<Rift> {
-        // TODO: Implement rifts table and functionality
-        // For now, return a dummy rift to keep the interface working
+        let rift_id = Uuid::new_v4();
+        let name = rift_name.unwrap_or_else(|| "main".to_string());
+        
+        // Create the rift
+        sqlx::query!(
+            r#"
+            INSERT INTO rifts (id, project_id, name, is_active)
+            VALUES ($1, $2, $3, true)
+            "#,
+            rift_id,
+            project_id,
+            name
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Add user as collaborator
+        sqlx::query!(
+            r#"
+            INSERT INTO rift_collaborators (rift_id, user_id)
+            VALUES ($1, $2)
+            ON CONFLICT (rift_id, user_id) DO NOTHING
+            "#,
+            rift_id,
+            user_id
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Return the created rift
         Ok(Rift {
-            id: Uuid::new_v4(),
-            project_id: _project_id,
-            name: "main".to_string(),
+            id: rift_id,
+            project_id,
+            name,
             parent_rift: None,
-            collaborators: vec![_user_id],
+            collaborators: vec![user_id],
             created_at: Utc::now(),
             last_checkpoint: None,
             is_active: true,
         })
     }
 
-    /// Get a rift by ID (simplified implementation)
-    pub async fn get_rift(&self, _rift_id: RiftId) -> Result<Option<Rift>> {
-        // TODO: Implement rifts table
-        Ok(None)
+    /// Get a rift by ID
+    pub async fn get_rift(&self, rift_id: RiftId) -> Result<Option<Rift>> {
+        let rift = sqlx::query!(
+            r#"
+            SELECT r.id, r.project_id, r.name, r.parent_rift_id, r.created_at, r.is_active,
+                   ARRAY_AGG(rc.user_id) as collaborators
+            FROM rifts r
+            LEFT JOIN rift_collaborators rc ON r.id = rc.rift_id
+            WHERE r.id = $1
+            GROUP BY r.id, r.project_id, r.name, r.parent_rift_id, r.created_at, r.is_active
+            "#,
+            rift_id
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if let Some(row) = rift {
+            let collaborators = row.collaborators
+                .unwrap_or_default();
+
+            Ok(Some(Rift {
+                id: row.id,
+                project_id: row.project_id,
+                name: row.name,
+                parent_rift: row.parent_rift_id,
+                collaborators,
+                created_at: row.created_at,
+                last_checkpoint: None, // TODO: Get from checkpoints
+                is_active: row.is_active,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Get user's primary rift for a project
+    pub async fn get_user_rift(&self, project_id: ProjectId, user_id: UserId) -> Result<Option<Rift>> {
+        // First, check if user has an existing rift for this project
+        let rift = sqlx::query!(
+            r#"
+            SELECT r.id, r.project_id, r.name, r.parent_rift_id, r.created_at, r.is_active
+            FROM rifts r
+            INNER JOIN rift_collaborators rc ON r.id = rc.rift_id
+            WHERE r.project_id = $1 AND rc.user_id = $2 AND r.is_active = true
+            ORDER BY r.created_at ASC
+            LIMIT 1
+            "#,
+            project_id,
+            user_id
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if let Some(row) = rift {
+            Ok(Some(Rift {
+                id: row.id,
+                project_id: row.project_id,
+                name: row.name,
+                parent_rift: row.parent_rift_id,
+                collaborators: vec![user_id], // Simplified for now
+                created_at: row.created_at,
+                last_checkpoint: None, // TODO: Get from checkpoints
+                is_active: row.is_active,
+            }))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Check if user has access to a project
@@ -298,15 +389,21 @@ impl Database {
     pub async fn create_user_with_id(&self, user_id: UserId, username: String, email: String, role: UserRole) -> Result<User> {
         tracing::info!("🔄 Creating user with ID: {}, username: {}, email: {}", user_id, username, email);
         
+        // First try to find existing user by email or username
+        if let Some(existing_user) = self.get_user_by_email(&email).await? {
+            tracing::info!("Found existing user by email during create_user_with_id: {} ({})", existing_user.username, existing_user.id);
+            return Ok(existing_user);
+        }
+        
+        if let Some(existing_user) = self.get_user_by_username(&username).await? {
+            tracing::info!("Found existing user by username during create_user_with_id: {} ({})", existing_user.username, existing_user.id);
+            return Ok(existing_user);
+        }
+
         let user = sqlx::query!(
             r#"
             INSERT INTO users (id, username, email, role)
             VALUES ($1, $2, $3, $4)
-            ON CONFLICT (id) DO UPDATE SET
-                username = EXCLUDED.username,
-                email = EXCLUDED.email,
-                role = EXCLUDED.role,
-                updated_at = NOW()
             RETURNING id, username, email, role as "role: UserRole", created_at
             "#,
             user_id,
@@ -464,5 +561,28 @@ impl Database {
         } else {
             Ok(None)
         }
+    }
+
+    /// Delete a project and all associated data
+    pub async fn delete_project(&self, project_id: ProjectId) -> Result<()> {
+        // PostgreSQL will handle cascading deletes for:
+        // - project_members (ON DELETE CASCADE)
+        // - rifts (ON DELETE CASCADE) 
+        // - rift_collaborators (through rifts CASCADE)
+        // - project_settings (ON DELETE CASCADE)
+        
+        let result = sqlx::query!(
+            "DELETE FROM projects WHERE id = $1",
+            project_id
+        )
+        .execute(&self.pool)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(anyhow::anyhow!("Project not found or already deleted"));
+        }
+
+        tracing::info!("Successfully deleted project {} and all associated data", project_id);
+        Ok(())
     }
 } 

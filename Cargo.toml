@@ -3,7 +3,8 @@ members = [
     "mothership-server",
     "mothership-cli", 
     "mothership-common",
-    "mothership-gui"
+    "mothership-gui",
+    "mothership-daemon"
 ]
 resolver = "2"
 

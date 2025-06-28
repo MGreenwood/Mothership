@@ -2,13 +2,54 @@ use anyhow::{anyhow, Result};
 use colored::*;
 use mothership_common::{
     protocol::{ApiResponse, GatewayRequest},
-    GatewayProject, Project,
+    GatewayProject, Project, ClientConfig,
 };
 use std::path::PathBuf;
 use std::fs;
+use std::collections::HashMap;
+use std::io::{self, Write};
 use serde::{Serialize, Deserialize};
+use walkdir::WalkDir;
 
 use crate::{config::ConfigManager, get_http_client, print_api_error, print_info, print_success};
+
+/// Local status of a project
+#[derive(Debug, Clone)]
+enum LocalStatus {
+    Local,
+    NotLocal,
+}
+
+/// Check if a project exists locally and return status information
+fn check_project_local_status(project_name: &str) -> (LocalStatus, String) {
+    let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    
+    // Check if a directory with the project name exists in current directory
+    let project_dir = current_dir.join(project_name);
+    
+    if project_dir.exists() && project_dir.is_dir() {
+        // Check if it has .mothership directory (indicating it's a proper gateway)
+        let mothership_dir = project_dir.join(".mothership");
+        if mothership_dir.exists() && mothership_dir.is_dir() {
+            return (LocalStatus::Local, format!("(local at {})", project_dir.display()));
+        } else {
+            // Directory exists but no .mothership - might be a regular directory with same name
+            return (LocalStatus::NotLocal, "(directory exists but not initialized)".to_string());
+        }
+    }
+    
+    // Also check if current directory itself is this project
+    if let Some(current_name) = current_dir.file_name().and_then(|n| n.to_str()) {
+        if current_name == project_name {
+            let mothership_dir = current_dir.join(".mothership");
+            if mothership_dir.exists() && mothership_dir.is_dir() {
+                return (LocalStatus::Local, "(current directory)".to_string());
+            }
+        }
+    }
+    
+    (LocalStatus::NotLocal, "(not local)".to_string())
+}
 
 pub async fn handle_gateway(config_manager: &ConfigManager, include_inactive: bool) -> Result<()> {
     // Check if authenticated
@@ -52,7 +93,15 @@ pub async fn handle_gateway(config_manager: &ConfigManager, include_inactive: bo
 
     for gateway_project in projects {
         let project = &gateway_project.project;
-        println!("\n{} {}", "🚀".green(), project.name.blue().bold());
+        
+        // Check if project exists locally
+        let (local_status, local_info) = check_project_local_status(&project.name);
+        let (status_indicator, project_name_colored) = match local_status {
+            LocalStatus::Local => ("📁".green(), project.name.green().bold()),
+            LocalStatus::NotLocal => ("☁️".red(), project.name.red().bold()),
+        };
+        
+        println!("\n{} {} {}", status_indicator, project_name_colored, local_info.dimmed());
         println!("   {}", project.description.dimmed());
         
         if !gateway_project.your_rifts.is_empty() {
@@ -75,8 +124,16 @@ pub async fn handle_gateway(config_manager: &ConfigManager, include_inactive: bo
             }
         }
 
-        // Show beam command using project name
-        println!("   {} Beam into: {}", "🔧".white(), format!("mothership beam \"{}\"", project.name).green());
+        // Show beam command based on local status
+        match local_status {
+            LocalStatus::Local => {
+                println!("   {} Beam into: {}", "🔧".green(), format!("mothership beam \"{}\"", project.name).green());
+            }
+            LocalStatus::NotLocal => {
+                println!("   {} Beam into: {}", "🔧".red(), format!("mothership beam \"{}\" --local-dir <path>", project.name).yellow());
+                println!("   {} {}", "💡".yellow(), "Requires --local-dir parameter (creates project directory automatically)".dimmed());
+            }
+        }
     }
 
     println!("\n{}", "Use 'mothership beam <project-id>' to start working on a project.".dimmed());
@@ -88,11 +145,11 @@ pub async fn handle_gateway_create(
     config_manager: &ConfigManager, 
     name: String, 
     dir: PathBuf
-) -> Result<()> {
+) -> Result<Project> {
     // Check if authenticated
     if !config_manager.is_authenticated()? {
         print_api_error("Not authenticated. Please run 'mothership auth' first.");
-        return Ok(());
+        return Err(anyhow!("Not authenticated"));
     }
 
     // Validate directory
@@ -152,8 +209,145 @@ pub async fn handle_gateway_create(
         print_info("Gateway was created successfully on the server, but local metadata may be incomplete.");
     }
     
-    print_info("File watching will be implemented in the next phase");
+    // Upload initial files to the server
+    print_info("Scanning directory for initial files...");
+    if let Err(e) = upload_initial_files(&config, &project, &dir).await {
+        print_api_error(&format!("Warning: Failed to upload initial files: {}", e));
+        print_info("Gateway was created successfully, but you may need to sync files manually.");
+    }
+    
     print_info(&format!("Use 'mothership beam {}' to start collaborating", project.id));
+
+    Ok(project)
+}
+
+pub async fn handle_delete(
+    config_manager: &ConfigManager,
+    project_name: String,
+    force: bool,
+) -> Result<()> {
+    // Check if authenticated
+    if !config_manager.is_authenticated()? {
+        print_api_error("Not authenticated. Please run 'mothership auth' first.");
+        return Ok(());
+    }
+
+    let config = config_manager.load_config()?;
+    let client = get_http_client(&config);
+
+    // First, get the project by name to verify it exists
+    let project_url = format!("{}/projects/by-name/{}", config.mothership_url, project_name);
+    let response = client.get(&project_url).send().await?;
+
+    if !response.status().is_success() {
+        if response.status() == 404 {
+            print_api_error(&format!("Project '{}' not found", project_name));
+        } else {
+            print_api_error(&format!("Failed to find project: {}", response.status()));
+        }
+        return Ok(());
+    }
+
+    let project_response: ApiResponse<Project> = response.json().await?;
+    let project = project_response.data.ok_or_else(|| {
+        anyhow!("No project data received")
+    })?;
+
+    // Show warning and confirmation unless forced
+    if !force {
+        println!("\n{}", "⚠️  PROJECT DELETION WARNING".red().bold());
+        println!("{}", format!("Project: {}", project.name.yellow().bold()));
+        println!("{}", format!("Description: {}", project.description.dimmed()));
+        println!("{}", format!("Project ID: {}", project.id.to_string().dimmed()));
+        
+        println!("\n{}", "This will permanently delete:".yellow());
+        println!("{}", "  • The project from Mothership servers".dimmed());
+        println!("{}", "  • All project history and checkpoints".dimmed());
+        println!("{}", "  • All associated rifts and collaboration data".dimmed());
+        
+        println!("\n{}", "Local files will NOT be deleted - they remain on your machine.".green());
+        
+        print!("\n{}", "Are you sure you want to delete this project? (y/N): ".white().bold());
+        io::stdout().flush()?;
+
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        
+        if !input.trim().to_lowercase().starts_with('y') {
+            print_info("Deletion cancelled.");
+            return Ok(());
+        }
+    }
+
+    print_info(&format!("Deleting project '{}' from server...", project.name));
+
+    // Delete the project
+    let delete_url = format!("{}/projects/{}", config.mothership_url, project.id);
+    let response = client.delete(&delete_url).send().await?;
+
+    if !response.status().is_success() {
+        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+        return Err(anyhow!("Failed to delete project: {}", error_text));
+    }
+
+    print_success(&format!("Project '{}' successfully deleted from Mothership server!", project.name));
+    
+    // Check if there's a local .mothership directory and offer to clean it up
+    let current_dir = std::env::current_dir()?;
+    
+    // Check current directory
+    let mothership_dir = current_dir.join(".mothership");
+    if mothership_dir.exists() {
+        if let Ok(metadata) = read_gateway_metadata(&current_dir) {
+            if metadata.project_id == project.id.to_string() {
+                println!("\n{}", "Local .mothership directory detected for this project.".yellow());
+                print!("{}", "Would you like to remove the .mothership directory? (y/N): ".white());
+                io::stdout().flush()?;
+
+                let mut input = String::new();
+                io::stdin().read_line(&mut input)?;
+                
+                if input.trim().to_lowercase().starts_with('y') {
+                    match std::fs::remove_dir_all(&mothership_dir) {
+                        Ok(()) => print_success("Local .mothership directory removed."),
+                        Err(e) => print_api_error(&format!("Failed to remove .mothership directory: {}", e)),
+                    }
+                } else {
+                    print_info("Local .mothership directory kept (project files remain unchanged).");
+                }
+            }
+        }
+    }
+
+    // Also check if there's a subdirectory with the project name
+    let project_subdir = current_dir.join(&project.name);
+    if project_subdir.exists() && project_subdir.is_dir() {
+        let subdir_mothership = project_subdir.join(".mothership");
+        if subdir_mothership.exists() {
+            if let Ok(metadata) = read_gateway_metadata(&project_subdir) {
+                if metadata.project_id == project.id.to_string() {
+                    println!("\n{}", format!("Found project directory: {}", project_subdir.display()).yellow());
+                    print!("{}", "Would you like to remove the .mothership directory from it? (y/N): ".white());
+                    io::stdout().flush()?;
+
+                    let mut input = String::new();
+                    io::stdin().read_line(&mut input)?;
+                    
+                    if input.trim().to_lowercase().starts_with('y') {
+                        match std::fs::remove_dir_all(&subdir_mothership) {
+                            Ok(()) => print_success(&format!("Removed .mothership from {}", project_subdir.display())),
+                            Err(e) => print_api_error(&format!("Failed to remove .mothership directory: {}", e)),
+                        }
+                    } else {
+                        print_info(&format!("Project files in {} remain unchanged.", project_subdir.display()));
+                    }
+                }
+            }
+        }
+    }
+
+    println!("\n{}", "✨ Project deleted successfully!".green().bold());
+    println!("{}", "Your local files are safe and remain on your machine.".dimmed());
 
     Ok(())
 }
@@ -226,7 +420,6 @@ fn create_gateway_metadata(
 }
 
 /// Read gateway metadata from .mothership directory
-#[allow(dead_code)]
 fn read_gateway_metadata(project_dir: &PathBuf) -> Result<ProjectMetadata> {
     let mothership_dir = project_dir.join(".mothership");
     let metadata_file = mothership_dir.join("project.json");
@@ -254,4 +447,108 @@ fn find_current_gateway() -> Result<Option<(PathBuf, ProjectMetadata)>> {
     } else {
         Ok(None)
     }
+}
+
+/// Upload initial files from a directory to the server
+async fn upload_initial_files(
+    config: &ClientConfig,
+    project: &Project,
+    dir: &PathBuf,
+) -> Result<()> {
+    let mut files = HashMap::new();
+    let mut file_count = 0;
+    
+    // Scan directory for files (excluding .mothership and common ignore patterns)
+    for entry in WalkDir::new(dir)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| !should_ignore_file(e.path())) 
+    {
+        let entry = entry?;
+        let path = entry.path();
+        
+        if path.is_file() {
+            if let Ok(relative_path) = path.strip_prefix(dir) {
+                match fs::read_to_string(path) {
+                    Ok(content) => {
+                        files.insert(relative_path.to_path_buf(), content);
+                        file_count += 1;
+                        print_info(&format!("Found: {}", relative_path.display()));
+                    }
+                    Err(_) => {
+                        // Skip binary files or files we can't read
+                        print_info(&format!("Skipped (binary): {}", relative_path.display()));
+                    }
+                }
+            }
+        }
+    }
+    
+    if files.is_empty() {
+        print_info("No text files found to upload");
+        return Ok(());
+    }
+    
+    print_info(&format!("Uploading {} files to server...", file_count));
+    
+    // Send files to server
+    let upload_request = UploadInitialFilesRequest {
+        project_id: project.id,
+        files,
+    };
+    
+    let client = get_http_client(config);
+    let upload_url = format!("{}/projects/{}/upload-initial", config.mothership_url, project.id);
+    let response = client
+        .post(&upload_url)
+        .json(&upload_request)
+        .send()
+        .await?;
+    
+    if !response.status().is_success() {
+        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+        return Err(anyhow!("Failed to upload initial files: {}", error_text));
+    }
+    
+    print_success(&format!("Successfully uploaded {} files to server!", file_count));
+    Ok(())
+}
+
+/// Check if a file should be ignored during initial scan
+fn should_ignore_file(path: &std::path::Path) -> bool {
+    let path_str = path.to_string_lossy();
+    
+    // Ignore .mothership directory
+    if path_str.contains(".mothership") {
+        return true;
+    }
+    
+    // Ignore common patterns
+    let ignore_patterns = [
+        ".git", ".svn", ".hg",
+        "node_modules", "target", "build", "dist", 
+        ".DS_Store", "Thumbs.db",
+        ".env", ".env.local", ".env.production",
+        "*.log", "*.tmp", "*.temp",
+    ];
+    
+    for pattern in &ignore_patterns {
+        if pattern.contains("*") {
+            // Simple wildcard matching
+            let pattern = pattern.replace("*", "");
+            if path_str.ends_with(&pattern) {
+                return true;
+            }
+        } else if path_str.contains(pattern) {
+            return true;
+        }
+    }
+    
+    false
+}
+
+#[derive(Serialize)]
+struct UploadInitialFilesRequest {
+    project_id: uuid::Uuid,
+    files: HashMap<PathBuf, String>,
 } 

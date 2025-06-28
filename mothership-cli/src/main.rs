@@ -8,7 +8,7 @@ mod auth;
 mod gateway;
 mod beam;
 mod sync;
-mod file_watcher;
+mod connections;
 
 use config::ConfigManager;
 
@@ -46,6 +46,9 @@ enum Commands {
         /// Optional rift name/path
         #[arg(short, long)]
         rift: Option<String>,
+        /// Base directory where project folder will be created (required for non-local projects)
+        #[arg(long)]
+        local_dir: Option<std::path::PathBuf>,
     },
     /// Status of current Mothership environment
     Status,
@@ -56,6 +59,48 @@ enum Commands {
     },
     /// Sync with remote Mothership
     Sync,
+    /// View project history and checkpoints
+    History {
+        /// Limit number of checkpoints to show
+        #[arg(short, long, default_value = "20")]
+        limit: usize,
+    },
+    /// Restore to a specific checkpoint
+    Restore {
+        /// Checkpoint ID to restore to
+        checkpoint_id: String,
+        /// Force restore without confirmation
+        #[arg(short, long)]
+        force: bool,
+    },
+    /// Delete a gateway project
+    Delete {
+        /// Project name to delete
+        project_name: String,
+        /// Force deletion without confirmation
+        #[arg(short, long)]
+        force: bool,
+    },
+    /// Connect to a Mothership server
+    Connect {
+        /// Server URL (e.g., https://mothership.company.com)
+        server_url: String,
+    },
+    /// Disconnect from the current Mothership server (switch to local-only mode)
+    Server {
+        #[command(subcommand)]
+        action: ServerAction,
+    },
+    /// Disconnect from a project (stop background tracking)
+    ProjectDisconnect {
+        /// Project name to disconnect from (optional, defaults to current project)
+        project: Option<String>,
+    },
+    /// Daemon management operations
+    Daemon {
+        #[command(subcommand)]
+        action: DaemonAction,
+    },
     /// Logout (clear stored credentials)
     Logout,
 }
@@ -86,6 +131,26 @@ enum GatewayAction {
         #[arg(short, long)]
         dir: std::path::PathBuf,
     },
+}
+
+#[derive(Subcommand)]
+enum ServerAction {
+    /// Show current server connection status
+    Status,
+    /// Disconnect from current server (switch to local-only mode)
+    Disconnect,
+    /// List all configured servers
+    List,
+}
+
+#[derive(Subcommand)]
+enum DaemonAction {
+    /// Show daemon status and tracked projects
+    Status,
+    /// Stop the background daemon
+    Stop,
+    /// Restart the background daemon
+    Restart,
 }
 
 #[tokio::main]
@@ -135,9 +200,18 @@ async fn main() -> Result<()> {
             });
 
             println!("{}", format!("🚀 Deploying {}...", project_name).cyan().bold());
-            gateway::handle_gateway_create(&config_manager, project_name, current_dir).await?;
+            
+            // Create the gateway/project
+            if let Ok(_project) = gateway::handle_gateway_create(&config_manager, project_name.clone(), current_dir).await {
+                // Automatically beam into the newly created project
+                println!("\n{}", "🎯 Automatically beaming into your new project...".cyan().bold());
+                if let Err(e) = beam::handle_beam(&config_manager, project_name, None, None, false).await {
+                    print_api_error(&format!("Failed to beam into project: {}", e));
+                    print_info("You can manually beam into your project later.");
+                }
+            }
         }
-        Commands::Beam { project, rift } => {
+        Commands::Beam { project, rift, local_dir } => {
             // Validate authentication before beam operations
             if let Err(e) = validate_authentication(&config_manager).await {
                 print_auth_error(&e.to_string());
@@ -145,7 +219,7 @@ async fn main() -> Result<()> {
             }
 
             println!("{}", format!("🚀 Beaming into {}...", project).cyan().bold());
-            beam::handle_beam(&config_manager, project, rift, false).await?;
+            beam::handle_beam(&config_manager, project, rift, local_dir, false).await?;
         }
         Commands::Status => {
             // Validate authentication before status operations
@@ -176,6 +250,76 @@ async fn main() -> Result<()> {
 
             println!("{}", "📦 Syncing with remote Mothership...".cyan().bold());
             sync::handle_sync(&config_manager).await?;
+        }
+        Commands::History { limit } => {
+            // Validate authentication before history operations
+            if let Err(e) = validate_authentication(&config_manager).await {
+                print_auth_error(&e.to_string());
+                return Ok(());
+            }
+
+            println!("{}", "📜 Loading project history...".cyan().bold());
+            sync::handle_history(&config_manager, limit).await?;
+        }
+        Commands::Restore { checkpoint_id, force } => {
+            // Validate authentication before restore operations
+            if let Err(e) = validate_authentication(&config_manager).await {
+                print_auth_error(&e.to_string());
+                return Ok(());
+            }
+
+            println!("{}", format!("🔄 Restoring to checkpoint {}...", checkpoint_id).cyan().bold());
+            sync::handle_restore(&config_manager, checkpoint_id, force).await?;
+        }
+        Commands::Delete { project_name, force } => {
+            // Validate authentication before delete operations
+            if let Err(e) = validate_authentication(&config_manager).await {
+                print_auth_error(&e.to_string());
+                return Ok(());
+            }
+
+            println!("{}", format!("🗑️  Deleting project {}...", project_name).cyan().bold());
+            gateway::handle_delete(&config_manager, project_name, force).await?;
+        }
+        Commands::Connect { server_url } => {
+            println!("{}", format!("🔗 Connecting to {}...", server_url).cyan().bold());
+            connections::handle_connect(&config_manager, server_url).await?;
+        }
+        Commands::Server { action } => {
+            match action {
+                ServerAction::Status => {
+                    println!("{}", "📡 Checking server connection status...".cyan().bold());
+                    connections::handle_server_status(&config_manager).await?;
+                }
+                ServerAction::Disconnect => {
+                    println!("{}", "🔌 Disconnecting from server...".cyan().bold());
+                    connections::handle_server_disconnect(&config_manager).await?;
+                }
+                ServerAction::List => {
+                    println!("{}", "📋 Listing configured servers...".cyan().bold());
+                    connections::handle_server_list(&config_manager).await?;
+                }
+            }
+        }
+        Commands::ProjectDisconnect { project } => {
+            println!("{}", "🔌 Disconnecting from project...".cyan().bold());
+            beam::handle_disconnect(&config_manager, project).await?;
+        }
+        Commands::Daemon { action } => {
+            match action {
+                DaemonAction::Status => {
+                    println!("{}", "🤖 Checking daemon status...".cyan().bold());
+                    beam::handle_daemon_status().await?;
+                }
+                DaemonAction::Stop => {
+                    println!("{}", "⏹️  Stopping daemon...".cyan().bold());
+                    beam::handle_daemon_stop().await?;
+                }
+                DaemonAction::Restart => {
+                    println!("{}", "🔄 Restarting daemon...".cyan().bold());
+                    beam::handle_daemon_restart().await?;
+                }
+            }
         }
         Commands::Logout => {
             println!("{}", "🔓 Logging out...".cyan().bold());

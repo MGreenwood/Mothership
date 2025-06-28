@@ -2,13 +2,13 @@ use axum::{
     extract::{Path, State, WebSocketUpgrade},
     http::{HeaderMap, StatusCode},
     response::{Json, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
 use mothership_common::{
-    auth::{AuthRequest, AuthResponse, TokenRequest, TokenResponse, OAuthRequest, OAuthResponse, OAuthProvider},
+    auth::{AuthRequest, AuthResponse, TokenRequest, TokenResponse, OAuthRequest, OAuthResponse, OAuthProvider, OAuthProfile},
     protocol::{ApiResponse, BeamRequest, BeamResponse, GatewayRequest},
-    GatewayProject, Project, ProjectId, UserRole,
+    GatewayProject, Project, ProjectId, User, UserRole,
 };
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 use tower_http::cors::CorsLayer;
@@ -109,6 +109,8 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         // Health check
         .route("/health", get(health_check))
+        // Server capabilities
+        .route("/capabilities", get(server_capabilities))
         
         // Authentication endpoints
         .route("/auth/start", post(auth_start))
@@ -136,6 +138,11 @@ async fn main() -> anyhow::Result<()> {
         .route("/projects/by-name/:name", get(get_project_by_name))
         .route("/projects/:id", get(get_project))
         .route("/projects/:id/beam", post(beam_into_project))
+        .route("/projects/:id/upload-initial", post(upload_initial_files))
+        .route("/projects/:id/checkpoint", post(create_checkpoint))
+        .route("/projects/:id/history", get(get_project_history))
+        .route("/projects/:id/restore/:checkpoint_id", post(restore_checkpoint))
+        .route("/projects/:id", delete(delete_project))
         
         // WebSocket for real-time sync
         .route("/sync/:rift_id", get(websocket_handler))
@@ -157,6 +164,43 @@ async fn main() -> anyhow::Result<()> {
 /// Health check endpoint
 async fn health_check() -> Json<ApiResponse<String>> {
     Json(ApiResponse::success("Mothership is operational".to_string()))
+}
+
+/// Server capabilities for discovery and client configuration
+#[derive(serde::Serialize)]
+struct ServerCapabilities {
+    auth_methods: Vec<String>,
+    sso_domain: Option<String>,
+    oauth_providers: Vec<String>,
+    features: Vec<String>,
+    name: String,
+    version: String,
+}
+
+/// Server capabilities endpoint
+async fn server_capabilities() -> Json<ApiResponse<ServerCapabilities>> {
+    let capabilities = ServerCapabilities {
+        auth_methods: vec![
+            "oauth".to_string(),
+            "device_code".to_string(),
+        ],
+        sso_domain: None, // TODO: Support SSO domains
+        oauth_providers: vec![
+            "google".to_string(),
+            "github".to_string(),
+        ],
+        features: vec![
+            "project_sync".to_string(),
+            "checkpoints".to_string(),
+            "beam".to_string(),
+            "file_storage".to_string(),
+            "websocket_sync".to_string(),
+        ],
+        name: "Mothership Server".to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+    };
+    
+    Json(ApiResponse::success(capabilities))
 }
 
 /// Start the authentication flow
@@ -347,33 +391,15 @@ async fn oauth_callback_handler(
                 profile.email
             );
 
-            // Check if user exists, create if not
-            let user = match state.db.get_user_by_email(&profile.email).await {
-                Ok(Some(existing_user)) => {
-                    info!("Found existing user: {} ({})", existing_user.username, existing_user.email);
-                    existing_user
-                }
-                Ok(None) => {
-                    // Create new user from OAuth profile
-                    let username = profile.username.clone()
-                        .unwrap_or_else(|| profile.email.split('@').next().unwrap_or("user").to_string());
-                    
-                    info!("Creating new user from OAuth: {} ({})", username, profile.email);
-                    
-                    match state.db.create_user(username, profile.email.clone(), UserRole::User).await {
-                        Ok(user) => {
-                            info!("✅ Successfully created new user: {} (ID: {})", user.username, user.id);
-                            user
-                        }
-                        Err(e) => {
-                            error!("❌ Failed to create user from OAuth: {}", e);
-                            return Ok(axum::response::Redirect::to("http://localhost:7523/auth/error?message=Failed to create user"));
-                        }
-                    }
+            // Robust user matching and creation logic
+            let user = match find_or_create_oauth_user(&state.db, &profile, &provider).await {
+                Ok(user) => {
+                    info!("✅ Successfully resolved OAuth user: {} ({})", user.username, user.email);
+                    user
                 }
                 Err(e) => {
-                    error!("❌ Database error during user lookup: {}", e);
-                    return Ok(axum::response::Redirect::to("http://localhost:7523/auth/error?message=Database error"));
+                    error!("❌ Failed to resolve OAuth user: {}", e);
+                    return Ok(axum::response::Redirect::to("http://localhost:7523/auth/error?message=Failed to resolve user account"));
                 }
             };
 
@@ -412,6 +438,107 @@ async fn oauth_callback_handler(
                 urlencoding::encode(&e.to_string())
             )))
         }
+    }
+}
+
+/// Robust OAuth user resolution with provider-aware logic
+async fn find_or_create_oauth_user(
+    db: &Database,
+    profile: &OAuthProfile,
+    provider: &OAuthProvider,
+) -> Result<User, anyhow::Error> {
+    // Step 1: Try to find existing user by email (most reliable)
+    if let Some(existing_user) = db.get_user_by_email(&profile.email).await? {
+        info!("✅ Found existing user by email: {} ({})", existing_user.username, existing_user.email);
+        return Ok(existing_user);
+    }
+
+    // Step 2: Generate provider-aware username
+    let candidate_username = generate_provider_username(profile, provider);
+    
+    // Step 3: Try to find by the candidate username
+    if let Some(existing_user) = db.get_user_by_username(&candidate_username).await? {
+        info!("✅ Found existing user by username: {} ({})", existing_user.username, existing_user.email);
+        return Ok(existing_user);
+    }
+
+    // Step 4: Find available username (handle conflicts)
+    let available_username = find_available_username(db, &candidate_username).await?;
+    
+    // Step 5: Create new user
+    info!("🔄 Creating new OAuth user: {} ({}) via {}", available_username, profile.email, provider_name(provider));
+    
+    let user = db.create_user(available_username, profile.email.clone(), UserRole::User).await?;
+    
+    info!("✅ Successfully created OAuth user: {} (ID: {})", user.username, user.id);
+    Ok(user)
+}
+
+/// Generate provider-specific username
+fn generate_provider_username(profile: &OAuthProfile, provider: &OAuthProvider) -> String {
+    match provider {
+        OAuthProvider::GitHub => {
+            // GitHub provides usernames, use them directly
+            profile.username.clone()
+                .unwrap_or_else(|| fallback_username_from_email(&profile.email))
+        }
+        OAuthProvider::Google => {
+            // Google doesn't provide usernames, generate from email
+            fallback_username_from_email(&profile.email)
+        }
+    }
+}
+
+/// Generate username from email address
+fn fallback_username_from_email(email: &str) -> String {
+    email.split('@')
+        .next()
+        .unwrap_or("user")
+        .to_string()
+        .replace(".", "")  // Remove dots that might cause issues
+        .replace("+", "")  // Remove plus signs
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+        .collect::<String>()
+        .trim_matches('-')
+        .trim_matches('_')
+        .to_string()
+        .to_lowercase()
+}
+
+/// Find an available username by appending numbers if needed
+async fn find_available_username(db: &Database, candidate: &str) -> Result<String, anyhow::Error> {
+    // Sanitize the candidate username
+    let base_username = if candidate.is_empty() || candidate == "user" {
+        "user".to_string()
+    } else {
+        candidate.to_string()
+    };
+    
+    // Check if base username is available
+    if !db.user_exists_by_username(&base_username).await? {
+        return Ok(base_username);
+    }
+    
+    // Try with numbers appended
+    for i in 1..=999 {
+        let numbered_username = format!("{}{}", base_username, i);
+        if !db.user_exists_by_username(&numbered_username).await? {
+            info!("🔄 Username '{}' taken, using '{}'", base_username, numbered_username);
+            return Ok(numbered_username);
+        }
+    }
+    
+    // Fallback with timestamp if all numbers taken
+    let timestamp_username = format!("{}{}", base_username, chrono::Utc::now().timestamp());
+    Ok(timestamp_username)
+}
+
+/// Get human-readable provider name
+fn provider_name(provider: &OAuthProvider) -> &'static str {
+    match provider {
+        OAuthProvider::Google => "Google",
+        OAuthProvider::GitHub => "GitHub",
     }
 }
 
@@ -770,6 +897,12 @@ struct CreateGatewayRequest {
     project_path: PathBuf,
 }
 
+#[derive(serde::Deserialize)]
+struct UploadInitialFilesRequest {
+    project_id: uuid::Uuid,
+    files: std::collections::HashMap<PathBuf, String>,
+}
+
 #[derive(serde::Serialize)]
 struct AuthCheckResponse {
     authenticated: bool,
@@ -968,9 +1101,16 @@ async fn create_gateway(
             info!("Created gateway project: {} (ID: {}) for user: {}", 
                 project.name, project.id, user.username);
             
-            // TODO: Initialize project directory tracking
-            // TODO: Set up file watcher for the project_path
-            // TODO: Create initial rift for the user
+            // Create the main rift for the project
+            match state.db.create_rift(project.id, user_id, Some("main".to_string())).await {
+                Ok(main_rift) => {
+                    info!("Created main rift: {} for project: {}", main_rift.id, project.name);
+                }
+                Err(e) => {
+                    error!("Failed to create main rift for project {}: {}", project.name, e);
+                    // Continue anyway - rift can be created later during upload/beam
+                }
+            }
             
             Ok(Json(ApiResponse::success(project)))
         }
@@ -1027,18 +1167,434 @@ async fn get_project_by_name(
 /// Beam into a project (join/sync)
 async fn beam_into_project(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(project_id): Path<ProjectId>,
     Json(req): Json<BeamRequest>,
 ) -> Result<Json<ApiResponse<BeamResponse>>, StatusCode> {
     info!("Beam request for project: {}", project_id);
     
-    match handlers::handle_beam(&state, project_id, req).await {
+    // 🔥 CRITICAL FIX: Extract user ID from JWT token like other endpoints
+    let auth_header = headers.get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    if !auth_header.starts_with("Bearer ") {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    let token = auth_header.trim_start_matches("Bearer ");
+    let claims = match state.auth.verify_token(token) {
+        Ok(claims) => claims,
+        Err(_) => return Err(StatusCode::UNAUTHORIZED),
+    };
+    
+    let user_id = uuid::Uuid::parse_str(&claims.sub)
+        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+
+    // Ensure user exists in database (recreate from JWT if needed)
+    match state.db.get_user(user_id).await {
+        Ok(Some(_)) => {
+            // User exists, proceed normally
+        }
+        Ok(None) => {
+            // User no longer exists in database, recreate from JWT claims if OAuth token
+            if claims.machine_id == "web-oauth" {
+                let email = claims.email.clone().unwrap_or_else(|| format!("{}@oauth.mothership", claims.username));
+                match state.db.create_user_with_id(user_id, claims.username.clone(), email, UserRole::User).await {
+                    Ok(_) => {
+                        info!("✅ Successfully recreated OAuth user for beam: {} (ID: {})", claims.username, user_id);
+                    }
+                    Err(e) => {
+                        error!("❌ Failed to recreate OAuth user for beam: {}", e);
+                        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                    }
+                }
+            } else {
+                return Err(StatusCode::UNAUTHORIZED);
+            }
+        }
+        Err(e) => {
+            error!("Database error during beam: {}", e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    }
+    
+    match handlers::handle_beam(&state, project_id, req, user_id).await {
         Ok(response) => Ok(Json(ApiResponse::success(response))),
         Err(e) => {
             error!("Beam failed: {}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
+}
+
+/// Upload initial files for a project
+async fn upload_initial_files(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<ProjectId>,
+    Json(req): Json<UploadInitialFilesRequest>,
+) -> Result<Json<ApiResponse<String>>, StatusCode> {
+    // Extract user ID from JWT token (same pattern as other endpoints)
+    let auth_header = headers.get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    if !auth_header.starts_with("Bearer ") {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    let token = auth_header.trim_start_matches("Bearer ");
+    let claims = match state.auth.verify_token(token) {
+        Ok(claims) => claims,
+        Err(_) => return Err(StatusCode::UNAUTHORIZED),
+    };
+    
+    let user_id = uuid::Uuid::parse_str(&claims.sub)
+        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+
+    info!("Upload initial files request for project: {} by user: {}", project_id, user_id);
+
+    // Verify project exists and user has access
+    let project = match state.db.get_project(project_id).await {
+        Ok(Some(project)) => project,
+        Ok(None) => return Err(StatusCode::NOT_FOUND),
+        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+    };
+
+    if !state.db.user_has_project_access(user_id, project_id).await.unwrap_or(false) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    // Get or create the main rift for this project
+    let rift = match state.db.get_user_rift(project_id, user_id).await {
+        Ok(Some(existing_rift)) => {
+            info!("Found existing main rift: {} for initial upload to project: {}", existing_rift.id, project_id);
+            existing_rift
+        }
+        Ok(None) => {
+            // Create main rift if it doesn't exist (should happen during project creation)
+            info!("Creating main rift for initial upload to project: {}", project_id);
+            match state.db.create_rift(project_id, user_id, Some("main".to_string())).await {
+                Ok(rift) => rift,
+                Err(e) => {
+                    error!("Failed to create main rift for initial upload: {}", e);
+                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                }
+            }
+        }
+        Err(e) => {
+            error!("Failed to check for existing rift during initial upload: {}", e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    let file_count = req.files.len();
+    info!("Uploading {} initial files to rift: {}", file_count, rift.id);
+
+    // Store each file in the storage engine
+    for (path, content) in req.files {
+        if let Err(e) = state.sync.storage.update_live_state(rift.id, path.clone(), content).await {
+            error!("Failed to store initial file {}: {}", path.display(), e);
+            // Continue with other files rather than failing completely
+        } else {
+            info!("Stored initial file: {}", path.display());
+        }
+    }
+
+    Ok(Json(ApiResponse::success(format!(
+        "Successfully uploaded {} initial files to project '{}'",
+        file_count,
+        project.name
+    ))))
+}
+
+/// Create a checkpoint for a project
+async fn create_checkpoint(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<ProjectId>,
+    Json(req): Json<CreateCheckpointRequest>,
+) -> Result<Json<ApiResponse<CheckpointData>>, StatusCode> {
+    // Extract user ID from JWT token
+    let auth_header = headers.get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    if !auth_header.starts_with("Bearer ") {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    let token = auth_header.trim_start_matches("Bearer ");
+    let claims = match state.auth.verify_token(token) {
+        Ok(claims) => claims,
+        Err(_) => return Err(StatusCode::UNAUTHORIZED),
+    };
+    
+    let user_id = uuid::Uuid::parse_str(&claims.sub)
+        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+
+    info!("Checkpoint request for project: {} by user: {}", project_id, user_id);
+
+    // Verify project exists and user has access
+    let _project = match state.db.get_project(project_id).await {
+        Ok(Some(project)) => project,
+        Ok(None) => return Err(StatusCode::NOT_FOUND),
+        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+    };
+
+    if !state.db.user_has_project_access(user_id, project_id).await.unwrap_or(false) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    // Get user's rift for this project
+    let rift = match state.db.get_user_rift(project_id, user_id).await {
+        Ok(Some(rift)) => rift,
+        Ok(None) => {
+            error!("No rift found for user {} in project {}", user_id, project_id);
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+    };
+
+    // Create checkpoint using storage engine
+    match state.sync.storage.create_checkpoint(
+        rift.id,
+        user_id,
+        req.message,
+        false, // Manual checkpoint
+    ).await {
+        Ok(checkpoint) => {
+            let checkpoint_data = CheckpointData {
+                checkpoint_id: checkpoint.id,
+                file_count: checkpoint.changes.len(),
+            };
+            
+            info!("Created checkpoint {} with {} files", checkpoint.id, checkpoint.changes.len());
+            Ok(Json(ApiResponse::success(checkpoint_data)))
+        }
+        Err(e) => {
+            error!("Failed to create checkpoint: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct CreateCheckpointRequest {
+    message: Option<String>,
+    #[allow(dead_code)]
+    timestamp: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(serde::Serialize)]
+struct CheckpointData {
+    checkpoint_id: uuid::Uuid,
+    file_count: usize,
+}
+
+/// Get project history (checkpoints)
+async fn get_project_history(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<ProjectId>,
+    query: axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<ApiResponse<Vec<mothership_common::Checkpoint>>>, StatusCode> {
+    // Extract user ID from JWT token
+    let auth_header = headers.get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    if !auth_header.starts_with("Bearer ") {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    let token = auth_header.trim_start_matches("Bearer ");
+    let claims = match state.auth.verify_token(token) {
+        Ok(claims) => claims,
+        Err(_) => return Err(StatusCode::UNAUTHORIZED),
+    };
+    
+    let user_id = uuid::Uuid::parse_str(&claims.sub)
+        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+
+    info!("History request for project: {} by user: {}", project_id, user_id);
+
+    // Verify project exists and user has access
+    let _project = match state.db.get_project(project_id).await {
+        Ok(Some(project)) => project,
+        Ok(None) => return Err(StatusCode::NOT_FOUND),
+        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+    };
+
+    if !state.db.user_has_project_access(user_id, project_id).await.unwrap_or(false) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    // Get user's rift for this project
+    let rift = match state.db.get_user_rift(project_id, user_id).await {
+        Ok(Some(rift)) => rift,
+        Ok(None) => {
+            // No rift yet, return empty history
+            return Ok(Json(ApiResponse::success(vec![])));
+        }
+        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+    };
+
+    // Get limit from query parameters
+    let limit = query.get("limit")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(20);
+
+    // Get checkpoints from storage
+    match state.sync.storage.list_checkpoints(rift.id).await {
+        Ok(mut checkpoints) => {
+            // Sort by timestamp (newest first) and limit
+            checkpoints.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+            checkpoints.truncate(limit);
+            
+            info!("Found {} checkpoints for rift: {}", checkpoints.len(), rift.id);
+            Ok(Json(ApiResponse::success(checkpoints)))
+        }
+        Err(e) => {
+            error!("Failed to get checkpoints: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+/// Restore to a specific checkpoint
+async fn restore_checkpoint(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, checkpoint_id)): Path<(ProjectId, uuid::Uuid)>,
+) -> Result<Json<ApiResponse<RestoreData>>, StatusCode> {
+    // Extract user ID from JWT token
+    let auth_header = headers.get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    if !auth_header.starts_with("Bearer ") {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    let token = auth_header.trim_start_matches("Bearer ");
+    let claims = match state.auth.verify_token(token) {
+        Ok(claims) => claims,
+        Err(_) => return Err(StatusCode::UNAUTHORIZED),
+    };
+    
+    let user_id = uuid::Uuid::parse_str(&claims.sub)
+        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+
+    info!("Restore request for project: {} checkpoint: {} by user: {}", project_id, checkpoint_id, user_id);
+
+    // Verify project exists and user has access
+    let _project = match state.db.get_project(project_id).await {
+        Ok(Some(project)) => project,
+        Ok(None) => return Err(StatusCode::NOT_FOUND),
+        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+    };
+
+    if !state.db.user_has_project_access(user_id, project_id).await.unwrap_or(false) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    // Load the checkpoint
+    let checkpoint = match state.sync.storage.load_checkpoint(checkpoint_id).await {
+        Ok(Some(checkpoint)) => checkpoint,
+        Ok(None) => return Err(StatusCode::NOT_FOUND),
+        Err(e) => {
+            error!("Failed to load checkpoint: {}", e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    // Get all files at this checkpoint
+    let files = match state.sync.storage.get_checkpoint_files(checkpoint_id).await {
+        Ok(files) => files,
+        Err(e) => {
+            error!("Failed to get checkpoint files: {}", e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    let restore_data = RestoreData {
+        checkpoint,
+        files,
+    };
+
+    info!("Restore data prepared with {} files", restore_data.files.len());
+    Ok(Json(ApiResponse::success(restore_data)))
+}
+
+/// Delete a project and all associated data
+async fn delete_project(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<ProjectId>,
+) -> Result<Json<ApiResponse<String>>, StatusCode> {
+    // Extract user ID from JWT token
+    let auth_header = headers.get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    if !auth_header.starts_with("Bearer ") {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    let token = auth_header.trim_start_matches("Bearer ");
+    let claims = match state.auth.verify_token(token) {
+        Ok(claims) => claims,
+        Err(_) => return Err(StatusCode::UNAUTHORIZED),
+    };
+    
+    let user_id = uuid::Uuid::parse_str(&claims.sub)
+        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+
+    info!("Delete request for project: {} by user: {}", project_id, user_id);
+
+    // Verify project exists and user has access
+    let project = match state.db.get_project(project_id).await {
+        Ok(Some(project)) => project,
+        Ok(None) => return Err(StatusCode::NOT_FOUND),
+        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+    };
+
+    if !state.db.user_has_project_access(user_id, project_id).await.unwrap_or(false) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    // TODO: Check if user has admin/owner permissions for the project
+    // For now, any member can delete (this should be restricted in production)
+
+    // Delete the project and all associated data
+    match state.db.delete_project(project_id).await {
+        Ok(()) => {
+            info!("Successfully deleted project: {} ({})", project.name, project_id);
+            
+            // TODO: Also clean up storage engine data for this project's rifts
+            // This would involve:
+            // 1. Finding all rifts for this project
+            // 2. Cleaning up checkpoint data and content files
+            // 3. Cleaning up live state
+            
+            Ok(Json(ApiResponse::success(format!(
+                "Project '{}' and all associated data have been permanently deleted",
+                project.name
+            ))))
+        }
+        Err(e) => {
+            error!("Failed to delete project {}: {}", project_id, e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+struct RestoreData {
+    checkpoint: mothership_common::Checkpoint,
+    files: std::collections::HashMap<std::path::PathBuf, String>,
 }
 
 /// WebSocket handler for real-time sync

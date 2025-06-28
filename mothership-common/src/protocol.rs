@@ -121,6 +121,15 @@ pub enum SyncMessage {
         participants: Vec<String>,
         last_checkpoint: Option<CheckpointId>,
     },
+
+    /// Server broadcasts file updates with actual content (for real-time sync)
+    FileUpdate {
+        rift_id: RiftId,
+        path: PathBuf,
+        content: String,
+        author: UserId,
+        timestamp: DateTime<Utc>,
+    },
 }
 
 /// File data for synchronization
