@@ -79,6 +79,19 @@ impl StorageEngine {
         Ok(live_state.get(&rift_id).cloned().unwrap_or_default())
     }
 
+    /// PERFORMANCE FIX: Get content for a specific file in a rift
+    pub async fn get_file_content(&self, rift_id: RiftId, path: &PathBuf) -> Result<String> {
+        let live_state = self.live_state.read().await;
+        if let Some(rift_files) = live_state.get(&rift_id) {
+            if let Some(content) = rift_files.get(path) {
+                return Ok(content.clone());
+            }
+        }
+        
+        // File not found in live state
+        Err(anyhow::anyhow!("File not found in rift {}: {}", rift_id, path.display()))
+    }
+
     /// Create a new checkpoint from current live state
     pub async fn create_checkpoint(
         &self,

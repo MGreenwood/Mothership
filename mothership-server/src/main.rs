@@ -15,6 +15,7 @@ use tower_http::cors::CorsLayer;
 use tracing::{error, info, warn};
 
 mod auth;
+mod cli_distribution;
 mod database;
 mod handlers;
 mod oauth;
@@ -146,6 +147,9 @@ async fn main() -> anyhow::Result<()> {
         
         // WebSocket for real-time sync
         .route("/sync/:rift_id", get(websocket_handler))
+        
+        // CLI distribution endpoints
+        .nest("/", cli_distribution::routes())
         
         // CORS for web interface
         .layer(CorsLayer::permissive())

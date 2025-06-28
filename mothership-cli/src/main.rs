@@ -9,6 +9,7 @@ mod gateway;
 mod beam;
 mod sync;
 mod connections;
+mod update;
 
 use config::ConfigManager;
 
@@ -103,6 +104,11 @@ enum Commands {
     },
     /// Logout (clear stored credentials)
     Logout,
+    /// Update the CLI to the latest version
+    Update {
+        #[command(flatten)]
+        args: update::UpdateArgs,
+    },
 }
 
 #[derive(Subcommand)]
@@ -324,6 +330,9 @@ async fn main() -> Result<()> {
         Commands::Logout => {
             println!("{}", "🔓 Logging out...".cyan().bold());
             auth::handle_logout(&config_manager).await?;
+        }
+        Commands::Update { args } => {
+            update::handle_update(args).await?;
         }
     }
 

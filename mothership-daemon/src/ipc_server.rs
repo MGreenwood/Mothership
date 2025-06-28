@@ -25,6 +25,8 @@ pub struct IpcServer {
     tracked_projects: Arc<RwLock<HashMap<Uuid, TrackedProject>>>,
     /// Channel for sending file change events
     file_change_sender: mpsc::UnboundedSender<FileChangeEvent>,
+    /// Active file watchers (CRITICAL: Must be kept alive!)
+    file_watchers: Arc<RwLock<HashMap<Uuid, crate::file_watcher::FileWatcher>>>,
 }
 
 /// Request to add a project for tracking
@@ -80,6 +82,7 @@ impl IpcServer {
             status,
             tracked_projects,
             file_change_sender,
+            file_watchers: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -140,6 +143,13 @@ async fn add_project(
         let error_msg = format!("Project path does not exist: {}", req.project_path.display());
         return Ok(Json(ApiResponse::error(error_msg)));
     }
+    
+    // Validate .mothership directory exists (critical for file watcher)
+    let mothership_dir = req.project_path.join(".mothership");
+    if !mothership_dir.exists() {
+        let error_msg = format!("No .mothership directory found at: {}", req.project_path.display());
+        return Ok(Json(ApiResponse::error(error_msg)));
+    }
 
     // Create tracked project
     let tracked_project = TrackedProject {
@@ -161,11 +171,28 @@ async fn add_project(
         status.projects_tracked = server.tracked_projects.read().await.len();
     }
 
-    // TODO: Start file watcher for this project
-    // This would create a FileWatcher instance and start monitoring the directory
-    // For now, we'll just log that the project is tracked
+    // CRITICAL FIX: Actually start file watcher for this project!
+    let file_watcher = match crate::file_watcher::FileWatcher::new(
+        req.project_path.clone(),
+        req.project_id,
+        server.file_change_sender.clone(),
+    ).await {
+        Ok(watcher) => watcher,
+        Err(e) => {
+            let error_msg = format!("Failed to start file watcher for '{}': {}", req.project_name, e);
+            return Ok(Json(ApiResponse::error(error_msg)));
+        }
+    };
+    
+    // CRITICAL: Store the file watcher to keep it alive!
+    {
+        let mut watchers = server.file_watchers.write().await;
+        watchers.insert(req.project_id, file_watcher);
+    }
+    
+    info!("🔍 File watcher started and stored for project '{}'", req.project_name);
 
-    info!("✅ Project '{}' added for tracking", req.project_name);
+    info!("✅ Project '{}' added for tracking with active file watcher", req.project_name);
     Ok(Json(ApiResponse::success(format!(
         "Project '{}' successfully added for tracking",
         req.project_name
@@ -194,7 +221,13 @@ async fn remove_project(
         projects_count
     };
 
-    // TODO: Stop file watcher for this project
+    // CRITICAL: Remove file watcher to stop watching
+    {
+        let mut watchers = server.file_watchers.write().await;
+        if watchers.remove(&project_id).is_some() {
+            info!("🔍 Stopped file watcher for project '{}'", project_name);
+        }
+    }
 
     info!("✅ Project '{}' removed from tracking", project_name);
     

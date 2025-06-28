@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 pub mod auth;
 pub mod protocol;
+pub mod diff; // PERFORMANCE FIX: Diff utilities for efficient sync
 
 // Core ID types
 pub type UserId = Uuid;

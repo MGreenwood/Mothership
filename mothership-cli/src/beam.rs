@@ -202,6 +202,7 @@ struct ProjectMetadata {
     project_name: String,
     created_at: String,
     mothership_url: String,
+    rift_id: Option<String>, // CRITICAL FIX: Store rift_id for daemon WebSocket connection
 }
 
 /// Perform initial sync by connecting to WebSocket and requesting all files
@@ -257,7 +258,7 @@ async fn perform_initial_sync(
                             }
                             
                             // Create .mothership metadata
-                            create_project_metadata(project_path, project_id, project_name, mothership_url)?;
+                            create_project_metadata(project_path, project_id, project_name, mothership_url, Some(rift_id))?;
                             
                             print_success("Project files synchronized successfully!");
                             return Ok(());
@@ -280,7 +281,7 @@ async fn perform_initial_sync(
                             }
                             
                             // Create .mothership metadata
-                            create_project_metadata(project_path, project_id, project_name, mothership_url)?;
+                            create_project_metadata(project_path, project_id, project_name, mothership_url, Some(rift_id))?;
                             
                             print_success("Project files synchronized successfully!");
                             return Ok(());
@@ -315,6 +316,7 @@ fn create_project_metadata(
     project_id: &ProjectId,
     project_name: &str,
     mothership_url: &str,
+    rift_id: Option<&uuid::Uuid>,
 ) -> Result<()> {
     let mothership_dir = project_path.join(".mothership");
     
@@ -329,6 +331,7 @@ fn create_project_metadata(
         project_name: project_name.to_string(),
         created_at: chrono::Utc::now().to_rfc3339(),
         mothership_url: mothership_url.to_string(),
+        rift_id: rift_id.map(|id| id.to_string()), // CRITICAL FIX: Store rift_id
     };
     
     let metadata_file = mothership_dir.join("project.json");
@@ -514,7 +517,7 @@ pub async fn handle_beam(
     };
 
     // Create project metadata regardless of sync requirements
-    create_project_metadata(&project_path, &project_id, &project_name, &config.mothership_url)?;
+    create_project_metadata(&project_path, &project_id, &project_name, &config.mothership_url, Some(&beam_data.rift_id))?;
     
     // Note: Initial sync will be handled by the background daemon
     if beam_data.initial_sync_required {

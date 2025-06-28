@@ -11,4 +11,5 @@ chrono = { workspace = true }
 anyhow = { workspace = true }
 dirs = { workspace = true }
 thiserror = { workspace = true }
-sqlx = { workspace = true } 
+sqlx = { workspace = true }
+flate2 = "1.0" # PERFORMANCE FIX: Compression for diff batching 

@@ -5,6 +5,9 @@ use std::sync::Arc;
 use tokio::sync::{RwLock, mpsc};
 use tracing::{error, info, warn};
 use uuid::Uuid;
+use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use futures_util::{SinkExt, StreamExt};
+use mothership_common::protocol::SyncMessage;
 
 use crate::file_watcher::{FileWatcher, FileChangeEvent};
 use crate::ipc_server::IpcServer;
@@ -184,8 +187,8 @@ impl MothershipDaemon {
                 .unwrap_or_else(|| event.project_id.to_string())
         };
         
-        info!("📝 File changed: {} in project '{}'", 
-            event.file_path.display(), project_name);
+        info!("📝 File {:?}: {} ({} bytes) in project '{}'", 
+            event.change_type, event.file_path.display(), event.file_size, project_name);
         
         // Update sync status
         {
@@ -194,11 +197,21 @@ impl MothershipDaemon {
             status_guard.last_sync = Some(chrono::Utc::now());
         }
         
-        // TODO: Send file change to Mothership server via WebSocket
-        // This will be implemented when we integrate with the server sync logic
-        
-        // Simulate sync processing time
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // CRITICAL FIX: Send file change to Mothership server via WebSocket
+        let sync_result = send_file_change_to_server(&event, status).await;
+        match sync_result {
+            Ok(()) => {
+                info!("✅ Successfully synced file change to server");
+            }
+            Err(e) => {
+                error!("❌ Failed to sync file change to server: {}", e);
+                // Update server connection status
+                {
+                    let mut status_guard = status.write().await;
+                    status_guard.server_connected = false;
+                }
+            }
+        }
         
         // Update sync status
         {
@@ -331,5 +344,83 @@ impl MothershipDaemon {
     pub async fn is_project_tracked(&self, project_id: Uuid) -> bool {
         let projects = self.tracked_projects.read().await;
         projects.contains_key(&project_id)
+    }
+}
+
+/// Project metadata structure (must match what's stored by CLI)
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct ProjectMetadata {
+    project_id: String,
+    project_name: String,
+    created_at: String,
+    mothership_url: String,
+    rift_id: Option<String>, // CRITICAL FIX: Read rift_id for WebSocket connection
+}
+
+/// CRITICAL FIX: Send file change to Mothership server via WebSocket
+async fn send_file_change_to_server(
+    event: &FileChangeEvent,
+    status: &Arc<RwLock<DaemonStatus>>,
+) -> Result<()> {
+    // CRITICAL FIX: Read project metadata to get the correct rift_id
+    let project_dir = event.file_path.parent()
+        .and_then(|p| p.ancestors().find(|dir| dir.join(".mothership").exists()))
+        .ok_or_else(|| anyhow::anyhow!("Could not find .mothership directory for project"))?;
+    
+    let metadata_file = project_dir.join(".mothership").join("project.json");
+    let metadata_content = std::fs::read_to_string(&metadata_file)
+        .map_err(|e| anyhow::anyhow!("Failed to read project metadata: {}", e))?;
+    
+    let metadata: ProjectMetadata = serde_json::from_str(&metadata_content)
+        .map_err(|e| anyhow::anyhow!("Failed to parse project metadata: {}", e))?;
+    
+    // Get the correct rift_id (critical for WebSocket connection)
+    let rift_id = if let Some(rift_id_str) = &metadata.rift_id {
+        uuid::Uuid::parse_str(rift_id_str)
+            .map_err(|e| anyhow::anyhow!("Invalid rift_id in metadata: {}", e))?
+    } else {
+        // Fallback to project_id if no rift_id stored (older projects)
+        warn!("No rift_id in project metadata, using project_id as fallback");
+        event.project_id
+    };
+    
+    let ws_url = format!("ws://localhost:7523/sync/{}", rift_id);
+    
+    // Create the sync message
+    let sync_message = SyncMessage::FileChanged {
+        rift_id,
+        path: event.file_path.clone(),
+        content: event.content.clone(),
+        timestamp: event.timestamp,
+    };
+    
+    // Connect via WebSocket and send the message
+    match connect_async(&ws_url).await {
+        Ok((mut ws_stream, _)) => {
+            let message_json = serde_json::to_string(&sync_message)?;
+            let message = Message::Text(message_json);
+            
+            // Send the file change message
+            ws_stream.send(message).await?;
+            
+            // Update server connection status
+            {
+                let mut status_guard = status.write().await;
+                status_guard.server_connected = true;
+            }
+            
+            // Close the connection gracefully
+            ws_stream.close(None).await?;
+            
+            Ok(())
+        }
+        Err(e) => {
+            // Update server connection status
+            {
+                let mut status_guard = status.write().await;
+                status_guard.server_connected = false;
+            }
+            Err(anyhow::anyhow!("Failed to connect to WebSocket: {}", e))
+        }
     }
 } 

@@ -42,6 +42,10 @@ uuid = { version = "1.0", features = ["v4", "serde"] }
 # HTTP client for communicating with Mothership server
 reqwest = { version = "0.11", features = ["json"] }
 
+# WebSocket support for real-time sync
+tokio-tungstenite = "0.20"
+futures-util = "0.3"
+
 # Common types
 mothership-common = { path = "../mothership-common" }
 

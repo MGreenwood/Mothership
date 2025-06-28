@@ -22,12 +22,29 @@ pub enum SyncMessage {
         rift_id: RiftId,
     },
     
-    /// Client reports a file change
+    /// Client reports a file change (DEPRECATED: Use FileDiffChanged for efficiency)
     FileChanged {
         rift_id: RiftId,
         path: PathBuf,
         content: String,
         timestamp: DateTime<Utc>,
+    },
+    
+    /// PERFORMANCE FIX: Client reports file change as diff only
+    FileDiffChanged {
+        rift_id: RiftId,
+        path: PathBuf,
+        diff: FileDiff,
+        file_size: u64,
+        timestamp: DateTime<Utc>,
+    },
+    
+    /// PERFORMANCE FIX: Client reports multiple file changes as diffs (batched)
+    BatchDiffChanges {
+        rift_id: RiftId,
+        changes: Vec<FileDiffChange>,
+        timestamp: DateTime<Utc>,
+        compressed: bool, // Whether the data is compressed
     },
     
     /// Client reports multiple file changes (batch)
@@ -56,6 +73,15 @@ pub enum SyncMessage {
         changes: Vec<FileChange>,
         author: UserId,
         timestamp: DateTime<Utc>,
+    },
+    
+    /// PERFORMANCE FIX: Server broadcasts diff-based updates (much smaller!)
+    RiftDiffUpdate {
+        rift_id: RiftId,
+        diff_changes: Vec<FileDiffChange>,
+        author: UserId,
+        timestamp: DateTime<Utc>,
+        compressed: bool,
     },
     
     /// Server notifies about checkpoint creation
@@ -122,7 +148,7 @@ pub enum SyncMessage {
         last_checkpoint: Option<CheckpointId>,
     },
 
-    /// Server broadcasts file updates with actual content (for real-time sync)
+    /// Server broadcasts file updates with actual content (DEPRECATED: Use RiftDiffUpdate)
     FileUpdate {
         rift_id: RiftId,
         path: PathBuf,
@@ -130,6 +156,81 @@ pub enum SyncMessage {
         author: UserId,
         timestamp: DateTime<Utc>,
     },
+    
+    /// PERFORMANCE FIX: Server broadcasts file diff updates (ultra-efficient!)
+    FileDiffUpdate {
+        rift_id: RiftId,
+        path: PathBuf,
+        diff: FileDiff,
+        author: UserId,
+        timestamp: DateTime<Utc>,
+        file_size_after: u64,
+    },
+}
+
+/// PERFORMANCE FIX: Diff-based file change for minimal network usage
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileDiffChange {
+    pub path: PathBuf,
+    pub diff: FileDiff,
+    pub file_size: u64,
+}
+
+/// PERFORMANCE FIX: Diff representation for minimal data transfer
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum FileDiff {
+    /// Complete replacement (for new files or when diff is larger than content)
+    FullContent(String),
+    
+    /// Line-based diff (most common case for code editing)
+    LineDiff {
+        operations: Vec<DiffOperation>,
+        original_lines: u32,
+        new_lines: u32,
+    },
+    
+    /// Binary diff for efficient small changes
+    BinaryDiff {
+        patches: Vec<BinaryPatch>,
+        original_size: u64,
+        new_size: u64,
+    },
+    
+    /// File deletion
+    Deleted,
+}
+
+/// Line-based diff operation (git-style)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum DiffOperation {
+    /// Keep existing lines unchanged
+    Keep { count: u32 },
+    
+    /// Delete lines from original
+    Delete { count: u32 },
+    
+    /// Insert new lines
+    Insert { lines: Vec<String> },
+    
+    /// Replace lines (delete + insert optimized)
+    Replace { 
+        delete_count: u32, 
+        insert_lines: Vec<String> 
+    },
+}
+
+/// Binary patch for efficient byte-level changes
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BinaryPatch {
+    pub offset: u64,
+    pub operation: BinaryOperation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum BinaryOperation {
+    Insert(Vec<u8>),
+    Delete(u64), // length
+    Replace(Vec<u8>),
 }
 
 /// File data for synchronization
