@@ -1,0 +1,33 @@
+# Mothership Server User Whitelist
+# Copy this file to "whitelist.config" and customize as needed
+# 
+# This file controls which users can access the Mothership server when
+# whitelist_enabled = true in server.config
+#
+# Supported formats:
+# - username           (exact username match)
+# - user@domain.com    (exact email match)
+# - @domain.com        (allow all users from this domain)
+#
+# Lines starting with # are comments and are ignored
+# Empty lines are ignored
+
+# Example usernames (from OAuth providers or CLI authentication)
+alice
+bob
+charlie
+
+# Example specific email addresses
+john@example.com
+jane@mycompany.org
+developer@freelancer.net
+
+# Example domains (all users from these domains are allowed)
+@mycompany.com
+@trusted-partner.org
+@university.edu
+
+# You can mix and match all types:
+# - Individual users: admin, moderator
+# - Specific emails: support@company.com
+# - Entire domains: @company.com 

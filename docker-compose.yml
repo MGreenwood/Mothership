@@ -29,6 +29,7 @@ services:
       dockerfile: Dockerfile.server
     ports:
       - "${MOTHERSHIP_PORT:-7523}:7523"
+      - "${MOTHERSHIP_WEB_PORT:-8080}:8080"
     environment:
       - MOTHERSHIP_PORT=7523
       - RUST_LOG=${RUST_LOG:-info}
@@ -38,8 +39,10 @@ services:
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
       - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID}
       - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}
-      # OAuth callback URLs for Docker
-      - OAUTH_BASE_URL=http://localhost:7523
+      # OAuth callback URLs for production (Cloudflare tunnel)
+      - OAUTH_BASE_URL=https://app.mothershipproject.dev
+      # WebSocket base URL for production (Cloudflare tunnel)
+      - WEBSOCKET_BASE_URL=wss://api.mothershipproject.dev
       # Database configuration
       - DATABASE_URL=postgresql://mothership:${POSTGRES_PASSWORD:-mothership_dev}@postgres:5432/mothership
     env_file:
@@ -79,6 +82,19 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --config /etc/cloudflared/config.yml run
+    volumes:
+      - ./mothership-tunnel.yml:/etc/cloudflared/config.yml:ro
+      - /c/Users/craft/.cloudflared:/etc/cloudflared/credentials:ro
+    depends_on:
+      mothership-server:
+        condition: service_healthy
+    networks:
+      - mothership-network
+    restart: unless-stopped
 
 networks:
   mothership-network:

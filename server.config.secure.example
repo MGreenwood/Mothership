@@ -1,0 +1,59 @@
+# Mothership Server Configuration - Secure Private Deployment
+# Copy this to "server.config" for a secure, private server deployment
+
+[server]
+# Bind to localhost only for security (use reverse proxy for external access)
+host = "127.0.0.1"
+port = 7523
+max_connections = 100
+request_timeout = 30
+debug_logging = false
+
+[features]
+# Enable core features for team collaboration
+chat_enabled = true
+file_uploads_enabled = true
+project_creation_enabled = true
+cli_distribution_enabled = true
+
+# OAuth is REQUIRED for web authentication flow
+oauth_enabled = true
+
+# Real-time collaboration
+websocket_sync_enabled = true
+
+[auth]
+# SECURITY: Enable whitelist to control access
+whitelist_enabled = true
+whitelist_path = "team-whitelist.config"
+
+# Require authentication for all access
+require_auth = true
+
+# Security settings
+token_expiration_days = 7  # Shorter expiration for security
+max_login_attempts = 3     # Stricter login limits
+ban_duration_minutes = 30  # Longer ban for failed attempts
+
+[collaboration]
+# Smaller team settings
+max_users_per_rift = 10
+max_chat_message_length = 500
+store_chat_history = true
+max_chat_history = 500
+presence_enabled = true
+presence_update_interval = 60
+
+[cli_distribution]
+# SECURITY: Require authentication for downloads
+require_auth_for_downloads = true
+binaries_path = "cli-binaries"
+max_downloads_per_hour = 50  # Rate limiting
+track_downloads = true
+
+# Usage Instructions:
+# 1. Create team-whitelist.config with authorized users
+# 2. Set OAuth environment variables (GOOGLE_CLIENT_ID, etc.)
+# 3. Set strong JWT_SECRET environment variable  
+# 4. Users visit http://server:7523/ to authenticate and download CLI
+# 5. Use reverse proxy (nginx/caddy) for HTTPS and external access 

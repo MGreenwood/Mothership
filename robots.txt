@@ -1,0 +1,15 @@
+User-agent: *
+Allow: /
+Allow: /login
+Allow: /download
+Disallow: /auth/
+Disallow: /api/
+Disallow: /admin/
+Disallow: /sync/
+Disallow: *.json
+
+# Sitemap (optional - update when you add one)
+# Sitemap: https://app.mothershipproject.dev/sitemap.xml
+
+# Crawl delay (be nice to the server)
+Crawl-delay: 1 

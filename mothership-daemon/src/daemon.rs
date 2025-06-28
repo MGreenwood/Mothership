@@ -357,7 +357,48 @@ struct ProjectMetadata {
     rift_id: Option<String>, // CRITICAL FIX: Read rift_id for WebSocket connection
 }
 
-/// CRITICAL FIX: Send file change to Mothership server via WebSocket
+/// Load stored authentication token for WebSocket connection
+fn load_auth_token() -> Option<String> {
+    use serde::{Deserialize, Serialize};
+    
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct StoredCredentials {
+        access_token: String,
+        user_email: Option<String>,
+        user_name: Option<String>,
+        stored_at: String,
+    }
+    
+    // Try to load OAuth credentials first
+    if let Some(config_dir) = dirs::config_dir() {
+        let credentials_path = config_dir.join("mothership").join("credentials.json");
+        if credentials_path.exists() {
+            if let Ok(credentials_content) = std::fs::read_to_string(&credentials_path) {
+                if let Ok(credentials) = serde_json::from_str::<StoredCredentials>(&credentials_content) {
+                    return Some(credentials.access_token);
+                }
+            }
+        }
+    }
+    
+    // Fallback to old config format
+    if let Some(config_dir) = dirs::config_dir() {
+        let config_path = config_dir.join("mothership").join("config.json");
+        if config_path.exists() {
+            if let Ok(config_content) = std::fs::read_to_string(&config_path) {
+                if let Ok(config_json) = serde_json::from_str::<serde_json::Value>(&config_content) {
+                    if let Some(token) = config_json.get("auth_token").and_then(|t| t.as_str()) {
+                        return Some(token.to_string());
+                    }
+                }
+            }
+        }
+    }
+    
+    None
+}
+
+/// CRITICAL FIX: Send file change to Mothership server via WebSocket WITH AUTHENTICATION
 async fn send_file_change_to_server(
     event: &FileChangeEvent,
     status: &Arc<RwLock<DaemonStatus>>,
@@ -384,7 +425,32 @@ async fn send_file_change_to_server(
         event.project_id
     };
     
-    let ws_url = format!("ws://localhost:7523/sync/{}", rift_id);
+    // AUTHENTICATION FIX: Load stored auth token
+    let auth_token = load_auth_token()
+        .ok_or_else(|| anyhow::anyhow!("No authentication token found. Please run 'mothership auth' first."))?;
+    
+    // AUTHENTICATION FIX: Include token in WebSocket URL as query parameter
+    // Use the server URL from project metadata, convert HTTP(S) to WS(S)
+    let server_url = &metadata.mothership_url;
+    let ws_base = if server_url.starts_with("https://") {
+        server_url.replace("https://", "wss://")
+    } else if server_url.starts_with("http://") {
+        server_url.replace("http://", "ws://")
+    } else {
+        format!("ws://{}", server_url)
+    };
+    
+    // For dual-port setups, try API port first, then fallback to main port
+    let ws_url = if ws_base.contains("app.") {
+        // Production domain: use API subdomain on port 7523
+        let api_url = ws_base.replace("app.", "api.").replace(":8080", ":7523");
+        format!("{}/sync/{}?token={}", api_url, rift_id, urlencoding::encode(&auth_token))
+    } else {
+        // Localhost or single-domain setup
+        format!("{}/sync/{}?token={}", ws_base, rift_id, urlencoding::encode(&auth_token))
+    };
+    
+    info!("🔌 Connecting to WebSocket: {} (rift: {})", ws_url.replace(&urlencoding::encode(&auth_token), "***TOKEN***"), rift_id);
     
     // Create the sync message
     let sync_message = SyncMessage::FileChanged {
@@ -412,6 +478,7 @@ async fn send_file_change_to_server(
             // Close the connection gracefully
             ws_stream.close(None).await?;
             
+            info!("🔐 Successfully authenticated and synced file change to server");
             Ok(())
         }
         Err(e) => {
@@ -420,6 +487,7 @@ async fn send_file_change_to_server(
                 let mut status_guard = status.write().await;
                 status_guard.server_connected = false;
             }
+            error!("❌ WebSocket connection failed (possibly auth issue): {}", e);
             Err(anyhow::anyhow!("Failed to connect to WebSocket: {}", e))
         }
     }

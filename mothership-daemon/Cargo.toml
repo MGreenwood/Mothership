@@ -73,6 +73,9 @@ winreg = "0.52"
 # Directory monitoring
 dirs = "5.0"
 
+# URL encoding for WebSocket authentication
+urlencoding = "2.1"
+
 [features]
 default = []
 service = []  # Enable Windows service mode 

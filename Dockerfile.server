@@ -14,7 +14,15 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 COPY --from=builder /app/target/release/mothership-server /app/mothership-server
 
+# Copy configuration files
+COPY server.config /app/server.config
+
+# Copy static content files (robots.txt, icon.png, etc.)
+RUN mkdir -p /app/content
+COPY icon.png /app/content/icon.png
+COPY robots.txt /app/content/robots.txt
+
 # OAuth success page is served from inline template in Rust code
 
-EXPOSE 7523
+EXPOSE 7523 8080
 CMD ["./mothership-server"] 

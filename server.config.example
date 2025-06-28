@@ -1,0 +1,91 @@
+# Mothership Server Configuration
+# Copy this file to "server.config" and customize as needed
+
+[server]
+# Server bind address (use "127.0.0.1" for local only, "0.0.0.0" for network access)
+host = "0.0.0.0"
+
+# Server port
+port = 7523
+
+# Web UI port (optional - if set, runs web interface on separate port)
+# web_port = 8080
+
+# Maximum number of concurrent connections
+max_connections = 1000
+
+# Request timeout in seconds
+request_timeout = 30
+
+# Enable detailed debug logging
+debug_logging = false
+
+[features]
+# Enable/disable real-time chat in rifts
+chat_enabled = true
+
+# Enable/disable file sharing via uploads
+file_uploads_enabled = true
+
+# Enable/disable project creation by users
+project_creation_enabled = true
+
+# Enable/disable CLI distribution endpoints
+cli_distribution_enabled = true
+
+# Enable/disable OAuth authentication (Google/GitHub login)
+oauth_enabled = true
+
+# Enable/disable WebSocket real-time sync
+websocket_sync_enabled = true
+
+[auth]
+# Enable user whitelist (if true, only whitelisted users can access)
+whitelist_enabled = false
+
+# Path to whitelist file (relative to server.config)
+whitelist_path = "whitelist.config"
+
+# Require authentication for all endpoints
+require_auth = true
+
+# JWT token expiration time in days
+token_expiration_days = 30
+
+# Maximum failed login attempts before temporary ban
+max_login_attempts = 5
+
+# Temporary ban duration in minutes
+ban_duration_minutes = 15
+
+[collaboration]
+# Maximum number of users per rift
+max_users_per_rift = 50
+
+# Maximum message length for chat
+max_chat_message_length = 1000
+
+# Enable message history storage
+store_chat_history = true
+
+# Maximum number of chat messages to store per rift
+max_chat_history = 1000
+
+# Enable presence indicators (who's online)
+presence_enabled = true
+
+# Presence update interval in seconds
+presence_update_interval = 30
+
+[cli_distribution]
+# Directory containing CLI binaries (relative to server)
+binaries_path = "cli-binaries"
+
+# Require authentication for binary downloads
+require_auth_for_downloads = true
+
+# Maximum download rate per user (downloads per hour)
+max_downloads_per_hour = 100
+
+# Enable download statistics/analytics
+track_downloads = true 

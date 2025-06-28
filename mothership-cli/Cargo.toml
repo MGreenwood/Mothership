@@ -44,6 +44,9 @@ urlencoding = "2.1"
 # Terminal/UI
 colored = "2.1"
 
+# Find executables in PATH
+which = "4.4"
+
 # System info
 libc = "0.2"
 hostname = "0.3"

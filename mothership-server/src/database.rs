@@ -33,7 +33,13 @@ impl Database {
             .execute(&self.pool).await?;
             
         // Create user_role enum type (ignore error if it already exists)
-        let _ = sqlx::query("CREATE TYPE user_role AS ENUM ('user', 'admin', 'super_admin')")
+        let _ = sqlx::query(r#"
+            DO $$ BEGIN
+                CREATE TYPE user_role AS ENUM ('user', 'admin', 'super_admin');
+            EXCEPTION
+                WHEN duplicate_object THEN null;
+            END $$;
+        "#)
             .execute(&self.pool).await;
             
         // Create users table

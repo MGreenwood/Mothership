@@ -16,13 +16,16 @@ use tracing::{error, info, warn};
 
 mod auth;
 mod cli_distribution;
+mod config;
 mod database;
 mod handlers;
 mod oauth;
 mod sync;
 mod storage;
+mod web_ui;
 
 use auth::AuthService;
+use config::{ServerConfig, UserWhitelist};
 use database::Database;
 use sync::SyncState;
 use oauth::OAuthService;
@@ -35,6 +38,8 @@ pub struct AppState {
     pub auth: AuthService,
     pub oauth: OAuthService,
     pub sync: SyncState,
+    pub config: ServerConfig,
+    pub whitelist: Option<UserWhitelist>,
 }
 
 #[tokio::main]
@@ -43,23 +48,47 @@ async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok(); // Current directory (for Docker)
     dotenvy::from_filename("../.env").ok(); // Parent directory (for local development)
     
+    // Load server configuration
+    let config = ServerConfig::load_from_file("server.config")?;
+    info!("✅ Server configuration loaded");
+    info!("🔧 Config: host={}, port={}, web_port={:?}", 
+        config.server.host, config.server.port, config.server.web_port);
+    
+    // Load user whitelist if enabled
+    let whitelist = config.load_whitelist()?;
+    if config.auth.whitelist_enabled {
+        if whitelist.is_some() {
+            info!("✅ User whitelist loaded and active");
+        } else {
+            warn!("⚠️ Whitelist enabled but no valid whitelist file found");
+        }
+    }
+    
     // Debug: Check if OAuth environment variables are loaded
-    println!("🔍 Environment Check - GOOGLE_CLIENT_ID: {}", 
-        std::env::var("GOOGLE_CLIENT_ID").map(|s| format!("{}...", &s[..10.min(s.len())])).unwrap_or_else(|_| "NOT SET".to_string()));
-    println!("🔍 Environment Check - GOOGLE_CLIENT_SECRET: {}", 
-        std::env::var("GOOGLE_CLIENT_SECRET").map(|s| format!("{}...", &s[..10.min(s.len())])).unwrap_or_else(|_| "NOT SET".to_string()));
+    if config.features.oauth_enabled {
+        println!("🔍 Environment Check - GOOGLE_CLIENT_ID: {}", 
+            std::env::var("GOOGLE_CLIENT_ID").map(|s| format!("{}...", &s[..10.min(s.len())])).unwrap_or_else(|_| "NOT SET".to_string()));
+        println!("🔍 Environment Check - GOOGLE_CLIENT_SECRET: {}", 
+            std::env::var("GOOGLE_CLIENT_SECRET").map(|s| format!("{}...", &s[..10.min(s.len())])).unwrap_or_else(|_| "NOT SET".to_string()));
+    }
 
-    // Initialize tracing
-    tracing_subscriber::fmt()
+    // Initialize tracing with config debug level
+    let subscriber = tracing_subscriber::fmt()
         .with_target(false)
-        .compact()
-        .init();
+        .compact();
+    
+    if config.server.debug_logging {
+        subscriber.with_max_level(tracing::Level::DEBUG).init();
+        info!("🔍 Debug logging enabled");
+    } else {
+        subscriber.with_max_level(tracing::Level::INFO).init();
+    }
 
-    // Get configuration from environment
+    // Use port from config (can be overridden by environment)
     let port = std::env::var("MOTHERSHIP_PORT")
-        .unwrap_or_else(|_| "7523".to_string())
-        .parse::<u16>()
-        .unwrap_or(7523);
+        .ok()
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap_or(config.server.port);
 
     let jwt_secret = std::env::var("JWT_SECRET")
         .unwrap_or_else(|_| {
@@ -87,12 +116,17 @@ async fn main() -> anyhow::Result<()> {
     // Initialize auth service
     let auth = AuthService::new(jwt_secret);
     
-    // Initialize OAuth service
-    let oauth = OAuthService::new().unwrap_or_else(|e| {
-        warn!("OAuth service initialization failed: {}. OAuth login will not be available.", e);
-        // Return a minimal OAuth service that will fail gracefully
+    // Initialize OAuth service if enabled
+    let oauth = if config.features.oauth_enabled {
+        OAuthService::new().unwrap_or_else(|e| {
+            warn!("OAuth service initialization failed: {}. OAuth login will not be available.", e);
+            // Return a minimal OAuth service that will fail gracefully
+            OAuthService::new().unwrap_or_else(|_| panic!("Failed to create OAuth service"))
+        })
+    } else {
+        // Create a dummy OAuth service when disabled
         OAuthService::new().unwrap_or_else(|_| panic!("Failed to create OAuth service"))
-    });
+    };
     
     // Initialize sync manager
     // Initialize storage engine
@@ -104,30 +138,23 @@ async fn main() -> anyhow::Result<()> {
     let sync = SyncState::new(db.clone(), storage.clone());
     info!("✅ Sync state initialized");
 
-    let state = AppState { db, auth, oauth, sync };
+    let state = AppState { db, auth, oauth, sync, config: config.clone(), whitelist };
 
-    // Build the router
-    let app = Router::new()
-        // Health check
+    // Build the router with conditional features
+    let mut app = Router::new()
+        // Health check (always available)
         .route("/health", get(health_check))
-        // Server capabilities
+        // Server capabilities (always available)
         .route("/capabilities", get(server_capabilities))
         
-        // Authentication endpoints
+        // Authentication endpoints (always available if auth required)
         .route("/auth/start", post(auth_start))
         .route("/auth/token", post(auth_token))
         .route("/auth/verify", post(auth_verify))
         .route("/auth/check", get(auth_check))
         .route("/auth/authorize-device", post(auth_authorize_device))
         
-        // OAuth endpoints
-        .route("/auth/oauth/start", post(oauth_start))
-        .route("/auth/callback/google", get(oauth_callback_google))
-        .route("/auth/callback/github", get(oauth_callback_github))
-        .route("/auth/success", get(oauth_success_page))
-        .route("/auth/error", get(oauth_error_page))
-        
-        // Admin endpoints
+        // Admin endpoints (always available)
         .route("/admin/create", post(create_admin_user))
         
         // Gateway (project discovery)
@@ -143,21 +170,91 @@ async fn main() -> anyhow::Result<()> {
         .route("/projects/:id/checkpoint", post(create_checkpoint))
         .route("/projects/:id/history", get(get_project_history))
         .route("/projects/:id/restore/:checkpoint_id", post(restore_checkpoint))
-        .route("/projects/:id", delete(delete_project))
+        .route("/projects/:id", delete(delete_project));
+
+    // Add OAuth endpoints only if enabled
+    if config.features.oauth_enabled {
+        info!("🔐 OAuth endpoints enabled");
+        app = app
+            .route("/auth/oauth/start", post(oauth_start))
+            .route("/auth/oauth/test", get(oauth_test))
+            .route("/auth/callback/google", get(oauth_callback_google))
+            .route("/auth/callback/github", get(oauth_callback_github))
+            .route("/auth/success", get(oauth_success_page))
+            .route("/auth/error", get(oauth_error_page));
+    }
+
+    // Add WebSocket sync only if enabled
+    if config.features.websocket_sync_enabled {
+        info!("🔄 WebSocket sync enabled");
+        app = app.route("/sync/:rift_id", get(websocket_handler));
+    }
+
+    // Add CLI distribution endpoints only if enabled
+    if config.features.cli_distribution_enabled {
+        info!("📦 CLI distribution endpoints enabled");
+        app = app.nest("/", cli_distribution::routes());
+    }
+
+    // Handle web UI routing based on configuration
+    if let Some(web_port) = config.server.web_port {
+        // Separate web server on different port
+        info!("🌐 Starting separate web UI server on port {}", web_port);
         
-        // WebSocket for real-time sync
-        .route("/sync/:rift_id", get(websocket_handler))
+        let mut web_app = Router::new()
+            .nest("/", web_ui::routes());
+            
+        // Add OAuth endpoints to web UI server for seamless authentication
+        if config.features.oauth_enabled {
+            info!("🔐 Adding OAuth endpoints to web UI server");
+            web_app = web_app
+                .route("/auth/oauth/start", post(oauth_start))
+                .route("/auth/oauth/test", get(oauth_test))
+                .route("/auth/callback/google", get(oauth_callback_google))
+                .route("/auth/callback/github", get(oauth_callback_github))
+                .route("/auth/success", get(oauth_success_page))
+                .route("/auth/error", get(oauth_error_page));
+        }
         
-        // CLI distribution endpoints
-        .nest("/", cli_distribution::routes())
+        let web_app = web_app
+            .layer(CorsLayer::permissive())
+            .with_state(state.clone());
         
-        // CORS for web interface
+        let web_host = config.server.host.parse::<std::net::IpAddr>()
+            .unwrap_or_else(|_| {
+                warn!("Invalid host address in config: {}, using 0.0.0.0", config.server.host);
+                std::net::IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0))
+            });
+        let web_addr = SocketAddr::new(web_host, web_port);
+        
+        // Start web server in background
+        let web_listener = tokio::net::TcpListener::bind(web_addr).await?;
+        info!("🎨 Web UI available at http://{}:{}", web_host, web_port);
+        
+        tokio::spawn(async move {
+            if let Err(e) = axum::serve(web_listener, web_app).await {
+                error!("Web UI server error: {}", e);
+            }
+        });
+    } else {
+        // Same port - add web UI routes to main app
+        info!("🌐 Web UI integrated on main server port");
+        app = app.nest("/", web_ui::routes());
+    }
+
+    // Apply final layers and state to main app
+    let app = app
         .layer(CorsLayer::permissive())
         .with_state(state);
 
-    // Start the server
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    info!("🌐 Mothership Server listening on {}", addr);
+    // Start the main server
+    let host = config.server.host.parse::<std::net::IpAddr>()
+        .unwrap_or_else(|_| {
+            warn!("Invalid host address in config: {}, using 0.0.0.0", config.server.host);
+            std::net::IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0))
+        });
+    let addr = SocketAddr::new(host, port);
+    info!("🚀 Mothership API Server listening on {} (config: {}:{})", addr, config.server.host, config.server.port);
     
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
@@ -182,24 +279,46 @@ struct ServerCapabilities {
 }
 
 /// Server capabilities endpoint
-async fn server_capabilities() -> Json<ApiResponse<ServerCapabilities>> {
-    let capabilities = ServerCapabilities {
-        auth_methods: vec![
-            "oauth".to_string(),
-            "device_code".to_string(),
-        ],
-        sso_domain: None, // TODO: Support SSO domains
-        oauth_providers: vec![
+async fn server_capabilities(
+    State(state): State<AppState>,
+) -> Json<ApiResponse<ServerCapabilities>> {
+    let mut auth_methods = vec!["device_code".to_string()];
+    let mut oauth_providers = vec![];
+    let mut features = vec![
+        "project_sync".to_string(),
+        "checkpoints".to_string(),
+        "beam".to_string(),
+        "file_storage".to_string(),
+    ];
+
+    // Add OAuth info if enabled
+    if state.config.features.oauth_enabled {
+        auth_methods.push("oauth".to_string());
+        oauth_providers.extend([
             "google".to_string(),
             "github".to_string(),
-        ],
-        features: vec![
-            "project_sync".to_string(),
-            "checkpoints".to_string(),
-            "beam".to_string(),
-            "file_storage".to_string(),
-            "websocket_sync".to_string(),
-        ],
+        ]);
+    }
+
+    // Add features based on config
+    if state.config.features.websocket_sync_enabled {
+        features.push("websocket_sync".to_string());
+    }
+    if state.config.features.chat_enabled {
+        features.push("chat".to_string());
+    }
+    if state.config.features.file_uploads_enabled {
+        features.push("file_uploads".to_string());
+    }
+    if state.config.features.cli_distribution_enabled {
+        features.push("cli_distribution".to_string());
+    }
+
+    let capabilities = ServerCapabilities {
+        auth_methods,
+        sso_domain: None, // TODO: Support SSO domains
+        oauth_providers,
+        features,
         name: "Mothership Server".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
     };
@@ -276,6 +395,14 @@ async fn auth_check(
             
             match state.db.get_user(user_id).await {
                 Ok(Some(user)) => {
+                    // Check whitelist if enabled
+                    if let Some(whitelist) = &state.whitelist {
+                        if !whitelist.is_user_allowed(&user.username, &user.email) {
+                            warn!("User {} ({}) not in whitelist", user.username, user.email);
+                            return Err(StatusCode::FORBIDDEN);
+                        }
+                    }
+
                     let response = AuthCheckResponse {
                         authenticated: true,
                         user_id: user.id,
@@ -331,15 +458,43 @@ async fn auth_check(
     }
 }
 
+/// Test OAuth configuration
+async fn oauth_test(
+    State(state): State<AppState>,
+) -> Json<ApiResponse<serde_json::Value>> {
+    let mut status = serde_json::Map::new();
+    
+    status.insert("oauth_enabled".to_string(), serde_json::Value::Bool(state.config.features.oauth_enabled));
+    
+    // Check environment variables
+    status.insert("google_client_id_set".to_string(), 
+        serde_json::Value::Bool(std::env::var("GOOGLE_CLIENT_ID").is_ok()));
+    status.insert("google_client_secret_set".to_string(), 
+        serde_json::Value::Bool(std::env::var("GOOGLE_CLIENT_SECRET").is_ok()));
+    status.insert("github_client_id_set".to_string(), 
+        serde_json::Value::Bool(std::env::var("GITHUB_CLIENT_ID").is_ok()));
+    status.insert("github_client_secret_set".to_string(), 
+        serde_json::Value::Bool(std::env::var("GITHUB_CLIENT_SECRET").is_ok()));
+    
+    Json(ApiResponse::success(serde_json::Value::Object(status)))
+}
+
 /// Start OAuth flow
 async fn oauth_start(
     State(state): State<AppState>,
     Json(req): Json<OAuthRequest>,
 ) -> Result<Json<ApiResponse<OAuthResponse>>, StatusCode> {
-    info!("OAuth start request for provider: {:?} from machine: {}", req.provider, req.machine_id);
+    info!("🔐 OAuth start request for provider: {:?} from machine: {}", req.provider, req.machine_id);
+    
+    // Check if OAuth is enabled
+    if !state.config.features.oauth_enabled {
+        error!("❌ OAuth request received but OAuth is disabled in config");
+        return Ok(Json(ApiResponse::error("OAuth is disabled".to_string())));
+    }
     
     match state.oauth.get_authorization_url(req.provider).await {
         Ok((auth_url, csrf_state)) => {
+            info!("✅ Generated OAuth URL: {}", auth_url);
             let response = OAuthResponse {
                 auth_url,
                 state: csrf_state,
@@ -348,8 +503,8 @@ async fn oauth_start(
             Ok(Json(ApiResponse::success(response)))
         }
         Err(e) => {
-            error!("OAuth start failed: {}", e);
-            Ok(Json(ApiResponse::error(e.to_string())))
+            error!("❌ OAuth start failed: {}", e);
+            Ok(Json(ApiResponse::error(format!("OAuth initialization failed: {}", e))))
         }
     }
 }
@@ -376,13 +531,24 @@ async fn oauth_callback_handler(
     query: axum::extract::Query<std::collections::HashMap<String, String>>,
     provider: OAuthProvider,
 ) -> Result<axum::response::Redirect, StatusCode> {
+    info!("🔄 OAuth callback received for {:?}", provider);
+    info!("📋 Callback query params: {:?}", query.iter().map(|(k, v)| (k, if k == "code" { "***" } else { v })).collect::<Vec<_>>());
+    
     let code = query.get("code")
-        .ok_or(StatusCode::BAD_REQUEST)?
+        .ok_or_else(|| {
+            error!("❌ OAuth callback missing 'code' parameter");
+            StatusCode::BAD_REQUEST
+        })?
         .clone();
     
     let csrf_state = query.get("state")
-        .ok_or(StatusCode::BAD_REQUEST)?
+        .ok_or_else(|| {
+            error!("❌ OAuth callback missing 'state' parameter");
+            StatusCode::BAD_REQUEST
+        })?
         .clone();
+    
+    info!("✅ OAuth callback has required parameters");
 
     match state.oauth.exchange_code(code, csrf_state).await {
         Ok(profile) => {
@@ -399,11 +565,24 @@ async fn oauth_callback_handler(
             let user = match find_or_create_oauth_user(&state.db, &profile, &provider).await {
                 Ok(user) => {
                     info!("✅ Successfully resolved OAuth user: {} ({})", user.username, user.email);
+                    
+                    // Check whitelist if enabled
+                    if let Some(whitelist) = &state.whitelist {
+                        if !whitelist.is_user_allowed(&user.username, &user.email) {
+                            warn!("OAuth user {} ({}) not in whitelist", user.username, user.email);
+                            let server_url = std::env::var("OAUTH_BASE_URL")
+                                .unwrap_or_else(|_| "http://localhost:7523".to_string());
+                            return Ok(axum::response::Redirect::to(&format!("{}/auth/error?message=Access denied - user not authorized", server_url)));
+                        }
+                    }
+                    
                     user
                 }
                 Err(e) => {
                     error!("❌ Failed to resolve OAuth user: {}", e);
-                    return Ok(axum::response::Redirect::to("http://localhost:7523/auth/error?message=Failed to resolve user account"));
+                    let server_url = std::env::var("OAUTH_BASE_URL")
+                        .unwrap_or_else(|_| "http://localhost:7523".to_string());
+                    return Ok(axum::response::Redirect::to(&format!("{}/auth/error?message=Failed to resolve user account", server_url)));
                 }
             };
 
@@ -421,9 +600,21 @@ async fn oauth_callback_handler(
 
             match state.auth.encode_token(&claims) {
                 Ok(token) => {
-                    // Redirect to success page with token
+                    // Use the same OAuth base URL for consistency
+                    let server_url = std::env::var("OAUTH_BASE_URL")
+                        .unwrap_or_else(|_| {
+                            if let Some(web_port) = state.config.server.web_port {
+                                // Dual port mode - use web UI port
+                                format!("http://localhost:{}", web_port)
+                            } else {
+                                // Single port mode - use main server port
+                                "http://localhost:7523".to_string()
+                            }
+                        });
+                    
                     Ok(axum::response::Redirect::to(&format!(
-                        "http://localhost:7523/auth/success?token={}&user={}&email={}",
+                        "{}/download/authenticated?token={}&user={}&email={}",
+                        server_url,
                         urlencoding::encode(&token),
                         urlencoding::encode(&user.username),
                         urlencoding::encode(&user.email)
@@ -431,14 +622,19 @@ async fn oauth_callback_handler(
                 }
                 Err(e) => {
                     error!("Failed to generate JWT token: {}", e);
-                    Ok(axum::response::Redirect::to("http://localhost:7523/auth/error?message=Failed to generate token"))
+                    let server_url = std::env::var("OAUTH_BASE_URL")
+                        .unwrap_or_else(|_| "http://localhost:7523".to_string());
+                    Ok(axum::response::Redirect::to(&format!("{}/auth/error?message=Failed to generate token", server_url)))
                 }
             }
         }
         Err(e) => {
             error!("OAuth callback failed: {}", e);
+            let server_url = std::env::var("OAUTH_BASE_URL")
+                .unwrap_or_else(|_| "http://localhost:7523".to_string());
             Ok(axum::response::Redirect::to(&format!(
-                "http://localhost:7523/auth/error?message={}",
+                "{}/auth/error?message={}",
+                server_url,
                 urlencoding::encode(&e.to_string())
             )))
         }
@@ -559,6 +755,7 @@ async fn oauth_success_page(
 <html>
 <head>
     <title>Mothership Authentication</title>
+    <link rel="icon" type="image/png" href="/static/icon.png">
     <style>
         body {{
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -622,54 +819,68 @@ async fn oauth_success_page(
         console.log('OAuth Success - User:', user);
         console.log('OAuth Success - Email:', email);
         
-        // Send token to local callback endpoints (GUI and CLI)
-        async function sendTokenToApp() {{
+        // Handle authentication completion
+        async function handleAuthCompletion() {{
             const tokenData = {{
                 token: token,
                 user: user,
                 email: email
             }};
             
-            // Try to send to GUI callback endpoint
-            const callbacks = [
-                {{ url: 'http://localhost:7524/oauth/callback', name: 'GUI (Tauri)', method: 'POST' }}
-            ];
+            // Check if we're in a local development environment
+            const isLocalhost = window.location.hostname === 'localhost' || 
+                               window.location.hostname === '127.0.0.1' ||
+                               window.location.hostname.includes('.local');
             
-            let successCount = 0;
-            
-            for (const callback of callbacks) {{
-                try {{
-                    console.log(`🔍 Trying ${{callback.name}} callback...`);
-                    
-                    let response;
-                    if (callback.method === 'POST') {{
-                        response = await fetch(callback.url, {{
+            if (isLocalhost) {{
+                // Try to send to local GUI callback endpoint for development
+                const callbacks = [
+                    {{ url: 'http://localhost:7524/oauth/callback', name: 'GUI (Tauri)', method: 'POST' }}
+                ];
+                
+                let successCount = 0;
+                
+                for (const callback of callbacks) {{
+                    try {{
+                        console.log(`🔍 Trying ${{callback.name}} callback...`);
+                        
+                        const response = await fetch(callback.url, {{
                             method: 'POST',
                             headers: {{
                                 'Content-Type': 'application/json',
                             }},
                             body: JSON.stringify(tokenData)
                         }});
-                    }} else {{
-                        response = await fetch(callback.url, {{ method: 'GET' }});
+                        
+                        if (response.ok) {{
+                            console.log(`✅ ${{callback.name}} callback successful!`);
+                            successCount++;
+                        }} else {{
+                            console.log(`⚠️ ${{callback.name}} callback failed: HTTP ${{response.status}}`);
+                        }}
+                    }} catch (error) {{
+                        console.log(`⚠️ ${{callback.name}} callback failed: ${{error.message}}`);
                     }}
-                    
-                    if (response.ok) {{
-                        console.log(`✅ ${{callback.name}} callback successful!`);
-                        successCount++;
-                    }} else {{
-                        console.log(`⚠️ ${{callback.name}} callback failed: HTTP ${{response.status}}`);
-                    }}
-                }} catch (error) {{
-                    console.log(`⚠️ ${{callback.name}} callback failed: ${{error.message}}`);
+                }}
+                
+                if (successCount > 0) {{
+                    document.getElementById('status').innerHTML = `✅ Authentication completed! Sent to ${{successCount}} app(s). You can close this window.`;
+                    setTimeout(() => window.close(), 2000);
+                    return;
                 }}
             }}
             
-            if (successCount > 0) {{
-                document.getElementById('status').innerHTML = `✅ Authentication completed! Sent to ${{successCount}} app(s). You can close this window.`;
-                setTimeout(() => window.close(), 2000);
-            }} else {{
-                console.error('All callback attempts failed, showing manual fallback');
+            // For production/web environments, redirect to download page with token
+            if (!isLocalhost) {{
+                console.log('🌐 Production environment detected, redirecting to download page...');
+                const baseUrl = window.location.origin; // Use current domain (https://app.mothershipproject.dev)
+                const downloadUrl = `${{baseUrl}}/download/authenticated?token=${{encodeURIComponent(token)}}&user=${{encodeURIComponent(user)}}&email=${{encodeURIComponent(email)}}`;
+                console.log('🔗 Redirecting to:', downloadUrl);
+                window.location.href = downloadUrl;
+                return;
+            }}
+            
+            // Fallback: show manual token copy (for localhost when GUI callback fails)
                 
                 // Fallback: Show manual copy option  
                 document.getElementById('status').innerHTML = `
@@ -798,8 +1009,8 @@ async fn oauth_success_page(
             }}
         }}
         
-        // Send token immediately
-        sendTokenToApp();
+        // Handle authentication completion immediately
+        handleAuthCompletion();
     </script>
 </body>
 </html>"#, 
@@ -825,7 +1036,10 @@ async fn oauth_error_page(
             format!(r#"
 <!DOCTYPE html>
 <html>
-<head><title>Mothership Authentication Error</title></head>
+<head>
+    <title>Mothership Authentication Error</title>
+    <link rel="icon" type="image/png" href="/static/icon.png">
+</head>
 <body>
     <h1>❌ Authentication Failed</h1>
     <p><strong>Error:</strong> {}</p>
@@ -1601,15 +1815,77 @@ struct RestoreData {
     files: std::collections::HashMap<std::path::PathBuf, String>,
 }
 
-/// WebSocket handler for real-time sync
+/// WebSocket handler for real-time sync WITH AUTHENTICATION
 async fn websocket_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
     Path(_rift_id): Path<String>,
-) -> Response {
-    info!("WebSocket connection request");
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<Response, StatusCode> {
+    info!("🔐 WebSocket connection request with authentication");
     
-    ws.on_upgrade(move |socket| async move {
+    // AUTHENTICATION FIX: Extract and validate token from query parameters
+    let token = params.get("token")
+        .ok_or_else(|| {
+            warn!("❌ WebSocket connection rejected: No authentication token provided");
+            StatusCode::UNAUTHORIZED
+        })?;
+    
+    // Validate the token
+    let claims = state.auth.verify_token(token)
+        .map_err(|e| {
+            warn!("❌ WebSocket connection rejected: Invalid token - {}", e);
+            StatusCode::UNAUTHORIZED
+        })?;
+    
+    let user_id = uuid::Uuid::parse_str(&claims.sub)
+        .map_err(|_| {
+            warn!("❌ WebSocket connection rejected: Invalid user ID in token");
+            StatusCode::UNAUTHORIZED
+        })?;
+    
+    // Verify user exists in database
+    match state.db.get_user(user_id).await {
+        Ok(Some(_user)) => {
+            info!("✅ WebSocket connection authenticated for user: {} ({})", claims.username, user_id);
+        }
+        Ok(None) => {
+            // User doesn't exist - try to recreate from OAuth token
+            if claims.machine_id == "web-oauth" {
+                let email = claims.email.clone().unwrap_or_else(|| format!("{}@oauth.mothership", claims.username));
+                if let Err(e) = state.db.create_user_with_id(user_id, claims.username.clone(), email, mothership_common::UserRole::User).await {
+                    error!("❌ Failed to recreate OAuth user for WebSocket: {}", e);
+                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                }
+                info!("✅ Recreated OAuth user for WebSocket: {} ({})", claims.username, user_id);
+            } else {
+                warn!("❌ WebSocket connection rejected: User not found and not OAuth token");
+                return Err(StatusCode::UNAUTHORIZED);
+            }
+        }
+        Err(e) => {
+            error!("❌ Database error during WebSocket auth: {}", e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    }
+    
+    // Check whitelist if enabled
+    if let Some(whitelist) = &state.whitelist {
+        let user = state.db.get_user(user_id).await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .ok_or(StatusCode::UNAUTHORIZED)?;
+            
+        if !whitelist.is_user_allowed(&user.username, &user.email) {
+            warn!("❌ WebSocket connection rejected: User {} ({}) not in whitelist", user.username, user.email);
+            return Err(StatusCode::FORBIDDEN);
+        }
+    }
+    
+    info!("✅ WebSocket connection authenticated and authorized for user: {}", claims.username);
+    
+    Ok(ws.on_upgrade(move |socket| async move {
+        info!("📡 WebSocket connection established for user: {}", claims.username);
         sync::handle_websocket(socket, state.sync).await;
-    })
+        info!("📡 WebSocket connection closed for user: {}", claims.username);
+    }))
 } 

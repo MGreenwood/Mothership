@@ -70,7 +70,27 @@ pub async fn handle_beam(
     info!("Using rift: {} for user {} in project: {}", rift.id, user_id, project.name);
 
     // Generate WebSocket URL for real-time sync
-    let websocket_url = format!("ws://localhost:7523/sync/{}", rift.id);
+    // Use WEBSOCKET_BASE_URL environment variable for production deployments (e.g., Cloudflare tunnels)
+    // Falls back to server config for local development
+    let websocket_url = if let Ok(base_url) = std::env::var("WEBSOCKET_BASE_URL") {
+        // Production: use environment variable (e.g., "wss://api.mothershipproject.dev")
+        format!("{}/sync/{}", base_url.trim_end_matches('/'), rift.id)
+    } else {
+        // Development: use server config
+        let protocol = if state.config.server.host == "127.0.0.1" || state.config.server.host == "localhost" {
+            "ws"
+        } else {
+            "wss"
+        };
+        
+        let host = if state.config.server.host == "0.0.0.0" {
+            "localhost"
+        } else {
+            &state.config.server.host
+        };
+        
+        format!("{}://{}:{}/sync/{}", protocol, host, state.config.server.port, rift.id)
+    };
 
     // For now, always require initial sync
     let initial_sync_required = true;

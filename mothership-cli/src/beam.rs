@@ -15,9 +15,41 @@ use uuid::Uuid;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
-use crate::{config::ConfigManager, get_http_client, print_api_error, print_info, print_success};
+use crate::{config::ConfigManager, get_http_client, print_api_error, print_info, print_success, connections};
 
 /// Check if daemon is running and start it if needed
+/// Try to start daemon from a specific path
+fn try_start_daemon(daemon_path: &std::path::Path) -> Result<bool> {
+    #[cfg(windows)]
+    {
+        match std::process::Command::new(daemon_path)
+            .creation_flags(0x08000000) // CREATE_NO_WINDOW
+            .spawn()
+        {
+            Ok(_) => Ok(true),
+            Err(e) => {
+                print_info(&format!("Failed to start daemon from {}: {}", daemon_path.display(), e));
+                Ok(false)
+            }
+        }
+    }
+    
+    #[cfg(not(windows))]
+    {
+        match std::process::Command::new(daemon_path)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(_) => Ok(true),
+            Err(e) => {
+                print_info(&format!("Failed to start daemon from {}: {}", daemon_path.display(), e));
+                Ok(false)
+            }
+        }
+    }
+}
+
 async fn ensure_daemon_running() -> Result<()> {
     let daemon_client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(2))
@@ -36,80 +68,54 @@ async fn ensure_daemon_running() -> Result<()> {
     
     print_info("Starting Mothership daemon in background...");
     
-    // Try to start the daemon
-    #[cfg(windows)]
-    {
-        // On Windows, try to use the executable in target/debug or target/release
-        let current_exe = std::env::current_exe()?;
-        let exe_dir = current_exe.parent().ok_or_else(|| anyhow!("Could not find executable directory"))?;
-        
-        let daemon_paths = [
-            exe_dir.join("mothership-daemon.exe"),
-            exe_dir.join("../target/debug/mothership-daemon.exe"),
-            exe_dir.join("../target/release/mothership-daemon.exe"),
-            exe_dir.join("../../target/debug/mothership-daemon.exe"),
-            exe_dir.join("../../target/release/mothership-daemon.exe"),
-        ];
-        
-        let mut daemon_started = false;
-        for daemon_path in &daemon_paths {
-            if daemon_path.exists() {
-                match std::process::Command::new(daemon_path)
-                    .creation_flags(0x08000000) // CREATE_NO_WINDOW
-                    .spawn()
-                {
-                    Ok(_) => {
-                        daemon_started = true;
-                        break;
-                    }
-                    Err(e) => {
-                        print_info(&format!("Failed to start daemon from {}: {}", daemon_path.display(), e));
-                    }
-                }
-            }
-        }
-        
-        if !daemon_started {
-            return Err(anyhow!("Could not find or start mothership-daemon.exe. Please ensure it's built and in your PATH."));
+    // IMPROVED: Try multiple strategies to find and start the daemon
+    let daemon_binary = if cfg!(windows) { "mothership-daemon.exe" } else { "mothership-daemon" };
+    
+    // Strategy 1: Try system PATH first (most reliable for installed systems)
+    if let Ok(path_result) = which::which(daemon_binary) {
+        if try_start_daemon(&path_result)? {
+            print_success(&format!("Started daemon from PATH: {}", path_result.display()));
+        } else {
+            return Err(anyhow!("Found daemon in PATH but failed to start it"));
         }
     }
-    
-    #[cfg(not(windows))]
-    {
-        // On Unix systems
-        let current_exe = std::env::current_exe()?;
-        let exe_dir = current_exe.parent().ok_or_else(|| anyhow!("Could not find executable directory"))?;
-        
-        let daemon_paths = [
-            exe_dir.join("mothership-daemon"),
-            exe_dir.join("../target/debug/mothership-daemon"),
-            exe_dir.join("../target/release/mothership-daemon"),
-            exe_dir.join("../../target/debug/mothership-daemon"),
-            exe_dir.join("../../target/release/mothership-daemon"),
-        ];
-        
-        let mut daemon_started = false;
-        for daemon_path in &daemon_paths {
-            if daemon_path.exists() {
-                match std::process::Command::new(daemon_path)
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn()
-                {
-                    Ok(_) => {
+    // Strategy 2: Try same directory as CLI executable
+    else if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(exe_dir) = current_exe.parent() {
+            let daemon_path = exe_dir.join(daemon_binary);
+            if daemon_path.exists() && try_start_daemon(&daemon_path)? {
+                print_success(&format!("Started daemon from CLI directory: {}", daemon_path.display()));
+            }
+            // Strategy 3: Development/build directories (fallback)
+            else {
+                let build_paths = [
+                    exe_dir.join(format!("../target/debug/{}", daemon_binary)),
+                    exe_dir.join(format!("../target/release/{}", daemon_binary)),
+                    exe_dir.join(format!("../../target/debug/{}", daemon_binary)),
+                    exe_dir.join(format!("../../target/release/{}", daemon_binary)),
+                ];
+                
+                let mut daemon_started = false;
+                for daemon_path in &build_paths {
+                    if daemon_path.exists() && try_start_daemon(daemon_path)? {
+                        print_success(&format!("Started daemon from build directory: {}", daemon_path.display()));
                         daemon_started = true;
                         break;
                     }
-                    Err(e) => {
-                        print_info(&format!("Failed to start daemon from {}: {}", daemon_path.display(), e));
-                    }
+                }
+                
+                if !daemon_started {
+                    return Err(anyhow!(
+                        "Could not find {}. Please ensure it's:\n  1. Installed via 'cargo install --path mothership-daemon'\n  2. Available in your PATH\n  3. In the same directory as the mothership CLI", 
+                        daemon_binary
+                    ));
                 }
             }
+        } else {
+            return Err(anyhow!("Could not determine CLI executable directory"));
         }
-        
-        if !daemon_started {
-            return Err(anyhow!("Could not find or start mothership-daemon. Please ensure it's built and in your PATH."));
-        }
+    } else {
+        return Err(anyhow!("Could not find daemon binary. Please install it via 'cargo install --path mothership-daemon'"));
     }
     
     // Wait for daemon to start up
@@ -356,6 +362,10 @@ pub async fn handle_beam(
         return Ok(());
     }
 
+    // Get the active server connection (instead of hardcoded localhost)
+    let active_server = connections::get_active_server()?
+        .ok_or_else(|| anyhow!("No active server connection. Please run 'mothership connect <server-url>' first."))?;
+
     let config = config_manager.load_config()?;
     let client = get_http_client(&config);
 
@@ -391,7 +401,7 @@ pub async fn handle_beam(
         // It's a UUID - we need to fetch the project details to get the name
         print_info(&format!("Looking up project by ID: {}", uuid));
         
-        let lookup_url = format!("{}/projects/{}", config.mothership_url, uuid);
+        let lookup_url = format!("{}/projects/{}", active_server.url, uuid);
         let response = client.get(&lookup_url).send().await?;
         
         if !response.status().is_success() {
@@ -420,7 +430,7 @@ pub async fn handle_beam(
         // It's a project name - look it up
         print_info(&format!("Looking up project by name: {}", project));
         
-        let lookup_url = format!("{}/projects/by-name/{}", config.mothership_url, urlencoding::encode(&project));
+        let lookup_url = format!("{}/projects/by-name/{}", active_server.url, urlencoding::encode(&project));
         let response = client.get(&lookup_url).send().await?;
         
         if !response.status().is_success() {
@@ -443,7 +453,7 @@ pub async fn handle_beam(
         force_sync,
     };
 
-    let beam_url = format!("{}/projects/{}/beam", config.mothership_url, project_id);
+    let beam_url = format!("{}/projects/{}/beam", active_server.url, project_id);
     let response = client
         .post(&beam_url)
         .json(&beam_request)
@@ -516,8 +526,8 @@ pub async fn handle_beam(
         }
     };
 
-    // Create project metadata regardless of sync requirements
-    create_project_metadata(&project_path, &project_id, &project_name, &config.mothership_url, Some(&beam_data.rift_id))?;
+    // Create project metadata regardless of sync requirements (using active server URL)
+    create_project_metadata(&project_path, &project_id, &project_name, &active_server.url, Some(&beam_data.rift_id))?;
     
     // Note: Initial sync will be handled by the background daemon
     if beam_data.initial_sync_required {
@@ -603,11 +613,15 @@ pub async fn handle_disconnect(
         return Err(anyhow!("Not authenticated. Please run 'mothership auth' first."));
     }
     
+    // Get the active server connection (instead of hardcoded localhost)
+    let active_server = connections::get_active_server()?
+        .ok_or_else(|| anyhow!("No active server connection. Please run 'mothership connect <server-url>' first."))?;
+
     let config = config_manager.load_config()?;
     let client = get_http_client(&config);
     
     // Look up project by name to get ID
-    let lookup_url = format!("{}/projects/by-name/{}", config.mothership_url, urlencoding::encode(&project_name));
+    let lookup_url = format!("{}/projects/by-name/{}", active_server.url, urlencoding::encode(&project_name));
     let response = client.get(&lookup_url).send().await?;
     
     if !response.status().is_success() {

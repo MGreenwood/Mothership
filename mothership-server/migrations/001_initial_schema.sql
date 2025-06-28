@@ -5,7 +5,11 @@
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- User roles enum
-CREATE TYPE user_role AS ENUM ('user', 'admin', 'super_admin');
+DO $$ BEGIN
+    CREATE TYPE user_role AS ENUM ('user', 'admin', 'super_admin');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
 
 -- Users table
 CREATE TABLE users (

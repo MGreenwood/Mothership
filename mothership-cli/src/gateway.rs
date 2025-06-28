@@ -11,7 +11,7 @@ use std::io::{self, Write};
 use serde::{Serialize, Deserialize};
 use walkdir::WalkDir;
 
-use crate::{config::ConfigManager, get_http_client, print_api_error, print_info, print_success};
+use crate::{config::ConfigManager, get_http_client, print_api_error, print_info, print_success, connections};
 
 /// Local status of a project
 #[derive(Debug, Clone)]
@@ -58,6 +58,10 @@ pub async fn handle_gateway(config_manager: &ConfigManager, include_inactive: bo
         return Ok(());
     }
 
+    // Get the active server connection (instead of hardcoded localhost)
+    let active_server = connections::get_active_server()?
+        .ok_or_else(|| anyhow!("No active server connection. Please run 'mothership connect <server-url>' first."))?;
+
     let config = config_manager.load_config()?;
     let client = get_http_client(&config);
 
@@ -65,7 +69,7 @@ pub async fn handle_gateway(config_manager: &ConfigManager, include_inactive: bo
         include_inactive,
     };
 
-    let gateway_url = format!("{}/gateway", config.mothership_url);
+    let gateway_url = format!("{}/gateway", active_server.url);
     let response = client
         .post(&gateway_url)
         .json(&gateway_request)
@@ -169,10 +173,15 @@ pub async fn handle_gateway_create(
         ));
     }
 
+    // Get the active server connection (instead of hardcoded localhost)
+    let active_server = connections::get_active_server()?
+        .ok_or_else(|| anyhow!("No active server connection. Please run 'mothership connect <server-url>' first."))?;
+    
     let config = config_manager.load_config()?;
     let client = get_http_client(&config);
 
     print_info(&format!("Creating gateway '{}' for directory: {}", name, dir.display()));
+    print_info(&format!("Server: {}", active_server.url));
 
     // Create project request
     let create_request = CreateGatewayRequest {
@@ -181,7 +190,7 @@ pub async fn handle_gateway_create(
         project_path: dir.clone(),
     };
 
-    let create_url = format!("{}/gateway/create", config.mothership_url);
+    let create_url = format!("{}/gateway/create", active_server.url);
     let response = client
         .post(&create_url)
         .json(&create_request)
@@ -203,15 +212,15 @@ pub async fn handle_gateway_create(
     print_info(&format!("Project ID: {}", project.id));
     print_info(&format!("Tracking directory: {}", dir.display()));
     
-    // Create .mothership directory with metadata
-    if let Err(e) = create_gateway_metadata(&dir, &project, &config.mothership_url) {
+    // Create .mothership directory with metadata (using active server URL)
+    if let Err(e) = create_gateway_metadata(&dir, &project, &active_server.url) {
         print_api_error(&format!("Warning: Failed to create .mothership directory: {}", e));
         print_info("Gateway was created successfully on the server, but local metadata may be incomplete.");
     }
     
     // Upload initial files to the server
     print_info("Scanning directory for initial files...");
-    if let Err(e) = upload_initial_files(&config, &project, &dir).await {
+    if let Err(e) = upload_initial_files(&config, &project, &dir, &active_server.url).await {
         print_api_error(&format!("Warning: Failed to upload initial files: {}", e));
         print_info("Gateway was created successfully, but you may need to sync files manually.");
     }
@@ -232,11 +241,15 @@ pub async fn handle_delete(
         return Ok(());
     }
 
+    // Get the active server connection (instead of hardcoded localhost)
+    let active_server = connections::get_active_server()?
+        .ok_or_else(|| anyhow!("No active server connection. Please run 'mothership connect <server-url>' first."))?;
+
     let config = config_manager.load_config()?;
     let client = get_http_client(&config);
 
     // First, get the project by name to verify it exists
-    let project_url = format!("{}/projects/by-name/{}", config.mothership_url, project_name);
+    let project_url = format!("{}/projects/by-name/{}", active_server.url, project_name);
     let response = client.get(&project_url).send().await?;
 
     if !response.status().is_success() {
@@ -282,7 +295,7 @@ pub async fn handle_delete(
     print_info(&format!("Deleting project '{}' from server...", project.name));
 
     // Delete the project
-    let delete_url = format!("{}/projects/{}", config.mothership_url, project.id);
+    let delete_url = format!("{}/projects/{}", active_server.url, project.id);
     let response = client.delete(&delete_url).send().await?;
 
     if !response.status().is_success() {
@@ -454,6 +467,7 @@ async fn upload_initial_files(
     config: &ClientConfig,
     project: &Project,
     dir: &PathBuf,
+    server_url: &str,
 ) -> Result<()> {
     let mut files = HashMap::new();
     let mut file_count = 0;
@@ -498,7 +512,7 @@ async fn upload_initial_files(
     };
     
     let client = get_http_client(config);
-    let upload_url = format!("{}/projects/{}/upload-initial", config.mothership_url, project.id);
+    let upload_url = format!("{}/projects/{}/upload-initial", server_url, project.id);
     let response = client
         .post(&upload_url)
         .json(&upload_request)

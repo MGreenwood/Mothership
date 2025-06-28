@@ -1,0 +1,18 @@
+tunnel: b6cc4af6-6b9a-41b4-87b9-ddc3a9c1ebe5
+credentials-file: /etc/cloudflared/credentials/b6cc4af6-6b9a-41b4-87b9-ddc3a9c1ebe5.json
+
+ingress:
+  # Mothership web UI
+  - hostname: app.mothershipproject.dev
+    service: http://mothership-server:8080
+  
+  # Mothership API
+  - hostname: api.mothershipproject.dev
+    service: http://mothership-server:7523
+  
+  # Root domain - simple landing page
+  - hostname: mothershipproject.dev
+    service: http_status:200
+  
+  # Catch-all
+  - service: http_status:404 

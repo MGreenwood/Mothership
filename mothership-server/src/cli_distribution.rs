@@ -8,7 +8,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::fs;
-use tracing::{info, warn};
+use tracing::{info, warn, error};
 
 /// CLI distribution endpoints for self-hosted binary updates
 pub fn routes() -> Router<crate::AppState> {
@@ -48,7 +48,15 @@ struct UpdateCheckQuery {
 /// Serve the installation script with server URL pre-configured
 async fn serve_install_script(
     State(state): State<crate::AppState>,
+    headers: HeaderMap,
 ) -> Result<Response, StatusCode> {
+    // Require authentication if whitelist is enabled (private deployment)
+    if state.whitelist.is_some() {
+        let _user = verify_authenticated_user(&state, &headers).await?;
+        info!("📋 Serving install script to authenticated user");
+    } else {
+        info!("📋 Serving public install script");
+    }
     let server_url = get_server_url(&state).await;
     
     let script = format!(r#"#!/bin/bash
@@ -137,11 +145,21 @@ echo ""
 async fn serve_install_script_platform(
     Path(platform): Path<String>,
     State(state): State<crate::AppState>,
+    headers: HeaderMap,
 ) -> Result<Response, StatusCode> {
+    // Require authentication if whitelist is enabled (private deployment)
+    if state.whitelist.is_some() {
+        let _user = verify_authenticated_user(&state, &headers).await?;
+        info!("📋 Serving platform-specific install script to authenticated user");
+    } else {
+        info!("📋 Serving public platform-specific install script");
+    }
     let server_url = get_server_url(&state).await;
     
+    let auth_required = state.config.cli_distribution.require_auth_for_downloads || state.whitelist.is_some();
+    
     let script = match platform.as_str() {
-        "windows" => generate_windows_install_script(&server_url),
+        "windows" => generate_windows_install_script(&server_url, auth_required),
         "unix" | "linux" | "macos" => generate_unix_install_script(&server_url),
         _ => return Err(StatusCode::BAD_REQUEST),
     };
@@ -159,7 +177,14 @@ async fn serve_install_script_platform(
 }
 
 /// List all available versions
-async fn list_versions() -> Result<axum::Json<Vec<VersionInfo>>, StatusCode> {
+async fn list_versions(
+    State(state): State<crate::AppState>,
+    headers: HeaderMap,
+) -> Result<axum::Json<Vec<VersionInfo>>, StatusCode> {
+    // Always require authentication for version info (sensitive data)
+    let (user_id, username, _) = verify_authenticated_user(&state, &headers).await?;
+    info!("📋 Listing versions for user: {} ({})", username, user_id);
+    
     let versions = get_available_versions().await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     
@@ -167,7 +192,14 @@ async fn list_versions() -> Result<axum::Json<Vec<VersionInfo>>, StatusCode> {
 }
 
 /// Get the latest version info
-async fn get_latest_version() -> Result<axum::Json<VersionInfo>, StatusCode> {
+async fn get_latest_version(
+    State(state): State<crate::AppState>,
+    headers: HeaderMap,
+) -> Result<axum::Json<VersionInfo>, StatusCode> {
+    // Always require authentication for version info (sensitive data)
+    let (user_id, username, _) = verify_authenticated_user(&state, &headers).await?;
+    info!("📋 Getting latest version for user: {} ({})", username, user_id);
+    
     let versions = get_available_versions().await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     
@@ -184,20 +216,8 @@ async fn download_binary(
     headers: HeaderMap,
     Path((version, platform, binary)): Path<(String, String, String)>,
 ) -> Result<Response, StatusCode> {
-    // Extract and verify authentication token
-    let auth_header = headers.get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .ok_or(StatusCode::UNAUTHORIZED)?;
-
-    if !auth_header.starts_with("Bearer ") {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
-
-    let token = auth_header.trim_start_matches("Bearer ");
-    
-    // Verify the token
-    state.auth.verify_token(token)
-        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+    // Verify authentication and whitelist
+    let (user_id, username, _) = verify_authenticated_user(&state, &headers).await?;
     // Validate inputs
     if !is_valid_version(&version) || !is_valid_platform(&platform) || !is_valid_binary(&binary) {
         return Err(StatusCode::BAD_REQUEST);
@@ -207,7 +227,7 @@ async fn download_binary(
     
     match fs::read(&binary_path).await {
         Ok(data) => {
-            info!("📦 Serving binary: {} for {}", binary, platform);
+            info!("📦 Serving binary: {} ({}) to user: {} ({})", binary, platform, username, user_id);
             
             Ok(Response::builder()
                 .header(header::CONTENT_TYPE, "application/octet-stream")
@@ -216,7 +236,7 @@ async fn download_binary(
                 .unwrap())
         }
         Err(_) => {
-            warn!("❌ Binary not found: {}", binary_path);
+            warn!("❌ Binary not found: {} (requested by user: {})", binary_path, username);
             Err(StatusCode::NOT_FOUND)
         }
     }
@@ -226,12 +246,16 @@ async fn download_binary(
 async fn check_for_updates(
     Query(query): Query<UpdateCheckQuery>,
     State(state): State<crate::AppState>,
+    headers: HeaderMap,
 ) -> Result<axum::Json<UpdateCheckResponse>, StatusCode> {
+    // Always require authentication for update checks (reveals version info)
+    let (user_id, username, _) = verify_authenticated_user(&state, &headers).await?;
+    info!("🔄 Checking updates for user: {} ({})", username, user_id);
     let current_version = query.current_version.unwrap_or_default();
     let platform = query.platform.unwrap_or_default();
     let binary = query.binary.unwrap_or_else(|| "mothership".to_string());
     
-    let latest = get_latest_version().await?;
+    let latest = get_latest_version(State(state.clone()), headers.clone()).await?;
     let latest_version = latest.0.version.clone();
     let update_available = version_compare(&current_version, &latest_version);
     
@@ -252,6 +276,77 @@ async fn check_for_updates(
 }
 
 // Helper functions
+
+/// Verify authentication token and check whitelist
+async fn verify_authenticated_user(
+    state: &crate::AppState,
+    headers: &HeaderMap,
+) -> Result<(uuid::Uuid, String, String), StatusCode> {
+    // Always require auth if whitelist is enabled, regardless of config
+    if state.whitelist.is_some() && !state.config.cli_distribution.require_auth_for_downloads {
+        warn!("🔒 Whitelist enabled but CLI auth disabled - this is a security risk!");
+    }
+    
+    // Skip authentication only if both whitelist is disabled AND auth is disabled
+    if state.whitelist.is_none() && !state.config.cli_distribution.require_auth_for_downloads {
+        info!("🔓 CLI access allowed without authentication (no whitelist, auth disabled)");
+        // Return a dummy user for logging purposes
+        return Ok((
+            uuid::Uuid::nil(),
+            "anonymous".to_string(),
+            "anonymous@local".to_string(),
+        ));
+    }
+
+    // Extract Bearer token from Authorization header
+    let auth_header = headers.get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| {
+            warn!("❌ CLI download attempted without authorization header");
+            StatusCode::UNAUTHORIZED
+        })?;
+
+    if !auth_header.starts_with("Bearer ") {
+        warn!("❌ CLI download attempted with invalid authorization format");
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    let token = auth_header.trim_start_matches("Bearer ");
+
+    // Verify the token
+    let claims = state.auth.verify_token(token)
+        .map_err(|e| {
+            warn!("❌ CLI download attempted with invalid token: {}", e);
+            StatusCode::UNAUTHORIZED
+        })?;
+
+    // Get user from database
+    let user_id = uuid::Uuid::parse_str(&claims.sub)
+        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+
+    let user = state.db.get_user(user_id).await
+        .map_err(|e| {
+            error!("Database error during CLI auth: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .ok_or_else(|| {
+            warn!("❌ CLI download attempted by non-existent user: {}", user_id);
+            StatusCode::UNAUTHORIZED
+        })?;
+
+    // Check whitelist if enabled
+    if let Some(whitelist) = &state.whitelist {
+        if !whitelist.is_user_allowed(&user.username, &user.email) {
+            warn!("❌ CLI download denied - user {} ({}) not in whitelist", user.username, user.email);
+            return Err(StatusCode::FORBIDDEN);
+        }
+        info!("✅ CLI download authorized for whitelisted user: {} ({})", user.username, user.email);
+    } else {
+        info!("✅ CLI download authorized for user: {} ({})", user.username, user.email);
+    }
+
+    Ok((user.id, user.username, user.email))
+}
 
 async fn get_server_url(_state: &crate::AppState) -> String {
     // Get from config or use default
@@ -303,8 +398,9 @@ fn version_compare(current: &str, latest: &str) -> bool {
     current != latest
 }
 
-fn generate_windows_install_script(server_url: &str) -> String {
-    format!(r#"# Mothership CLI Installation Script for Windows (Self-Hosted)
+fn generate_windows_install_script(server_url: &str, auth_required: bool) -> String {
+    if auth_required {
+        format!(r#"# Mothership CLI Installation Script for Windows (Self-Hosted)
 # Server: {server_url}
 
 $ErrorActionPreference = "Stop"
@@ -313,16 +409,105 @@ Write-Host "🚀 Mothership CLI Installation" -ForegroundColor Cyan
 Write-Host "📡 Server: {server_url}" -ForegroundColor Blue
 Write-Host ""
 
+Write-Host "🔐 This server requires authentication for CLI downloads." -ForegroundColor Yellow
+Write-Host ""
+Write-Host "To install the Mothership CLI:" -ForegroundColor Blue
+Write-Host "1. Visit: {server_url}/login" -ForegroundColor Blue
+Write-Host "2. Complete authentication in your browser" -ForegroundColor Blue  
+Write-Host "3. Copy your authentication token" -ForegroundColor Blue
+Write-Host "4. Run this script with your token:" -ForegroundColor Blue
+Write-Host ""
+Write-Host '$env:MOTHERSHIP_TOKEN="your_token_here"; irm {server_url}/cli/install/windows | iex' -ForegroundColor Green
+Write-Host ""
+
+# Check if token is provided
+if (-not $env:MOTHERSHIP_TOKEN) {{
+    Write-Host "❌ No authentication token provided" -ForegroundColor Red
+    Write-Host "Please set MOTHERSHIP_TOKEN environment variable and try again" -ForegroundColor Yellow
+    exit 1
+}}
+
+Write-Host "✅ Using provided authentication token" -ForegroundColor Green
+$Headers = @{{ "Authorization" = "Bearer $env:MOTHERSHIP_TOKEN" }}
+
+# Detect architecture
+$Arch = if ([Environment]::Is64BitOperatingSystem) {{ "x86_64" }} else {{ "i686" }}
+$Platform = "$Arch-pc-windows-msvc"
+
+Write-Host "📋 Detected platform: $Platform" -ForegroundColor Blue
+
+# Get latest version
+Write-Host "🔍 Checking latest version..." -ForegroundColor Yellow
+try {{
+    $LatestInfo = Invoke-RestMethod -Uri "{server_url}/cli/latest" -Headers $Headers
+    $LatestVersion = $LatestInfo.version
+    Write-Host "📦 Latest version: $LatestVersion" -ForegroundColor Green
+}} catch {{
+    Write-Host "❌ Failed to get latest version (check your token)" -ForegroundColor Red
+    exit 1
+}}
+
+# Create installation directory
+$InstallDir = "$env:LOCALAPPDATA\Mothership"
+New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+
+# Download CLI
+Write-Host "⬇️  Downloading mothership CLI..." -ForegroundColor Yellow
+$CliUrl = "{server_url}/cli/download/$LatestVersion/$Platform/mothership.exe"
+Invoke-WebRequest -Uri $CliUrl -Headers $Headers -OutFile "$InstallDir\mothership.exe"
+
+# Download daemon
+Write-Host "⬇️  Downloading mothership daemon..." -ForegroundColor Yellow
+$DaemonUrl = "{server_url}/cli/download/$LatestVersion/$Platform/mothership-daemon.exe"
+Invoke-WebRequest -Uri $DaemonUrl -Headers $Headers -OutFile "$InstallDir\mothership-daemon.exe"
+
+# Add to PATH
+$CurrentPath = [Environment]::GetEnvironmentVariable("PATH", "User")
+if ($CurrentPath -notlike "*$InstallDir*") {{
+    [Environment]::SetEnvironmentVariable("PATH", "$CurrentPath;$InstallDir", "User")
+    $env:PATH += ";$InstallDir"
+}}
+
+# Create config
+$ConfigDir = "$env:USERPROFILE\.config\mothership"
+New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
+"server_url={server_url}" | Out-File -FilePath "$ConfigDir\config.toml" -Encoding UTF8
+
+Write-Host ""
+Write-Host "✅ Installation complete!" -ForegroundColor Green
+Write-Host ""
+Write-Host "Quick start:" -ForegroundColor Yellow
+Write-Host "  mothership auth           # Authenticate" -ForegroundColor Blue
+Write-Host "  cd your-project" -ForegroundColor Blue
+Write-Host "  mothership deploy        # Deploy project" -ForegroundColor Blue
+Write-Host "  mothership beam project  # Start collaboration" -ForegroundColor Blue
+Write-Host ""
+Write-Host "Stay updated:" -ForegroundColor Yellow
+Write-Host "  mothership update        # Update to latest version" -ForegroundColor Blue
+Write-Host ""
+"#)
+    } else {
+        format!(r#"# Mothership CLI Installation Script for Windows (Self-Hosted)
+# Server: {server_url}
+
+$ErrorActionPreference = "Stop"
+
+Write-Host "🚀 Mothership CLI Installation" -ForegroundColor Cyan
+Write-Host "📡 Server: {server_url}" -ForegroundColor Blue
+Write-Host ""
+
+# Detect architecture
+$Arch = if ([Environment]::Is64BitOperatingSystem) {{ "x86_64" }} else {{ "i686" }}
+$Platform = "$Arch-pc-windows-msvc"
+
+Write-Host "📋 Detected platform: $Platform" -ForegroundColor Blue
+
 # Get latest version
 Write-Host "🔍 Checking latest version..." -ForegroundColor Yellow
 $LatestInfo = Invoke-RestMethod -Uri "{server_url}/cli/latest"
 $LatestVersion = $LatestInfo.version
 
 Write-Host "📦 Latest version: $LatestVersion" -ForegroundColor Green
-
-# Detect architecture
-$Arch = if ([Environment]::Is64BitOperatingSystem) {{ "x86_64" }} else {{ "i686" }}
-$Platform = "$Arch-pc-windows-msvc"
 
 # Create installation directory
 $InstallDir = "$env:LOCALAPPDATA\Mothership"
@@ -363,6 +548,7 @@ Write-Host "Stay updated:" -ForegroundColor Yellow
 Write-Host "  mothership update        # Update to latest version" -ForegroundColor Blue
 Write-Host ""
 "#)
+    }
 }
 
 fn generate_unix_install_script(_server_url: &str) -> String {

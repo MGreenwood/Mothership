@@ -1,0 +1,40 @@
+# Mothership Server Configuration (Simple Format)
+# Copy this file to "server.config" for a simple key=value configuration
+# 
+# For more advanced configuration, use the TOML format (server.config.example)
+
+# Basic server settings
+host=0.0.0.0
+port=7523
+web_port=8080
+debug_logging=false
+
+# Feature toggles
+chat_enabled=true
+file_uploads_enabled=true
+project_creation_enabled=true
+cli_distribution_enabled=true
+oauth_enabled=true
+websocket_sync_enabled=true
+
+# Authentication and whitelist
+whitelist_enabled=false
+whitelist_path=whitelist.config
+require_auth=true
+
+# Example configurations:
+
+# Disable chat for a focused environment:
+# chat_enabled=false
+
+# Enable whitelist for private deployment:
+# whitelist_enabled=true
+# whitelist_path=my-team-whitelist.config
+
+# Disable OAuth for CLI-only deployment:
+# oauth_enabled=false
+
+# Local development (localhost only):
+# host=127.0.0.1
+# port=7523
+# debug_logging=true 

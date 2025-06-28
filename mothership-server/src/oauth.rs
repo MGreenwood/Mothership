@@ -27,12 +27,17 @@ impl OAuthService {
     pub fn new() -> Result<Self> {
         let mut providers = HashMap::new();
 
+        // Get OAuth base URL from environment or use default
+        let oauth_base_url = std::env::var("OAUTH_BASE_URL")
+            .unwrap_or_else(|_| "http://localhost:7523".to_string());
+
         // Configure Google OAuth
         let google_client_id = std::env::var("GOOGLE_CLIENT_ID");
         let google_client_secret = std::env::var("GOOGLE_CLIENT_SECRET");
         
         println!("🔍 OAuth Debug - Google Client ID: {:?}", google_client_id.as_ref().map(|s| format!("{}...", &s[..10.min(s.len())])));
         println!("🔍 OAuth Debug - Google Client Secret: {:?}", google_client_secret.as_ref().map(|s| format!("{}...", &s[..10.min(s.len())])));
+        println!("🔍 OAuth Debug - Base URL: {}", oauth_base_url);
         
         if let (Ok(client_id), Ok(client_secret)) = (google_client_id, google_client_secret) {
             let google_config = OAuthConfig {
@@ -42,7 +47,7 @@ impl OAuthService {
                     AuthUrl::new("https://accounts.google.com/o/oauth2/v2/auth".to_string())?,
                     Some(TokenUrl::new("https://oauth2.googleapis.com/token".to_string())?),
                 )
-                .set_redirect_uri(RedirectUrl::new("http://localhost:7523/auth/callback/google".to_string())?),
+                .set_redirect_uri(RedirectUrl::new(format!("{}/auth/callback/google", oauth_base_url))?),
                 scopes: vec!["openid".to_string(), "email".to_string(), "profile".to_string()],
                 user_info_url: "https://www.googleapis.com/oauth2/v2/userinfo".to_string(),
             };
@@ -64,7 +69,7 @@ impl OAuthService {
                     AuthUrl::new("https://github.com/login/oauth/authorize".to_string())?,
                     Some(TokenUrl::new("https://github.com/login/oauth/access_token".to_string())?),
                 )
-                .set_redirect_uri(RedirectUrl::new("http://localhost:7523/auth/callback/github".to_string())?),
+                .set_redirect_uri(RedirectUrl::new(format!("{}/auth/callback/github", oauth_base_url))?),
                 scopes: vec!["user:email".to_string()],
                 user_info_url: "https://api.github.com/user".to_string(),
             };

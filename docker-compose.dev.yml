@@ -17,7 +17,7 @@ services:
       - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID}
       - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}
       # OAuth callback URLs for Docker
-      - OAUTH_BASE_URL=http://localhost:7523
+      - OAUTH_BASE_URL=${OAUTH_BASE_URL:-http://localhost:7523}
     env_file:
       - .env
     networks:
