@@ -2,25 +2,82 @@
 
 ## Vision Statement
 
-Mothership eliminates the complexity and fear associated with traditional version control while preserving the safety and collaboration benefits of feature branching. Developers should never lose work from a CLI command, never need to manually commit changes, and should be able to collaborate in real-time within isolated development spaces.
+Mothership is an experimental version control system that eliminates the complexity and fear associated with traditional version control while adding collaborative features that Git never had. Developers should never lose work, never need to manually commit changes, and should be able to collaborate in real-time within isolated development spaces - with conversations and context preserved as part of the project's living history.
 
 ## Core Philosophy
 
-### The Three Pillars
+### The Four Pillars
 
 1. **Zero Fear**: No destructive operations. Every change is preserved automatically.
 2. **Zero Ceremony**: No manual commits, staging, or complex workflows. Just code.
 3. **Zero Friction**: Authenticate once, discover projects instantly, collaborate seamlessly.
+4. **Zero Context Loss**: Conversations, decisions, and development context preserved forever as part of the project history.
 
-### The Problems We Solve
+### The Problems We Want to Solve
 
 - **Git Complexity**: Developers avoid powerful features due to steep learning curves
 - **Data Loss Fear**: Simple commands can destroy hours of work
 - **Commit Overhead**: Manual commits interrupt flow and create meaningless history
-- **Merge Conflicts**: Developers working on the same feature should collaborate, not conflict
+- **Merge Uncertainty**: You don't know if your merge will work until after you've committed to it
+- **Lost Context**: Development decisions and conversations disappear into Slack/Discord, disconnected from the code
+
+## 🌌 **Project Scope: Real-Time Collaborative Development**
+
+> **Mothership: What if version control felt like Google Docs, but for code, with context and conversations preserved forever?**
+
+### **Core Features We're Building**
+
+#### 🚀 **Real-Time Collaboration Within Rifts** ✅ *Working Now*
+- **Live editing**: Multiple developers see each other's changes instantly
+- **WebSocket sync**: Millisecond-latency file synchronization 
+- **Conflict detection**: Built-in collision handling
+- **Perfect isolation**: Each rift has its own collaboration space
+
+#### 💬 **Contextual Chat Integration** 🎯 *Next Priority*
+- **Chat lives in rifts**: Conversations tied to specific development contexts
+- **Persistent history**: All discussions preserved as part of the project timeline
+- **File/line discussions**: Chat about specific code with context preserved
+- **Decision trails**: Why changes were made, captured forever
+- **Smart notifications**: Know when teammates discuss your code
+
+#### 🌌 **Wormholes: Preview Merge System** 🚀 *The Cool Experiment*
+- **Live merge preview**: See how different rifts will combine before committing
+- **Collaborative resolution**: Teams resolve conflicts together in real-time
+- **Non-destructive testing**: Try integrations without affecting source rifts
+- **Zero-surprise convergence**: Know exactly how the merge will work
+
+#### ⚡ **Background Intelligence** ✅ *Working Now*
+- **Automatic checkpointing**: Every meaningful change preserved
+- **Smart daemon**: Background sync without console blocking
+- **Zero-ceremony beaming**: Join projects instantly, leave gracefully
+- **File watching**: Changes detected and synced automatically
+
+### **The Vision: Development with Full Context**
+
+```bash
+# Traditional development loses context:
+git log --oneline
+# a1b2c3d Added auth
+# d4e5f6g Fixed bug
+# g7h8i9j Updated UI
+
+# What was the bug? Why this auth approach? What discussions happened?
+# Context is lost forever in chat apps.
+
+# Mothership preserves everything:
+mothership history
+# 2025-01-28 15:30 - Alice: "Let's use OAuth2 for this"
+# 2025-01-28 15:32 - Bob: "Good idea, but what about refresh tokens?"
+# 2025-01-28 15:35 - Alice: [Checkpoint] Added OAuth2 implementation
+# 2025-01-28 15:40 - Charlie: "This breaks mobile login"
+# 2025-01-28 15:45 - [Wormhole created] alice/auth + bob/mobile
+# 2025-01-28 16:00 - Team resolves conflict collaboratively
+# 2025-01-28 16:15 - [Convergence] Perfect integration achieved
+
+# Full context, preserved forever.
+```
 
 ## Core Concepts & Terminology
-
 
 ### Mothership
 The central server that orchestrates all development activity. It manages projects, user access, and coordinates real-time collaboration across all connected clients.
@@ -32,16 +89,16 @@ The entry point to your development universe. Running `mothership gateway` revea
 The action of connecting to and syncing with a project. "Beaming into" a project either syncs an existing local copy or creates a new one. Once beamed in, you're live-connected to the project's collaborative space.
 
 ### Rift
-A parallel development dimension within a project. Traditional "branches" but with real-time collaboration. Multiple developers can work within the same rift, seeing each other's changes as they happen.
+A parallel development dimension within a project. Like Git branches, but with real-time collaboration and integrated chat. Multiple developers can work within the same rift, seeing each other's changes and discussing them in context - all preserved as part of the development history.
 
 ### Checkpoint
-Automatic snapshots of your work. Every file save, every meaningful change is checkpointed without manual intervention. You can navigate through time within your rift's history.
-
-### Convergence
-The process of merging rifts back together. Unlike traditional merging, this is assisted by the continuous checkpoint history and real-time collaboration data.
+Automatic snapshots of your work. Every file save, every meaningful change is checkpointed without manual intervention. You can navigate through time within your rift's history, including seeing the conversations that led to each change.
 
 ### Wormhole
-A temporary bridge connecting two active rifts, allowing developers to test how changes from different development dimensions interact in real-time. Wormholes enable cross-rift compatibility testing without permanent merging, letting teams validate that their separate features work together before convergence. Think of it as a "preview merge" that can be established and dissolved instantly.
+A **live preview bridge** connecting two or more rifts, allowing developers to see exactly how their separate features will integrate **before** converging them permanently. Think of it as a "test merge" that you can establish and dissolve instantly without affecting the source rifts.
+
+### Convergence
+The process of merging rifts back together. Unlike traditional merging, this can be guaranteed to work perfectly when teams have already resolved all conflicts collaboratively within wormholes.
 
 ## User Workflows
 
@@ -50,264 +107,94 @@ A temporary bridge connecting two active rifts, allowing developers to test how 
 # One-time machine authentication
 mothership auth
 # Opens browser, completes OAuth flow
-# Stores machine certificate locally with PostgreSQL user persistence
+# Stores machine certificate locally
 ```
 
-### Revolutionary Zero-Friction Experience
+### The Complete Development Experience
 
-**No Commands Required - Complete Automation**
-
-```
-Day 1: Installation (30 seconds)
-┌─────────────────────────────────────┐
-│       Mothership Installer         │
-├─────────────────────────────────────┤
-│ ✅ Add to PATH                      │
-│ ✅ Install background service       │
-│ ✅ Start with computer? [Yes]       │
-│ ✅ Auto-detect projects? [Yes]      │
-│         [Install Complete]          │
-     add context on right click -> track with mothership
-└─────────────────────────────────────┘
-
-Day 2: Automatic Project Discovery
-🔔 System Notification: "Mothership found 3 code folders"
-   📁 ~/my-awesome-app (React)
-   📁 ~/work/api-server (Node.js) 
-   📁 ~/Desktop/prototype (Python)
-   
-   [Track All] [Choose Projects]
-
-Day 3+: Revolutionary Collaborative Development
-🚀 Mothership Desktop App opens to your project:
-
-┌─────────────────────────────────────────────────────────────┐
-│  🚀 my-awesome-app              👥 Online: alice, bob, you  │
-├─────────────────────────────────────────────────────────────┤
-│ 📁 Files        │ 💻 Live Code   │ 💬 Team Chat              │
-├─────────────────┼────────────────┼───────────────────────────┤
-│ src/            │ function App() │ 💬 alice: Fixed the auth │
-│ ├─ App.tsx      │ {             │    bug! Check line 47     │
-│ ├─ auth.ts ⚡   │   return (     │                           │
-│ └─ utils.ts     │     <div>      │ 👀 bob is viewing auth.ts│
-│                 │       <Auth    │                           │
-│ 🟢 2 online     │       user={   │ 🔴 you are editing App.tsx│
-│ ⚡ Syncing...   │       ↑        │                           │
-│                 │    bob's cursor│ 💬 you: Looks great!     │
-│ [Open in IDE]   │                │    Ready to deploy?      │
-└─────────────────┴────────────────┴───────────────────────────┘
-
-🔔 Smart Notification: "Alice just fixed the bug you were debugging"
-📞 Quick Actions: [Video Call] [Share Screen] [Code Review]
-```
-
-### Traditional CLI (Optional for Power Users)
+#### **Project Discovery & Setup**
 ```bash
-# Intuitive Git-like workflow with real persistence
-cd my-new-project
-mothership deploy          # Deploy project in current directory
-mothership deploy MyApp    # Deploy with custom name
+# Discover projects
+mothership gateway list
 
-# Advanced project management
-mothership gateway list    # List all accessible projects
-mothership beam "MyApp"    # Beam into existing project
-mothership status          # See current project status
+# Deploy new project  
+cd my-awesome-app
+mothership deploy "My Awesome App"
+
+# Beam into existing project
+mothership beam "My Awesome App"
+# Automatically starts daemon, begins file watching
+# Joins the project's collaborative space
 ```
 
-### Revolutionary Background Daemon Workflow
+#### **Real-Time Collaborative Development**
 ```bash
-# Zero-friction beam experience - starts daemon automatically
-mothership beam "project-alpha"
-# ✅ Automatically starts background daemon if needed
-# ✅ Registers project for continuous file tracking  
-# ✅ Returns console immediately - no blocking!
+# Multiple developers beam into the same rift
+mothership beam "My Awesome App" --rift="alice/new-feature"
 
-# Multiple projects share same daemon instance
-mothership beam "project-beta"  
-# ✅ Reuses existing daemon, adds second project
-# ✅ One daemon handles all your projects
-
-# Complete daemon lifecycle management
-mothership daemon status          # Show daemon status + tracked projects
-mothership disconnect "project-alpha"  # Remove project from tracking
-mothership daemon stop           # Graceful daemon shutdown
-mothership daemon restart        # Clean restart with fresh state
-
-# Smart auto-detection for disconnect
-cd project-alpha
-mothership disconnect            # Auto-detects current project
+# Now you can:
+# - See each other's changes in real-time
+# - Chat about the code as you write it
+# - Ask questions with immediate context
+# - Preserve all decisions as part of project history
 ```
 
-### Future Collaboration Scenarios (Phase 3)
+#### **Contextual Conversations** 🎯 *The Innovation*
 ```bash
-# Join someone else's rift for pair programming
-mothership beam project-alpha --rift="bob/user-dashboard"
-# Now you're both in the same development space
-# Changes sync bidirectionally in real-time
+# Chat is integrated into the development flow
+mothership chat
+> alice: "Why are we using this approach for auth?"
+> bob: "Let me show you" [shares code at line 47]
+> alice: "Oh I see, but what about refresh tokens?"
+> bob: [makes change to handle refresh tokens]
+> alice: "Perfect! Let's checkpoint this"
 
-# Create a team rift for feature development
-mothership rift create "team/auth-system"
-# Other team members can join the same rift
-# Collaborative development with automatic conflict resolution
-
-# Create a wormhole to test cross-rift compatibility
-mothership wormhole create "alice/auth-system" "bob/user-dashboard"
-# Test how Alice's authentication changes work with Bob's UI changes
-# Both rifts remain independent, but you can see combined results
+# All preserved forever as part of the project's living history
+mothership history --include-chat
+# Shows interleaved code changes and conversations
 ```
 
-### Time Navigation
+#### **Advanced Integration with Wormholes**
 ```bash
-# Navigate through checkpoint history
+# Test how features will integrate before merging
+mothership wormhole create "alice/auth" "bob/user-interface"
+# Both teams see combined result immediately
+# Chat in wormhole about integration challenges
+# Resolve conflicts collaboratively
+# Converge only when perfect
+
+mothership rift converge --via-wormhole auth_ui_wormhole_123
+# Guaranteed successful merge
+```
+
+#### **Time Navigation with Full Context**
+```bash
+# Navigate through history with full context
 mothership timeline
-# Interactive timeline of all changes in current rift
+# Interactive timeline showing code changes AND conversations
 
-# Jump to specific checkpoint
 mothership goto checkpoint:abc123
+# Jump to any point in time
 
-# Compare states
 mothership diff checkpoint:abc123 checkpoint:def456
+# See what changed AND why (from preserved conversations)
 ```
-
-## Revolutionary Installation & Adoption Strategy
-
-### The Paradigm Shift: From Developer Tool to Consumer Software
-
-**Traditional Version Control Installation:**
-```bash
-# Git: Manual setup, steep learning curve
-git config --global user.name "Your Name"  
-git config --global user.email "your.email@example.com"
-ssh-keygen -t rsa -b 4096 -C "your.email@example.com"
-# ...30 more setup steps
-```
-
-**Mothership: Consumer-Grade Installation Experience**
-```
-1. Download Mothership.exe/dmg/deb
-2. Double-click installer  
-3. Click "Install" (30 seconds)
-4. System automatically finds your code folders
-5. Click "Track Projects" (1 click)
-6. ✅ DONE - Now syncing automatically forever
-```
-
-### Mass Market Adoption Through Zero Friction
-
-**Target Audience Expansion:**
-- **Primary**: Developers who hate Git complexity (60% of developers)
-- **Secondary**: Code bootcamp students (no version control knowledge needed)
-- **Tertiary**: Non-technical team members who need to see/comment on code
-
-**Revolutionary Competitive Positioning:**
-- **vs Git**: "Like Git, but you never type commands - with integrated team chat"
-- **vs GitHub**: "Like GitHub, but works locally with live sync and real-time collaboration"  
-- **vs Slack/Discord**: "Like Slack, but designed for developers with code-aware conversations"
-- **vs VS Code Live Share**: "Like Live Share, but permanent and with version control built-in"
-- **vs Zoom/Teams**: "Like Zoom, but for pair programming with persistent context"
-- **vs Linear/Jira**: "Like project management tools, but integrated into your actual development workflow"
-
-**The Platform That Replaces:**
-- Git + GitHub (version control)
-- Slack + Discord (team communication)  
-- Zoom + Teams (video calls for development)
-- VS Code Live Share (real-time collaboration)
-- Linear + Jira (development project management)
-- Figma comments (design-development handoff)
-- **= ONE unified development collaboration platform**
-
-### Cross-Platform Native Installers
-
-**Windows: MSI/EXE Installer**
-```powershell
-# Auto-installer script
-Add-ToPath "C:\Program Files\Mothership\"
-Install-Service "MothershipDaemon" -StartupType Automatic
-New-FirewallRule -Allow Port 7523
-Register-StartMenuEntry "Mothership"
-Show-Notification "Mothership installed - Click to find projects"
-```
-
-**macOS: DMG + Homebrew**
-```bash
-# Homebrew formula for easy updates
-brew install --cask mothership
-# Creates LaunchAgent for startup
-# Adds to Applications folder
-# System Preferences integration
-```
-
-**Linux: APT/YUM Packages**
-```bash
-# One command install
-sudo apt install mothership
-# Auto-creates systemd user service
-# Desktop environment integration
-```
-
-### Auto-Discovery Intelligence
-
-```rust
-// Intelligent project detection
-struct ProjectScanner {
-    common_locations: Vec<PathBuf>,
-    detection_rules: Vec<DetectionRule>,
-}
-
-enum DetectionRule {
-    GitRepository,              // .git folder
-    NodeProject,                // package.json  
-    RustProject,                // Cargo.toml
-    PythonProject,              // requirements.txt, setup.py
-    VisualStudioProject,        // .sln, .csproj
-    JetBrainsProject,          // .idea folder
-    VSCodeWorkspace,           // .vscode folder
-    LargeCodeFolder,           // >10 code files
-}
-
-impl ProjectScanner {
-    async fn scan_for_projects(&self) -> Vec<PotentialProject> {
-        // Scan ~/Code, ~/Projects, ~/Development, Desktop, Documents
-        // Apply intelligent filtering and ranking
-        // Present user with curated list of likely projects
-    }
-}
-```
-
-### Native OS Integration
-
-**Windows:**
-- System tray icon with live status
-- Windows Explorer integration (right-click menus)
-- Windows Terminal integration
-- Taskbar progress indicators for sync status
-
-**macOS:**
-- Menu bar icon with real-time updates
-- Finder integration and Quick Actions
-- macOS notification center integration
-- Spotlight search integration
-
-**Linux:**
-- Desktop environment tray integration (GNOME/KDE)
-- File manager integration (Nautilus/Dolphin)
-- D-Bus integration for system notifications
 
 ## Technical Architecture
 
-### High-Level Components
+### High-Level System Design
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                     Mothership Central                      │
+│                  Mothership Central                         │
 ├─────────────────────────────────────────────────────────────┤
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
 │  │   Gateway   │  │  Rift Sync  │  │   Checkpoint        │  │
 │  │   Service   │  │   Engine    │  │   Storage           │  │
 │  └─────────────┘  └─────────────┘  └─────────────────────┘  │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
-│  │    Auth     │  │  Conflict   │  │   Project           │  │
-│  │  Manager    │  │ Resolution  │  │   Metadata          │  │
+│  │    Auth     │  │ Chat Engine │  │   Wormhole          │  │
+│  │  Manager    │  │ & History   │  │   Manager           │  │
 │  └─────────────┘  └─────────────┘  └─────────────────────┘  │
 └─────────────────────────────────────────────────────────────┘
                               │
@@ -317,12 +204,12 @@ impl ProjectScanner {
 │                   Mothership Client                         │
 ├─────────────────────────────────────────────────────────────┤
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
-│  │    CLI      │  │    File     │  │    Local Cache      │  │
-│  │  Interface  │  │   Watcher   │  │    & Metadata       │  │
+│  │    CLI      │  │    File     │  │    Chat             │  │
+│  │  Interface  │  │   Watcher   │  │    Interface        │  │
 │  └─────────────┘  └─────────────┘  └─────────────────────┘  │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
-│  │    Sync     │  │ Operational │  │    Background       │  │
-│  │   Engine    │  │ Transforms  │  │    Daemon           │  │
+│  │    Sync     │  │ Background  │  │    Local Cache      │  │
+│  │   Engine    │  │   Daemon    │  │    & Metadata       │  │
 │  └─────────────┘  └─────────────┘  └─────────────────────┘  │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -347,6 +234,7 @@ struct Rift {
     collaborators: Vec<UserId>,
     created_at: DateTime,
     last_checkpoint: CheckpointId,
+    chat_history: Vec<ChatMessage>,
 }
 
 struct Checkpoint {
@@ -356,48 +244,60 @@ struct Checkpoint {
     timestamp: DateTime,
     changes: Vec<FileChange>,
     parent: Option<CheckpointId>,
-    message: Option<String>, // Optional user annotation
+    message: Option<String>,
+    related_chat: Vec<ChatMessageId>, // Link to conversations about this change
 }
 
-struct FileChange {
-    path: PathBuf,
-    change_type: ChangeType, // Created, Modified, Deleted, Moved
-    content_hash: String,
-    diff: FileDiff,
+struct ChatMessage {
+    id: ChatMessageId,
+    rift_id: RiftId,
+    author: UserId,
+    timestamp: DateTime,
+    content: String,
+    message_type: ChatMessageType, // Text, CodeShare, FileReference, etc.
+    context: Option<CodeContext>, // File/line references
 }
 
 struct Wormhole {
     id: WormholeId,
     project_id: ProjectId,
-    rift_a: RiftId,
-    rift_b: RiftId,
+    rifts: Vec<RiftId>, // Can connect multiple rifts
     created_by: UserId,
     created_at: DateTime,
-    expires_at: Option<DateTime>, // Auto-cleanup temporary connections
-    status: WormholeStatus, // Active, Paused, Dissolved
+    status: WormholeStatus,
+    chat_channel: ChatChannelId, // Wormholes have their own chat space
 }
 ```
 
-### Real-Time Synchronization Protocol
+### Real-Time Communication Protocol
 
 ```rust
 enum SyncMessage {
-    // Client -> Server
-    FileChanged { path: PathBuf, content: String, timestamp: DateTime },
+    // Rift collaboration
     JoinRift { rift_id: RiftId },
     LeaveRift { rift_id: RiftId },
-    CreateWormhole { rift_a: RiftId, rift_b: RiftId },
+    FileChanged { rift_id: RiftId, path: PathBuf, content: String, timestamp: DateTime },
+    
+    // Chat integration
+    SendChatMessage { rift_id: RiftId, message: String, context: Option<CodeContext> },
+    ChatMessageReceived { rift_id: RiftId, message: ChatMessage },
+    
+    // Wormhole operations
+    CreateWormhole { rifts: Vec<RiftId>, mode: WormholeMode },
+    JoinWormhole { wormhole_id: WormholeId },
+    WormholeUpdate { wormhole_id: WormholeId, combined_state: ProjectState },
     DissolveWormhole { wormhole_id: WormholeId },
     
-    // Server -> Client  
-    RiftUpdate { rift_id: RiftId, changes: Vec<FileChange> },
-    ConflictDetected { conflict: Conflict, suggestions: Vec<Resolution> },
+    // Checkpointing
+    CreateCheckpoint { rift_id: RiftId, message: Option<String> },
     CheckpointCreated { checkpoint: Checkpoint },
-    WormholeEstablished { wormhole: Wormhole },
-    WormholeUpdate { wormhole_id: WormholeId, combined_state: ProjectState },
-    WormholeDissolved { wormhole_id: WormholeId },
     
-    // Bidirectional
+    // Server responses
+    RiftUpdate { rift_id: RiftId, changes: Vec<FileChange> },
+    UserJoined { rift_id: RiftId, user: UserInfo },
+    UserLeft { rift_id: RiftId, user_id: UserId },
+    
+    // System
     Heartbeat,
     Error { message: String },
 }
@@ -405,349 +305,104 @@ enum SyncMessage {
 
 ## Implementation Phases
 
-### Phase 1: Foundation ✅ **100% COMPLETED - JANUARY 2025**
-- [x] **Production-grade server architecture** (Rust + Tokio + Axum) - Running on port 7523
-- [x] **Complete authentication system** (OAuth + JWT + machine certificates + token validation fixes)
-- [x] **Full-featured CLI tool** with intuitive commands (`auth`, `gateway list/create`, `deploy`, `beam`)
-- [x] **PostgreSQL production database** - Complete migration with real persistence, user management, and ACID compliance
-- [x] **Advanced project management** - Multi-role system with secure admin endpoints and database relationships
-- [x] **Enterprise Docker deployment** - Health checks, PostgreSQL integration, sqlx offline mode, zero-downtime restarts
-- [x] **Intelligent gateway creation** - `.mothership` metadata with nested gateway prevention and PostgreSQL storage
-- [x] **Superior UX design** - `mothership deploy` command, human-readable project names, helpful error messages
-- [x] **One-click deployment** - `start-docker.bat` with PostgreSQL stack and cross-platform scripts
-- [x] **Cross-platform OAuth** - Complete Google OAuth flow with Tauri GUI and CLI integration
-- [x] **Universal compatibility** - Windows, macOS, Linux with native installers foundation
-- [x] **Professional codebase** - 100% warning-free compilation, sqlx compile-time safety, clean architecture
-- [x] **OAuth token validation breakthrough** - CLI and GUI authenticate as same user consistently with PostgreSQL user persistence
-- [x] **Production database architecture** - PostgreSQL with proper schemas, relationships, transactions, and data integrity
+### Phase 1: Foundation ✅ **COMPLETED - January 2025**
+- [x] **Server Architecture** - Rust + Tokio + Axum running on port 7523
+- [x] **Authentication System** - OAuth + JWT with PostgreSQL persistence
+- [x] **CLI Tools** - Complete command set with intuitive UX
+- [x] **Project Management** - Gateway creation, deployment, beaming
+- [x] **Database Foundation** - PostgreSQL with proper schemas and relationships
+- [x] **Docker Deployment** - One-click development environment
+- [x] **Cross-platform Support** - Windows, macOS, Linux compatibility
 
-### Phase 2: Revolutionary User Experience 🎯 **CURRENT FOCUS**
-**Goal: Zero-Friction Mass Market Adoption with PostgreSQL Foundation**
-- [ ] **File system watching** - Automatic change detection using `notify` crate with PostgreSQL checkpoint storage
-- [ ] **Automatic checkpointing** - Save snapshots on every meaningful change with database persistence
-- [ ] **Real-time file synchronization** between collaborators with PostgreSQL-backed conflict resolution
-- [ ] **Batched API calls** - Efficient change transmission with database transaction optimization
-- [ ] **Local caching system** - Offline-first development with PostgreSQL sync and intelligent conflict detection
-- [ ] **Cross-platform installers** (MSI/DMG/DEB) with PostgreSQL connection and auto-setup
-- [ ] **Background daemon service** that starts on boot with database connectivity
-- [ ] **Intelligent project auto-discovery** scanning common development folders with PostgreSQL project registration
-- [ ] **System tray/menu bar interface** with live sync status and database-backed project management
-- [ ] **Native OS integration** (Explorer/Finder right-click menus) with PostgreSQL project metadata
-- [ ] **Enhanced GUI for project management** (Tauri-based) with PostgreSQL-backed real-time collaboration
+### Phase 2: Real-Time Collaboration ✅ **COMPLETED - January 2025**
+- [x] **WebSocket Infrastructure** - Real-time sync engine
+- [x] **Multi-user Editing** - Live collaboration within rifts
+- [x] **Background Daemon** - Non-blocking file watching and sync
+- [x] **Conflict Detection** - Built-in collision handling framework
+- [x] **Perfect Isolation** - Rift-specific broadcast channels
 
-### Phase 3: Revolutionary Collaboration Platform (Weeks 9-16)
-**Goal: Integrated Development Communication Platform**
-- [ ] **Sleek native desktop GUI** with integrated chat and file explorer
-- [ ] **Live presence awareness** showing who's online, editing what files
-- [ ] **Real-time cursors and selections** like Google Docs for code
-- [ ] **Contextual chat system** tied to files, lines, and checkpoints
-- [ ] **Smart notifications** with context awareness and conflict prevention
-- [ ] **Cross-platform pair programming** with integrated voice/video
-- [ ] **Web interface** for non-technical stakeholders (PM, QA, clients)
-- [ ] **Mobile apps** for code review and team communication on-the-go
-- [ ] **Timeline navigation** with visual diff interface and chat history
+### Phase 3: Chat Integration & Context 🎯 **CURRENT FOCUS**
+**Goal: Make conversations part of the development history**
+- [ ] **Chat Engine** - Real-time messaging within rifts
+- [ ] **Context Preservation** - Link conversations to code, files, and changes
+- [ ] **Persistent History** - All conversations stored with checkpoints
+- [ ] **Smart Notifications** - Context-aware alerts about relevant discussions
+- [ ] **Code References** - Share and discuss specific lines/files in chat
+- [ ] **Decision Trails** - Capture why changes were made, not just what changed
 
-### Phase 4: Enterprise & SaaS Platform (Weeks 17-24)
-**Goal: Business Model & Enterprise Adoption**
-- [x] **PostgreSQL foundation** ✅ **COMPLETED** - Production database with persistence, relationships, and transactions
-- [ ] **Multi-tenant SaaS architecture** with organization isolation using PostgreSQL schemas
-- [ ] **Enterprise SSO integration** (SAML, OIDC, Active Directory) with PostgreSQL user management
-- [ ] **Web dashboard** for team management and project oversight with real-time PostgreSQL data
-- [ ] **Subscription billing system** with tiered pricing and PostgreSQL subscription tracking
-- [ ] **Global edge deployment** for worldwide performance with PostgreSQL read replicas
-- [ ] **Enterprise security features** (audit logs, compliance, encryption) using PostgreSQL audit capabilities
-- [ ] **Migration tools** from Git/GitHub to Mothership with PostgreSQL project import
-- [ ] **API integrations** with CI/CD, IDEs, and development tools using PostgreSQL webhooks
+### Phase 4: Wormhole System 🌌 **THE EXPERIMENT**
+**Goal: Preview merges with collaborative resolution**
+- [ ] **Wormhole Creation** - Connect rifts for integration testing
+- [ ] **Live Merge Preview** - See combined state in real-time
+- [ ] **Collaborative Resolution** - Teams work together on conflicts
+- [ ] **Wormhole Chat** - Dedicated discussion space for integration
+- [ ] **Zero-surprise Convergence** - Guaranteed successful merges
+- [ ] **Multi-rift Wormholes** - Complex 3+ way integrations
 
-### Phase 5: Market Disruption & Platform Dominance (Months 6-12)
-**Goal: Replace Multiple Tools with Unified Platform**
-- [ ] **IDE plugins** for VS Code, JetBrains, Visual Studio with native chat
-- [ ] **AI pair programming assistant** integrated into chat and code editor
-- [ ] **Advanced team analytics** (productivity, collaboration patterns, code quality)
-- [ ] **Voice/video calling** built into the development environment
-- [ ] **Integration marketplace** replacing Slack bots with development-native tools
-- [ ] **White-label platform** for enterprises to customize their development environment
-- [ ] **Global edge infrastructure** with <50ms latency worldwide
-- [ ] **Developer ecosystem** with third-party apps and extensions
+### Phase 5: Advanced User Experience (Future)
+**Goal: Professional development environment**
+- [ ] **Desktop GUI** - Native app with integrated chat and file explorer
+- [ ] **IDE Plugins** - VS Code, JetBrains integration
+- [ ] **Mobile Companion** - Review and chat from phone/tablet
+- [ ] **Timeline Visualization** - Interactive history with chat context
+- [ ] **AI Assistant** - Smart suggestions based on chat context and code patterns
+- [ ] **Video/Voice Calls** - Built-in communication for complex discussions
 
-### Phase 6: Category Leadership (Year 2+)
-**Goal: Standard Platform for All Software Development**
-- [ ] **Industry partnerships** with major tech companies and bootcamps
-- [ ] **Educational initiatives** making Mothership the default for learning to code
-- [ ] **Open source ecosystem** with community-driven features and integrations
-- [ ] **Developer conferences** and community events (MothershipConf)
-- [ ] **Certification programs** for advanced Mothership collaboration techniques
-- [ ] **Research partnerships** with universities studying collaborative development
-- [ ] **Standards influence** helping define the future of version control and collaboration
+### Phase 6: Enterprise Features (Future)
+**Goal: Team and organization scale**
+- [ ] **Multi-tenant Architecture** - Organization isolation
+- [ ] **SSO Integration** - Enterprise authentication
+- [ ] **Analytics Dashboard** - Team productivity and collaboration insights
+- [ ] **Compliance Features** - Audit logs, security controls
+- [ ] **API Ecosystem** - Third-party integrations
 
-## Technical Challenges & Solutions
+## Current Status (January 2025)
 
-### Challenge: Real-Time Conflict Resolution
-**Problem**: Multiple users editing the same file simultaneously
-**Solution**: Operational transforms with conflict-free replicated data types (CRDTs)
+### ✅ **What's Working Now**
+- **Real-time collaboration**: Multiple developers can edit the same rift simultaneously
+- **Background sync**: File changes detected and synced automatically
+- **Zero-friction beaming**: Join projects instantly with automatic daemon management
+- **PostgreSQL persistence**: Production-ready database with proper relationships
+- **Cross-platform CLI**: Works on Windows, macOS, Linux
+- **OAuth authentication**: Seamless login with Google integration
 
-### Challenge: Efficient File Synchronization
-**Problem**: Large repositories with frequent changes
-**Solution**: Content-addressable storage with rolling hash diffing
+### 🎯 **What We're Building Next**
+- **Chat integration**: Real-time messaging within rifts
+- **Context preservation**: Link conversations to specific code and changes
+- **Smart notifications**: Know when teammates discuss your code
+- **Wormhole preview**: Test how different rifts will merge together
 
-### Challenge: Checkpoint Storage Efficiency
-**Problem**: Storing every file save would consume massive storage
-**Solution**: Delta compression with periodic full snapshots
+### 🚀 **The Big Dream**
+A development environment where:
+- Code changes happen in real-time with your team
+- Conversations about the code are preserved forever as context
+- You can preview how features will integrate before merging
+- The entire development story - decisions, discussions, iterations - is captured
+- New team members can understand not just what was built, but why and how
 
-### Challenge: Network Resilience
-**Problem**: Intermittent connectivity shouldn't break workflows
-**Solution**: Local-first architecture with eventual consistency
+## Migration & Adoption
 
-## Revolutionary Success Metrics
+### From Git to Mothership
+- **Start small**: Use for new experimental projects
+- **Gradual adoption**: Import existing Git repositories
+- **Parallel workflow**: Keep Git for releases, use Mothership for development
+- **Team consensus**: Adopt when the collaborative features prove valuable
 
-### ✅ **Foundation Phase Achievements (Completed January 2025)**
-
-#### 🎯 **Technical Excellence - PROVEN**
-- **Installation to productive work**: ✅ **2 minutes achieved** (Docker + OAuth + CLI ready)
-- **Commands required for authentication**: ✅ **1 command** (`mothership auth` → browser OAuth)
-- **Authentication cross-platform compatibility**: ✅ **100%** (Windows/macOS/Linux proven)
-- **Codebase quality**: ✅ **Professional standard** (0 compiler warnings, clean architecture)
-- **Deployment reliability**: ✅ **One-click success** (Docker health checks, automatic startup)
-
-#### 🔐 **Authentication Breakthrough - SOLVED**
-- **OAuth integration success rate**: ✅ **100%** (Complete Google OAuth flow working with PostgreSQL persistence)
-- **Cross-client authentication consistency**: ✅ **SOLVED** (CLI and GUI authenticate as same user with database validation)
-- **Token validation reliability**: ✅ **100%** (JWT user ID preservation with PostgreSQL user management)
-- **Machine certificate persistence**: ✅ **Seamless** (Automatic token recreation from JWT claims with database backup)
-- **Security architecture**: ✅ **Production-ready** (JWT, CORS, secret management, PostgreSQL security, SQL injection prevention)
-
-#### 🌌 **Gateway System Innovation - OPERATIONAL**
-- **Project creation success rate**: ✅ **100%** (PostgreSQL-backed `.mothership` metadata with database relationships)
-- **Nested gateway prevention**: ✅ **100%** (Directory traversal validation with database validation)
-- **Human-readable UX**: ✅ **Superior experience** (Beam by name with PostgreSQL lookups, `mothership deploy` command)
-- **Database persistence**: ✅ **Production-ready** (PostgreSQL with transactions, relationships, and data integrity)
-- **Error handling quality**: ✅ **Professional** (Helpful messages, user guidance, and database error handling)
-
-### ✅ **Phase 2 Targets: Background Daemon Engine (COMPLETED)**
-
-#### 🚀 **Revolutionary Zero-Friction Experience Achieved**
-- **Automatic daemon startup**: ✅ Beam command starts daemon automatically
-- **Background file tracking**: ✅ Complete IPC server with project registration
-- **Graceful disconnect functionality**: ✅ Individual project disconnect with daemon persistence
-- **Complete daemon lifecycle**: ✅ Status, stop, restart commands implemented
-- **Non-blocking console experience**: ✅ Beam command returns immediately
-
-#### 🚀 **Collaboration Superiority vs Git**
-- **Real-time collaboration sessions**: Target 40% of development time
-- **Manual merge conflicts**: Target < 1% (vs Git's 15-30%)
-- **Version control overhead**: Target < 0.5% of development time
-- **Developer satisfaction scores**: Target > 9/10 (vs Git's 6/10)
-- **Team adoption speed**: Target < 1 week full team migration
-
-### 🌟 **Business Model Validation (Phase 3-4 Targets)**
-- **Self-hosted deployments**: Target 20% month-over-month growth
-- **SaaS conversion rate**: Target > 15% from self-hosted to paid plans
-- **Enterprise deal size**: Target $50K+ ARR per 100-developer organization
-- **Market penetration**: Target 5% of global developer population by year 2
-- **Revenue growth**: Target 10x year-over-year during SaaS transition phase
-
-### 📊 **Competitive Positioning Achieved**
-- **vs Git Setup Complexity**: ✅ **2 minutes vs 2+ hours** (OAuth vs SSH keys, config, etc.)
-- **vs GitHub CLI**: ✅ **Superior UX** (Human names vs repository URLs)
-- **vs Traditional Version Control**: ✅ **Zero learning curve** (No manual commits required)
-- **vs Collaboration Tools**: ✅ **Integrated platform** (Authentication + projects in one system)
-
-## Migration Strategy: Zero-Friction Adoption
-
-### Individual Developer Adoption (Viral Growth Model)
-1. **Download & Install** (2 minutes) - One developer tries Mothership
-2. **Auto-Discovery** - Installer finds their existing projects  
-3. **Instant Productivity** - Working without learning new commands
-4. **Team Recommendation** - Developer shares with teammates
-5. **Team Viral Spread** - Organic adoption across organization
-
-### Existing Git Repository Integration
-- **Automatic Git import** during project auto-discovery
-- **Preserve Git history** as checkpoint chains with proper attribution
-- **Maintain Git remotes** as backup during transition period
-- **Bidirectional sync** allowing gradual team migration
-- **Branch mapping** to rifts with collaborative enhancement
-
-### Enterprise Adoption Strategy
-- **Pilot program**: Install on 5-10 developer machines
-- **Success demonstration**: Show real-time collaboration benefits
-- **Department rollout**: IT deploys via standard software distribution
-- **Organization-wide**: All developers using within 30 days
-- **Training**: Zero required - intuitive interface guides users
-
-### Competitive Displacement Timeline
-- **Month 1**: Individual developers discover superior experience
-- **Month 2-3**: Teams adopt for new projects
-- **Month 4-6**: Existing projects migrate from Git
-- **Month 7-12**: Organization standardizes on Mothership
-- **Year 2+**: Industry standard for new development teams
-
-## Business Model & Scaling Vision
-
-### The Path to Scale
-**Phase 1: Self-Hosted Foundation** ✅ *COMPLETE*
-- Open-source core with Docker deployment
-- Individual teams and organizations self-host
-- Private gateway capabilities for all users
-- Production-ready Docker infrastructure with one-click deployment
-
-**Phase 2: File Tracking Engine** 🎯 *CURRENT*
-- Real-time file synchronization between collaborators
-- Automatic checkpointing with efficient storage
-- Local-first architecture with smart sync
-- Cross-platform native installers
-
-**Phase 3: SaaS Transition** 🚀 *NEXT*
-- Hosted Mothership service with project storage
-- Subscription tiers (Individual, Team, Enterprise)
-- Premium features: Advanced collaboration, unlimited projects, priority support
-- Migration tools from self-hosted to SaaS
-
-**Phase 4: Enterprise Scale** 🌟 *FUTURE*
-- Multi-tenant architecture with organization isolation
-- Enterprise SSO and compliance features
-- Global edge deployment for performance
-- GitHub/GitLab competitive feature set
-
-### Critical Architectural Decisions
-
-**Database Strategy: PostgreSQL for Scale**
-- **Foundation**: ACID compliance essential for version control integrity
-- **Growth Path**: Single server → Read replicas → Sharding → Distributed
-- **Multi-tenancy**: Separate schemas per organization for SaaS
-- **JSON Support**: Flexible schemas for evolving features
-- **Operational Maturity**: Battle-tested at massive scale
-
-**Data Storage Design**
-```sql
--- Multi-tenant schema design
-CREATE SCHEMA org_${organization_id};
--- Partition large tables by organization and date
--- Content-addressable file storage with delta compression
--- Immutable checkpoint chains for version history
-```
-
-## Current Implementation Status (January 2025)
-
-### ✅ **PHASE 1: FOUNDATION - 100% COMPLETE!** 🎉
-
-#### 🔐 **Authentication & Security - PRODUCTION READY**
-- ✅ **Complete OAuth flow** with Google integration and browser-based device authorization
-- ✅ **JWT token management** with automatic refresh and secure validation
-- ✅ **OAuth token validation issue RESOLVED** - CLI and GUI now authenticate as same user with PostgreSQL persistence
-- ✅ **Cross-platform GUI** (Tauri) for seamless authentication experience
-- ✅ **Multi-role user system** (User/Admin/SuperAdmin) with PostgreSQL-backed secure role management
-- ✅ **Machine certificate persistence** with automatic token recreation from JWT claims
-- ✅ **Security-first architecture** with CORS protection, secret management, JWT validation, and database security
-
-#### 🌌 **Gateway System - FULLY OPERATIONAL**
-- ✅ **Human-readable project access** - beam into projects by name, not UUIDs with PostgreSQL lookups
-- ✅ **Intuitive project deployment** - `mothership deploy` command for current directory initialization
-- ✅ **Intelligent gateway creation** with automatic `.mothership` metadata and PostgreSQL storage
-- ✅ **Nested gateway prevention** with helpful error messages and validation
-- ✅ **Local project tracking** with JSON metadata and PostgreSQL persistence
-- ✅ **Project discovery and listing** with real-time PostgreSQL-backed server sync
-- ✅ **Gateway metadata persistence** with PostgreSQL relationships, project IDs, creation dates, and user membership
-
-#### 🚀 **Production Infrastructure - ENTERPRISE READY**
-- ✅ **PostgreSQL integration** with Docker Compose, health checks, and persistent volumes
-- ✅ **Sqlx offline mode** with compile-time SQL validation and metadata generation for clean Docker builds
-- ✅ **One-click deployment** with `start-docker.bat` PostgreSQL stack and cross-platform scripts
-- ✅ **Docker containerization** with health checks, service dependencies, and database connectivity
-- ✅ **Cross-platform compatibility** proven on Windows, macOS, and Linux with PostgreSQL persistence
-- ✅ **Environment configuration** with comprehensive .env support, database URLs, and security warnings
-- ✅ **Zero-downtime deployment** ready with proper Docker networking and database transactions
-- ✅ **OAuth callback server** (Node.js) with automatic token transfer and database integration
-
-#### 🧹 **Code Quality - PROFESSIONAL STANDARD**
-- ✅ **100% warning-free compilation** - completely clean Rust codebase with sqlx compile-time safety
-- ✅ **Professional error handling** with comprehensive user feedback and database transaction safety
-- ✅ **Modular architecture** with clean separation of concerns and database abstraction
-- ✅ **Security best practices** with proper secret management, JWT validation, and SQL injection prevention
-- ✅ **Documentation** with inline comments, comprehensive README, and database schema documentation
-
-### ✅ **PHASE 2: BACKGROUND DAEMON ENGINE - COMPLETED JANUARY 2025** 🎉
-
-#### 🚀 **Revolutionary Background Sync Implementation Complete**
-1. ✅ **Automatic daemon startup** - Beam command intelligently starts daemon when needed
-2. ✅ **Complete IPC server** - REST API with health, status, project management endpoints
-3. ✅ **Graceful project disconnect** - Individual projects can be removed from tracking
-4. ✅ **Full daemon lifecycle management** - Start, stop, restart, status commands
-5. ✅ **Non-blocking console experience** - Beam returns immediately, daemon runs in background
-6. ✅ **Smart daemon reuse** - Multiple projects share same daemon instance
-
-#### 🎯 **Technical Achievements**
-- **Cross-platform daemon spawning** - Windows (no-window) and Unix (silent) background processes
-- **Health check infrastructure** - Automatic daemon detection and startup validation
-- **Project registry** - PostgreSQL-backed tracking with graceful connect/disconnect
-- **IPC communication** - Full REST API for CLI-daemon communication on port 7525
-
-### 📊 **Revolutionary Technical Achievements**
-
-#### 🎯 **Authentication Breakthrough**
-- **SOLVED**: OAuth user recreation now preserves original JWT user IDs
-- **RESULT**: CLI and GUI authenticate as identical user consistently
-- **IMPACT**: Cross-platform authentication works seamlessly across all clients
-
-#### 🌟 **Gateway Innovation**
-- **FEATURE**: `.mothership` metadata directories with project information
-- **PROTECTION**: Nested gateway prevention with intelligent directory traversal
-- **UX**: Users guided with helpful tips for `.gitignore` integration
-
-#### 🏗️ **Infrastructure Excellence**
-- **DEPLOYMENT**: Production-ready Docker stack with health monitoring
-- **SCALING**: Multi-tenant architecture foundation for SaaS transition
-- **SECURITY**: JWT validation, CORS protection, and comprehensive secret management
-
-### 🚀 **Path to Revolutionary Beta Release**
-**✅ COMPLETED:** Background daemon engine with complete lifecycle management
-**Next 30 Days:** Real-time file synchronization between collaborators using existing WebSocket infrastructure
-**Next 60 Days:** Advanced conflict resolution and automatic checkpointing with PostgreSQL persistence
-**Next 90 Days:** Beta release with invite-only access for development teams
-**Next 120 Days:** SaaS platform launch with subscription tiers
-
-## Future Vision
-
-### Advanced Collaboration
-- AI-assisted conflict resolution using large language models
-- Semantic merge conflict detection based on code analysis
-- Real-time code review within rifts with integrated feedback
-- Pair programming mode with shared cursors and selections
-
-### Developer Tools Integration
-- IDE plugins for native Mothership support (VS Code, JetBrains)
-- CI/CD pipeline integration with automatic checkpoint triggers
-- Code quality metrics and suggestions based on team patterns
-- Integration with existing Git workflows for gradual migration
-
-### Scale & Performance
-- Distributed Mothership servers with global edge deployment
-- Smart prefetching and predictive syncing based on usage patterns
-- Edge caching for global teams with sub-100ms sync times
-- Auto-scaling infrastructure for viral adoption scenarios
+### Target Use Cases
+- **Pair programming teams** - Real-time collaboration with context
+- **Remote teams** - Async collaboration with preserved context
+- **Learning environments** - Students can see how experienced developers think
+- **Experimental projects** - Low-friction version control for rapid iteration
+- **Documentation-heavy projects** - Conversations become living documentation
 
 ---
 
-## 🎉 **Foundation Complete - Revolutionary Platform Ready**
+## The Vision
 
-**January 2025**: Mothership has achieved its **foundational breakthrough** with a production-ready platform that delivers on our core promise of **Zero Fear, Zero Ceremony, Zero Friction**.
+Mothership isn't trying to replace Git tomorrow. It's an experiment in what version control could be if we designed it today, with real-time collaboration, persistent context, and zero-friction workflows.
 
-### **What We've Proven:**
-- **Authentication complexity SOLVED** ✅ OAuth flow replaces Git's SSH key nightmare with PostgreSQL user persistence
-- **Project discovery SIMPLIFIED** ✅ Human-readable names replace cryptic repository URLs with database lookups
-- **Developer experience PERFECTED** ✅ `mothership deploy` command, one-click authentication, intelligent error handling
-- **Cross-platform ACHIEVED** ✅ Universal compatibility across Windows, macOS, Linux with PostgreSQL persistence
-- **Production infrastructure READY** ✅ Enterprise-grade Docker deployment with PostgreSQL, health monitoring, and sqlx safety
-- **Database architecture MASTERED** ✅ PostgreSQL with ACID compliance, relationships, transactions, and production-ready data integrity
-- **Background daemon REVOLUTIONIZED** ✅ Zero-friction automatic daemon startup with complete lifecycle management
-- **Console blocking ELIMINATED** ✅ Beam command returns immediately while daemon handles background sync
-- **Graceful disconnection IMPLEMENTED** ✅ Individual project disconnect with smart daemon persistence
+We're building a development environment where the conversations, decisions, and collaborative process are preserved as part of the project's living history. Where you can see not just what changed, but why it changed, who discussed it, and how the team arrived at the solution.
 
-### **The Revolution is Here:**
-With Phase 1 AND Phase 2 complete, we've achieved the **zero-friction development experience** that eliminates Git complexity while enabling seamless background file tracking. The foundation for real-time collaborative development is **operational and production-ready**.
+**This is a fun project exploring the future of collaborative development.** If it works well, maybe it becomes something bigger. If not, we'll have learned a lot and built some cool tech along the way.
 
-**Developers can now beam into projects with zero ceremony and disconnect gracefully with zero fear.**
-
----
-
-*This document represents the foundational vision for Mothership. **Phase 1 is complete** - we've proven the foundation works. As we build the revolutionary file tracking engine, we'll continue iterating while maintaining our core principles of safety, simplicity, and seamless collaboration.* 
+*The revolution might be coming, but first we're just trying to make development more collaborative and less lonely.* 🚀 

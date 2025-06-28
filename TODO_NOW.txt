@@ -1,0 +1,173 @@
+# TODO NOW - Performance & Efficiency Fixes
+## Priority: IMMEDIATE - Zero Overhead Vision
+
+### 🚨 CRITICAL PERFORMANCE ISSUES (Fix Today)
+
+#### 1. File Watcher Overhead - MASSIVE INEFFICIENCY
+**Location**: `mothership-daemon/src/file_watcher.rs:130`
+**Problem**: Reading ENTIRE file content on EVERY file save + sending via unbounded channels
+**Impact**: 10MB file = 10MB through channels per save (auto-save every 1s during editing)
+**Fix**:
+- [ ] Send only file path + timestamp, not content
+- [ ] Implement lazy content loading on-demand
+- [ ] Add file size limits (skip files > 1MB automatically)
+- [ ] Debounce file events (minimum 100ms between same-file events)
+
+#### 2. Broadcast Content Spam - NETWORK KILLER
+**Location**: `mothership-server/src/sync.rs:91`
+**Problem**: Broadcasting FULL file content to ALL users on every file save
+**Impact**: 5 users × 100KB file = 500KB network per save (auto-save every 1s during editing)
+**Fix**:
+- [ ] Send diffs only, not full content
+- [ ] Implement incremental sync protocol
+- [ ] Add content compression before broadcast
+- [ ] Smart batching of multiple rapid changes
+
+#### 3. Auto-Save/Checkpoint Spam - I/O THRASHING
+**Location**: `mothership-gui/main.js:245` + `mothership-common/src/lib.rs:54`
+**Problem**: Auto-save every 1s + checkpoint every 10s = constant disk I/O
+**Impact**: Continuous disk thrashing, poor battery life, system lag
+**Fix**:
+- [ ] Increase auto-save to 3-5 seconds minimum
+- [ ] Increase auto-checkpoint to 60 seconds minimum  
+- [ ] Implement smart debouncing (only save if content actually changed)
+- [ ] Add "typing mode" detection to pause auto-operations
+
+#### 4. Naive History Storage - STORAGE EXPLOSION
+**Location**: `mothership-server/src/storage.rs:87`
+**Problem**: Storing full files for every checkpoint, no diffs
+**Impact**: 1000-file project = GBs of storage per day
+**Fix**:
+- [ ] Implement proper diff generation (git-style)
+- [ ] Add compression for stored content
+- [ ] Implement content deduplication beyond simple hashing
+- [ ] Background garbage collection of old checkpoints
+
+#### 5. Memory Leaks - UNBOUNDED GROWTH
+**Location**: Multiple unbounded channels throughout codebase
+**Problem**: Full file content accumulating in channels
+**Impact**: Memory usage grows unbounded, eventual OOM
+**Fix**:
+- [ ] Replace unbounded channels with bounded channels (capacity: 100)
+- [ ] Implement backpressure handling
+- [ ] Add memory usage monitoring and alerts
+- [ ] Background cleanup of old channel messages
+
+### ⚡ IMMEDIATE OPTIMIZATIONS (This Week)
+
+#### File Watching Intelligence
+- [ ] Implement .gitignore-style filtering (respect existing .gitignore)
+- [ ] Skip binary files entirely (add MIME type detection)
+- [ ] Batch multiple rapid file changes (debounce window: 200ms)
+- [ ] Add file extension allowlist (only track code files)
+
+#### Network Protocol Efficiency  
+- [ ] Implement WebSocket message compression
+- [ ] Add message batching (send max every 100ms)
+- [ ] Delta compression for file content
+- [ ] Connection pooling for multiple projects
+
+#### Storage Optimizations
+- [ ] Add LZ4 compression for all stored content
+- [ ] Implement rolling checkpoints (keep last 50, archive older)
+- [ ] Add storage quota limits per project
+- [ ] Background storage optimization job
+
+#### Real-Time Sync Performance
+- [ ] Implement operational transforms for conflict-free editing
+- [ ] Add presence awareness (show active editors)
+- [ ] Smart conflict detection (only check when multiple editors)
+- [ ] Cursor position sync with minimal bandwidth
+
+### 🎯 ZERO OVERHEAD VISION
+
+#### Target Performance Metrics
+- [ ] **File save latency**: < 50ms from save to network broadcast
+- [ ] **Memory usage**: < 50MB base + 1MB per tracked project
+- [ ] **Network traffic**: < 1KB per file save (diff-based)
+- [ ] **Storage growth**: < 10MB per day for typical project
+- [ ] **CPU usage**: < 5% during active editing
+
+#### Smart Resource Management
+- [ ] Adaptive performance based on system resources
+- [ ] Pause expensive operations during battery mode
+- [ ] Scale broadcast frequency based on number of connected users
+- [ ] Intelligent caching with LRU eviction
+
+#### Background Intelligence
+- [ ] Detect idle periods and optimize accordingly
+- [ ] Smart checkpoint timing (avoid during active editing)
+- [ ] Prefetch likely-to-be-accessed content
+- [ ] Background defragmentation of storage
+
+### 🔧 TECHNICAL DEBT (Next Sprint)
+
+#### Code Quality
+- [ ] Remove all TODO comments and implement proper solutions
+- [ ] Add proper error handling everywhere (no more `.unwrap()`)
+- [ ] Implement comprehensive logging with performance metrics
+- [ ] Add unit tests for all performance-critical paths
+
+#### Architecture Improvements
+- [ ] Separate concerns: file watching, networking, storage
+- [ ] Implement proper async streaming for large files
+- [ ] Add circuit breakers for failing operations
+- [ ] Implement graceful degradation modes
+
+#### Monitoring & Observability
+- [ ] Real-time performance dashboard
+- [ ] Memory usage alerts
+- [ ] Network traffic monitoring
+- [ ] Storage growth tracking
+- [ ] User experience metrics (latency, errors)
+
+### 📊 SUCCESS CRITERIA
+
+#### Before Optimization (Current State)
+- [ ] Measure current memory usage during typical editing session
+- [ ] Benchmark file save latency end-to-end
+- [ ] Measure storage growth over 1-hour editing session
+- [ ] Test network usage with multiple connected users
+
+#### After Optimization (Target State)
+- [ ] Memory usage stays flat during long editing sessions
+- [ ] File saves feel instantaneous (< 100ms perceived latency)
+- [ ] Storage grows linearly, not exponentially
+- [ ] Network traffic scales efficiently with users
+- [ ] System remains responsive under heavy load
+
+### 🚀 IMPLEMENTATION PLAN
+
+#### Day 1: Critical Fixes
+1. Fix file watcher to send paths only
+2. Implement diff-based broadcasting
+3. Increase auto-save/checkpoint intervals
+4. Add bounded channels everywhere
+
+#### Day 2: Smart Batching
+1. Implement debouncing for all user actions
+2. Add compression to storage pipeline
+3. Smart file filtering and size limits
+4. Background cleanup jobs
+
+#### Day 3: Real-Time Optimizations
+1. Operational transforms for conflict resolution
+2. Efficient presence awareness
+3. Cursor position sync
+4. Connection optimizations
+
+#### Day 4: Monitoring & Polish
+1. Performance dashboard
+2. Memory leak detection
+3. Load testing with multiple users
+4. End-to-end performance validation
+
+---
+
+## 💡 ZERO OVERHEAD PHILOSOPHY
+
+"Every operation should feel instantaneous. Every byte should serve a purpose. Every cycle should move us forward."
+
+The goal: Mothership should feel lighter than Git, faster than VS Code Live Share, and more responsive than Google Docs - even while doing more than all of them combined.
+
+**No compromises. No "good enough." Zero overhead. Maximum flow.** 
