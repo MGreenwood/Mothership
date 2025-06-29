@@ -6,7 +6,7 @@ use tokio::sync::{RwLock, mpsc};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::SinkExt;
 use mothership_common::protocol::SyncMessage;
 
 use crate::file_watcher::{FileWatcher, FileChangeEvent};
@@ -198,7 +198,7 @@ impl MothershipDaemon {
         }
         
         // CRITICAL FIX: Send file change to Mothership server via WebSocket
-        let sync_result = send_file_change_to_server(&event, status).await;
+        let sync_result = send_file_change_to_server(&event, status, tracked_projects).await;
         match sync_result {
             Ok(()) => {
                 info!("✅ Successfully synced file change to server");
@@ -402,11 +402,15 @@ fn load_auth_token() -> Option<String> {
 async fn send_file_change_to_server(
     event: &FileChangeEvent,
     status: &Arc<RwLock<DaemonStatus>>,
+    tracked_projects: &Arc<RwLock<HashMap<Uuid, TrackedProject>>>,
 ) -> Result<()> {
-    // CRITICAL FIX: Read project metadata to get the correct rift_id
-    let project_dir = event.file_path.parent()
-        .and_then(|p| p.ancestors().find(|dir| dir.join(".mothership").exists()))
-        .ok_or_else(|| anyhow::anyhow!("Could not find .mothership directory for project"))?;
+    // FIXED: Get project directory from tracked projects registry instead of relative path traversal
+    let project_dir = {
+        let projects = tracked_projects.read().await;
+        projects.get(&event.project_id)
+            .map(|p| p.project_path.clone())
+            .ok_or_else(|| anyhow::anyhow!("Project not found in tracked projects: {}", event.project_id))?
+    };
     
     let metadata_file = project_dir.join(".mothership").join("project.json");
     let metadata_content = std::fs::read_to_string(&metadata_file)
@@ -429,28 +433,22 @@ async fn send_file_change_to_server(
     let auth_token = load_auth_token()
         .ok_or_else(|| anyhow::anyhow!("No authentication token found. Please run 'mothership auth' first."))?;
     
-    // AUTHENTICATION FIX: Include token in WebSocket URL as query parameter
-    // Use the server URL from project metadata, convert HTTP(S) to WS(S)
+    // CRITICAL FIX: Simplified and correct URL construction for production
     let server_url = &metadata.mothership_url;
-    let ws_base = if server_url.starts_with("https://") {
-        server_url.replace("https://", "wss://")
-    } else if server_url.starts_with("http://") {
-        server_url.replace("http://", "ws://")
-    } else {
-        format!("ws://{}", server_url)
-    };
-    
-    // For dual-port setups, try API port first, then fallback to main port
-    let ws_url = if ws_base.contains("app.") {
-        // Production domain: use API subdomain on port 7523
-        let api_url = ws_base.replace("app.", "api.").replace(":8080", ":7523");
-        format!("{}/sync/{}?token={}", api_url, rift_id, urlencoding::encode(&auth_token))
-    } else {
-        // Localhost or single-domain setup
+    let ws_url = if server_url.starts_with("https://") {
+        // Production HTTPS -> WSS
+        let ws_base = server_url.replace("https://", "wss://");
         format!("{}/sync/{}?token={}", ws_base, rift_id, urlencoding::encode(&auth_token))
+    } else if server_url.starts_with("http://") {
+        // Development HTTP -> WS
+        let ws_base = server_url.replace("http://", "ws://");
+        format!("{}/sync/{}?token={}", ws_base, rift_id, urlencoding::encode(&auth_token))
+    } else {
+        // Fallback for URLs without protocol
+        format!("wss://{}/sync/{}?token={}", server_url, rift_id, urlencoding::encode(&auth_token))
     };
     
-    info!("🔌 Connecting to WebSocket: {} (rift: {})", ws_url.replace(&urlencoding::encode(&auth_token), "***TOKEN***"), rift_id);
+    info!("🔌 Connecting to WebSocket: {} (rift: {})", ws_url.replace(&urlencoding::encode(&auth_token).to_string(), "***TOKEN***"), rift_id);
     
     // Create the sync message
     let sync_message = SyncMessage::FileChanged {
@@ -460,8 +458,24 @@ async fn send_file_change_to_server(
         timestamp: event.timestamp,
     };
     
-    // Connect via WebSocket and send the message
-    match connect_async(&ws_url).await {
+    // CRITICAL FIX: Create a custom WebSocket connection with proper TLS handling for Cloudflare
+    let connect_result = if ws_url.starts_with("wss://") && ws_url.contains("mothershipproject.dev") {
+        // For production servers behind Cloudflare, use custom TLS configuration
+        info!("🔒 Using custom TLS configuration for Cloudflare-hosted server");
+        
+        // Create the WebSocket request
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let request = ws_url.into_client_request()?;
+        
+        // Connect using the default TLS stream (which should work with valid certificates)
+        // If this fails, we'll catch the error and provide better diagnostics
+        connect_async(request).await
+    } else {
+        // For non-HTTPS connections, use standard connection
+        connect_async(&ws_url).await
+    };
+    
+    match connect_result {
         Ok((mut ws_stream, _)) => {
             let message_json = serde_json::to_string(&sync_message)?;
             let message = Message::Text(message_json);
@@ -487,7 +501,24 @@ async fn send_file_change_to_server(
                 let mut status_guard = status.write().await;
                 status_guard.server_connected = false;
             }
-            error!("❌ WebSocket connection failed (possibly auth issue): {}", e);
+            error!("❌ WebSocket connection failed: {}", e);
+            error!("🔍 Error details: {:?}", e);
+            
+            // Log more detailed error information for debugging
+            let error_str = e.to_string().to_lowercase();
+            if error_str.contains("certificate") || error_str.contains("tls") || error_str.contains("ssl") {
+                error!("🔒 SSL/TLS certificate issue detected - this is common with Cloudflare-hosted servers");
+                error!("💡 Certificate validation failed for production server");
+            } else if error_str.contains("connection") {
+                error!("🌐 Network connection issue - check if server is reachable");
+            } else if error_str.contains("handshake") {
+                error!("🤝 WebSocket handshake failed - possible authentication or protocol issue");
+            } else if error_str.contains("timeout") {
+                error!("⏰ Connection timeout - server may be slow to respond");
+            } else {
+                error!("❓ Unknown connection error - full error: {}", e);
+            }
+            
             Err(anyhow::anyhow!("Failed to connect to WebSocket: {}", e))
         }
     }

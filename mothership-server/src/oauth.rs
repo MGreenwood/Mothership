@@ -1,5 +1,5 @@
 use anyhow::Result;
-use mothership_common::auth::{AuthError, OAuthProfile, OAuthProvider};
+use mothership_common::auth::{AuthError, OAuthProfile, OAuthProvider, OAuthSource};
 use oauth2::{
     basic::BasicClient, reqwest::async_http_client, AuthUrl, AuthorizationCode, ClientId,
     ClientSecret, CsrfToken, RedirectUrl, Scope, TokenResponse, TokenUrl,
@@ -20,7 +20,7 @@ struct OAuthConfig {
 #[derive(Clone)]
 pub struct OAuthService {
     providers: HashMap<OAuthProvider, OAuthConfig>,
-    pending_states: std::sync::Arc<RwLock<HashMap<String, OAuthProvider>>>,
+    pending_states: std::sync::Arc<RwLock<HashMap<String, (OAuthProvider, OAuthSource)>>>,
 }
 
 impl OAuthService {
@@ -83,7 +83,7 @@ impl OAuthService {
     }
 
     /// Generate authorization URL for OAuth flow
-    pub async fn get_authorization_url(&self, provider: OAuthProvider) -> Result<(String, String), AuthError> {
+    pub async fn get_authorization_url(&self, provider: OAuthProvider, source: OAuthSource) -> Result<(String, String), AuthError> {
         let config = self.providers.get(&provider)
             .ok_or_else(|| AuthError::OAuthError(format!("Provider {:?} not configured", provider)))?;
 
@@ -98,19 +98,19 @@ impl OAuthService {
 
         let state = csrf_token.secret().clone();
         
-        // Store the state for validation
+        // Store the state for validation along with source
         {
             let mut pending_states = self.pending_states.write().await;
-            pending_states.insert(state.clone(), provider);
+            pending_states.insert(state.clone(), (provider, source));
         }
 
         Ok((auth_url.to_string(), state))
     }
 
     /// Exchange authorization code for user profile
-    pub async fn exchange_code(&self, code: String, state: String) -> Result<OAuthProfile, AuthError> {
+    pub async fn exchange_code(&self, code: String, state: String) -> Result<(OAuthProfile, OAuthSource), AuthError> {
         // Validate state and get provider
-        let provider = {
+        let (provider, source) = {
             let mut pending_states = self.pending_states.write().await;
             pending_states.remove(&state)
                 .ok_or_else(|| AuthError::OAuthError("Invalid or expired state".to_string()))?
@@ -129,7 +129,7 @@ impl OAuthService {
         // Fetch user profile
         let profile = self.fetch_user_profile(&provider, token.access_token().secret()).await?;
         
-        Ok(profile)
+        Ok((profile, source))
     }
 
     /// Fetch user profile from OAuth provider

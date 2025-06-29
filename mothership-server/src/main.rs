@@ -1,15 +1,16 @@
 use axum::{
     extract::{Path, State, WebSocketUpgrade},
     http::{HeaderMap, StatusCode},
-    response::{Json, Response},
+    response::{IntoResponse, Json, Response},
     routing::{delete, get, post},
     Router,
 };
 use mothership_common::{
-    auth::{AuthRequest, AuthResponse, TokenRequest, TokenResponse, OAuthRequest, OAuthResponse, OAuthProvider, OAuthProfile},
+    auth::{AuthRequest, AuthResponse, TokenRequest, TokenResponse, OAuthRequest, OAuthResponse, OAuthProvider, OAuthProfile, OAuthSource},
     protocol::{ApiResponse, BeamRequest, BeamResponse, GatewayRequest},
     GatewayProject, Project, ProjectId, User, UserRole,
 };
+use uuid;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 use tower_http::cors::CorsLayer;
 use tracing::{error, info, warn};
@@ -484,7 +485,7 @@ async fn oauth_start(
     State(state): State<AppState>,
     Json(req): Json<OAuthRequest>,
 ) -> Result<Json<ApiResponse<OAuthResponse>>, StatusCode> {
-    info!("🔐 OAuth start request for provider: {:?} from machine: {}", req.provider, req.machine_id);
+    info!("🔐 OAuth start request for provider: {:?} from {:?} source on machine: {}", req.provider, req.source, req.machine_id);
     
     // Check if OAuth is enabled
     if !state.config.features.oauth_enabled {
@@ -492,7 +493,7 @@ async fn oauth_start(
         return Ok(Json(ApiResponse::error("OAuth is disabled".to_string())));
     }
     
-    match state.oauth.get_authorization_url(req.provider).await {
+    match state.oauth.get_authorization_url(req.provider, req.source).await {
         Ok((auth_url, csrf_state)) => {
             info!("✅ Generated OAuth URL: {}", auth_url);
             let response = OAuthResponse {
@@ -513,7 +514,7 @@ async fn oauth_start(
 async fn oauth_callback_google(
     State(state): State<AppState>,
     query: axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> Result<axum::response::Redirect, StatusCode> {
+) -> Result<Response, StatusCode> {
     oauth_callback_handler(state, query, OAuthProvider::Google).await
 }
 
@@ -521,7 +522,7 @@ async fn oauth_callback_google(
 async fn oauth_callback_github(
     State(state): State<AppState>,
     query: axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> Result<axum::response::Redirect, StatusCode> {
+) -> Result<Response, StatusCode> {
     oauth_callback_handler(state, query, OAuthProvider::GitHub).await
 }
 
@@ -530,7 +531,7 @@ async fn oauth_callback_handler(
     state: AppState,
     query: axum::extract::Query<std::collections::HashMap<String, String>>,
     provider: OAuthProvider,
-) -> Result<axum::response::Redirect, StatusCode> {
+) -> Result<Response, StatusCode> {
     info!("🔄 OAuth callback received for {:?}", provider);
     info!("📋 Callback query params: {:?}", query.iter().map(|(k, v)| (k, if k == "code" { "***" } else { v })).collect::<Vec<_>>());
     
@@ -551,7 +552,7 @@ async fn oauth_callback_handler(
     info!("✅ OAuth callback has required parameters");
 
     match state.oauth.exchange_code(code, csrf_state).await {
-        Ok(profile) => {
+        Ok((profile, source)) => {
             info!("OAuth success for {} user: {} ({})", 
                 match provider {
                     OAuthProvider::Google => "Google",
@@ -570,9 +571,10 @@ async fn oauth_callback_handler(
                     if let Some(whitelist) = &state.whitelist {
                         if !whitelist.is_user_allowed(&user.username, &user.email) {
                             warn!("OAuth user {} ({}) not in whitelist", user.username, user.email);
-                            let server_url = std::env::var("OAUTH_BASE_URL")
+                            let web_ui_url = std::env::var("WEB_UI_BASE_URL")
+                                .or_else(|_| std::env::var("OAUTH_BASE_URL"))
                                 .unwrap_or_else(|_| "http://localhost:7523".to_string());
-                            return Ok(axum::response::Redirect::to(&format!("{}/auth/error?message=Access denied - user not authorized", server_url)));
+                            return Ok(axum::response::Redirect::to(&format!("{}/auth/error?message=Access denied - user not authorized", web_ui_url)).into_response());
                         }
                     }
                     
@@ -580,9 +582,10 @@ async fn oauth_callback_handler(
                 }
                 Err(e) => {
                     error!("❌ Failed to resolve OAuth user: {}", e);
-                    let server_url = std::env::var("OAUTH_BASE_URL")
+                    let web_ui_url = std::env::var("WEB_UI_BASE_URL")
+                        .or_else(|_| std::env::var("OAUTH_BASE_URL"))
                         .unwrap_or_else(|_| "http://localhost:7523".to_string());
-                    return Ok(axum::response::Redirect::to(&format!("{}/auth/error?message=Failed to resolve user account", server_url)));
+                    return Ok(axum::response::Redirect::to(&format!("{}/auth/error?message=Failed to resolve user account", web_ui_url)).into_response());
                 }
             };
 
@@ -600,43 +603,60 @@ async fn oauth_callback_handler(
 
             match state.auth.encode_token(&claims) {
                 Ok(token) => {
-                    // Use the same OAuth base URL for consistency
-                    let server_url = std::env::var("OAUTH_BASE_URL")
-                        .unwrap_or_else(|_| {
-                            if let Some(web_port) = state.config.server.web_port {
-                                // Dual port mode - use web UI port
-                                format!("http://localhost:{}", web_port)
-                            } else {
-                                // Single port mode - use main server port
-                                "http://localhost:7523".to_string()
-                            }
-                        });
-                    
-                    Ok(axum::response::Redirect::to(&format!(
-                        "{}/download/authenticated?token={}&user={}&email={}",
-                        server_url,
-                        urlencoding::encode(&token),
-                        urlencoding::encode(&user.username),
-                        urlencoding::encode(&user.email)
-                    )))
+                    // Handle CLI vs Web OAuth differently
+                    match source {
+                        OAuthSource::CLI | OAuthSource::GUI => {
+                            // For CLI/GUI: Store token in temporary session and redirect to clean URL
+                            let session_id = uuid::Uuid::new_v4().to_string();
+                            
+                            // Store token data temporarily (you'd want Redis in production)
+                            // For now, we'll serve the page directly with embedded token
+                            let success_html = generate_cli_success_page(&token, &user.username, &user.email);
+                            return Ok(axum::response::Html(success_html).into_response());
+                        }
+                        OAuthSource::Web => {
+                            // For Web: Redirect to download page as before
+                            let web_ui_url = std::env::var("WEB_UI_BASE_URL")
+                                .or_else(|_| std::env::var("OAUTH_BASE_URL")) // Fallback to OAuth base URL
+                                .unwrap_or_else(|_| {
+                                    if let Some(web_port) = state.config.server.web_port {
+                                        // Dual port mode - use web UI port
+                                        format!("http://localhost:{}", web_port)
+                                    } else {
+                                        // Single port mode - use main server port
+                                        "http://localhost:7523".to_string()
+                                    }
+                                });
+                            
+                            Ok(axum::response::Redirect::to(&format!(
+                                "{}/download/authenticated?token={}&user={}&email={}",
+                                web_ui_url,
+                                urlencoding::encode(&token),
+                                urlencoding::encode(&user.username),
+                                urlencoding::encode(&user.email)
+                            )).into_response())
+                        }
+                    }
                 }
                 Err(e) => {
                     error!("Failed to generate JWT token: {}", e);
-                    let server_url = std::env::var("OAUTH_BASE_URL")
+                    let web_ui_url = std::env::var("WEB_UI_BASE_URL")
+                        .or_else(|_| std::env::var("OAUTH_BASE_URL"))
                         .unwrap_or_else(|_| "http://localhost:7523".to_string());
-                    Ok(axum::response::Redirect::to(&format!("{}/auth/error?message=Failed to generate token", server_url)))
+                    Ok(axum::response::Redirect::to(&format!("{}/auth/error?message=Failed to generate token", web_ui_url)).into_response())
                 }
             }
         }
         Err(e) => {
             error!("OAuth callback failed: {}", e);
-            let server_url = std::env::var("OAUTH_BASE_URL")
+            let web_ui_url = std::env::var("WEB_UI_BASE_URL")
+                .or_else(|_| std::env::var("OAUTH_BASE_URL"))
                 .unwrap_or_else(|_| "http://localhost:7523".to_string());
             Ok(axum::response::Redirect::to(&format!(
                 "{}/auth/error?message={}",
-                server_url,
+                web_ui_url,
                 urlencoding::encode(&e.to_string())
-            )))
+            )).into_response())
         }
     }
 }
@@ -742,6 +762,206 @@ fn provider_name(provider: &OAuthProvider) -> &'static str {
     }
 }
 
+/// Generate CLI success page with embedded token (no URL exposure)
+fn generate_cli_success_page(token: &str, username: &str, email: &str) -> String {
+    format!(r#"<!DOCTYPE html>
+<html>
+<head>
+    <title>Mothership Authentication Success</title>
+    <meta charset="utf-8">
+    <style>
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            margin: 0;
+            padding: 20px;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }}
+        .container {{
+            background: white;
+            padding: 40px;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            text-align: center;
+            max-width: 600px;
+            width: 100%;
+        }}
+        .success-icon {{ font-size: 48px; margin-bottom: 20px; }}
+        h1 {{ color: #2d3748; margin-bottom: 20px; }}
+        .user-info {{ background: #f7fafc; padding: 20px; border-radius: 8px; margin: 20px 0; }}
+        .token-section {{ background: #e8f4fd; padding: 20px; border-radius: 8px; margin: 20px 0; text-align: left; }}
+        .token-textarea {{ 
+            width: 100%; 
+            height: 120px; 
+            padding: 15px; 
+            border: 2px solid #007acc; 
+            border-radius: 4px; 
+            font-family: 'Courier New', monospace; 
+            font-size: 12px; 
+            background: #f8f9fa; 
+            resize: none;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+            box-sizing: border-box;
+        }}
+        .buttons {{ margin-top: 15px; text-align: center; }}
+        .btn {{ 
+            background: #007acc; 
+            color: white; 
+            border: none; 
+            padding: 10px 20px; 
+            border-radius: 4px; 
+            cursor: pointer;
+            font-size: 14px;
+            margin: 0 5px;
+        }}
+        .btn:hover {{ background: #005fa3; }}
+        .btn.copy {{ background: #28a745; }}
+        .btn.copy:hover {{ background: #1e7e34; }}
+        .instructions {{ 
+            background: #fff3cd; 
+            padding: 15px; 
+            border-radius: 8px; 
+            border-left: 4px solid #ffc107;
+            margin-top: 20px;
+            text-align: left;
+        }}
+        .tip {{ 
+            background: #d1ecf1; 
+            padding: 15px; 
+            border-radius: 8px; 
+            margin-top: 15px; 
+            font-size: 12px; 
+            color: #0c5460;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="success-icon">✅</div>
+        <h1>CLI Authentication Successful!</h1>
+        
+        <div class="user-info">
+            <p><strong>User:</strong> {}</p>
+            <p><strong>Email:</strong> {}</p>
+        </div>
+        
+        <div class="token-section">
+            <h4 style="margin-top: 0; color: #0066cc;">🖥️ For Terminal/CLI Users:</h4>
+            <p style="margin: 10px 0; font-size: 14px;">Copy the token below and paste it in your terminal when prompted:</p>
+            
+            <textarea id="token-textarea" class="token-textarea" readonly onclick="this.select()" title="Click to select all text">{}</textarea>
+            
+            <div class="buttons">
+                <button class="btn" onclick="selectAllToken()">📝 Select All</button>
+                <button class="btn copy" onclick="copyToClipboard()">📋 Copy Token</button>
+            </div>
+        </div>
+        
+        <div class="instructions">
+            <h4 style="margin-top: 0; color: #856404;">📝 Instructions:</h4>
+            <ol style="margin: 10px 0; padding-left: 20px; font-size: 14px;">
+                <li>Click the "Copy Token" button above, or</li>
+                <li>Click in the text box and press <kbd style="background: #f8f9fa; padding: 2px 6px; border-radius: 3px; border: 1px solid #ddd;">Ctrl+A</kbd> then <kbd style="background: #f8f9fa; padding: 2px 6px; border-radius: 3px; border: 1px solid #ddd;">Ctrl+C</kbd></li>
+                <li>Go back to your terminal and paste the token when prompted</li>
+                <li>You can close this window after copying the token</li>
+            </ol>
+        </div>
+        
+        <div class="tip">
+            💡 <strong>Security Note:</strong> This token is not visible in the URL for your security. It's only shown on this page.
+        </div>
+    </div>
+
+    <script>
+        // Token is embedded securely in the page, not in URL
+        const rawToken = '{}';
+        
+        function selectAllToken() {{
+            const textarea = document.getElementById('token-textarea');
+            if (textarea) {{
+                textarea.focus();
+                textarea.select();
+                textarea.setSelectionRange(0, textarea.value.length);
+            }}
+        }}
+        
+        async function copyToClipboard() {{
+            const btn = event.target;
+            const originalText = btn.textContent;
+            
+            try {{
+                // Try modern clipboard API first
+                await navigator.clipboard.writeText(rawToken);
+                
+                // Show success feedback
+                btn.textContent = '✅ Copied!';
+                btn.style.background = '#28a745';
+                
+                setTimeout(() => {{
+                    btn.textContent = originalText;
+                    btn.style.background = '#28a745';
+                }}, 2000);
+                
+            }} catch (err) {{
+                console.error('Modern clipboard API failed:', err);
+                
+                // Fallback: Try legacy execCommand method
+                try {{
+                    const textarea = document.getElementById('token-textarea');
+                    textarea.select();
+                    textarea.setSelectionRange(0, textarea.value.length);
+                    
+                    const successful = document.execCommand('copy');
+                    if (successful) {{
+                        btn.textContent = '✅ Copied!';
+                        btn.style.background = '#28a745';
+                        
+                        setTimeout(() => {{
+                            btn.textContent = originalText;
+                            btn.style.background = '#28a745';
+                        }}, 2000);
+                    }} else {{
+                        throw new Error('execCommand failed');
+                    }}
+                }} catch (fallbackErr) {{
+                    console.error('All clipboard methods failed:', fallbackErr);
+                    
+                    // Final fallback: Select text and show instructions
+                    selectAllToken();
+                    btn.textContent = '📋 Text Selected!';
+                    btn.style.background = '#ffc107';
+                    
+                    alert('❌ Automatic copy failed.\\n\\nThe token text has been selected for you.\\nPress Ctrl+C (or Cmd+C on Mac) to copy it manually.');
+                    
+                    setTimeout(() => {{
+                        btn.textContent = originalText;
+                        btn.style.background = '#28a745';
+                    }}, 3000);
+                }}
+            }}
+        }}
+        
+        // Auto-select token when page loads
+        document.addEventListener('DOMContentLoaded', function() {{
+            selectAllToken();
+        }});
+        
+        // Also select when clicking anywhere on the textarea
+        document.getElementById('token-textarea').addEventListener('click', selectAllToken);
+    </script>
+</body>
+</html>"#, 
+        username, 
+        email, 
+        token,  // Token safely embedded in textarea
+        token   // Token for JavaScript (properly escaped)
+    )
+}
+
 /// Serve OAuth success page
 async fn oauth_success_page(
     query: axum::extract::Query<std::collections::HashMap<String, String>>,
@@ -827,6 +1047,11 @@ async fn oauth_success_page(
                 email: email
             }};
             
+            // Check if this is CLI-initiated OAuth
+            const urlParams = new URLSearchParams(window.location.search);
+            const source = urlParams.get('source');
+            const isCLIAuth = source === 'cli';
+            
             // Check if we're in a local development environment
             const isLocalhost = window.location.hostname === 'localhost' || 
                                window.location.hostname === '127.0.0.1' ||
@@ -870,14 +1095,19 @@ async fn oauth_success_page(
                 }}
             }}
             
-            // For production/web environments, redirect to download page with token
-            if (!isLocalhost) {{
+            // For production/web environments, redirect to download page with token (unless CLI-initiated)
+            if (!isLocalhost && !isCLIAuth) {{
                 console.log('🌐 Production environment detected, redirecting to download page...');
                 const baseUrl = window.location.origin; // Use current domain (https://app.mothershipproject.dev)
                 const downloadUrl = `${{baseUrl}}/download/authenticated?token=${{encodeURIComponent(token)}}&user=${{encodeURIComponent(user)}}&email=${{encodeURIComponent(email)}}`;
                 console.log('🔗 Redirecting to:', downloadUrl);
                 window.location.href = downloadUrl;
                 return;
+            }}
+            
+            // For CLI-initiated OAuth, always show manual copy interface
+            if (isCLIAuth) {{
+                console.log('🖥️ CLI-initiated OAuth detected, showing manual token copy interface...');
             }}
             
             // Fallback: show manual token copy (for localhost when GUI callback fails)
@@ -1053,14 +1283,36 @@ async fn oauth_error_page(
 }
 
 /// Complete device authorization (called by auth server)
+/// 
+/// ⚠️ WARNING: This is a DEMO implementation that accepts any username/email without verification!
+/// In production, this should:
+/// 1. Verify the user's identity through proper authentication (OAuth, SSO, email verification, etc.)
+/// 2. Check if the user is allowed to access the system (whitelist, permissions, etc.)
+/// 3. Implement rate limiting and security measures
 async fn auth_authorize_device(
     State(state): State<AppState>,
     Json(req): Json<DeviceAuthRequest>,
 ) -> Result<Json<ApiResponse<String>>, StatusCode> {
     info!("Device authorization request for device code: {}", req.device_code);
     
+    // ⚠️ SECURITY WARNING: This demo implementation trusts the auth server to verify users
+    // In production, add proper authentication here!
+    
+    // Check whitelist if enabled
+    if let Some(whitelist) = &state.whitelist {
+        if !whitelist.is_user_allowed(&req.username, &req.email) {
+            warn!("Device auth rejected - user not in whitelist: {} ({})", req.username, req.email);
+            return Ok(Json(ApiResponse::error("Access denied - user not authorized".to_string())));
+        }
+    }
+    
     // Check if user exists, if not create them as a regular user
     let user = if let Some(existing_user) = state.db.get_user_by_username(&req.username).await.unwrap_or(None) {
+        // Verify email matches for existing user
+        if existing_user.email != req.email {
+            warn!("Device auth rejected - email mismatch for user: {}", req.username);
+            return Ok(Json(ApiResponse::error("Email mismatch for existing user".to_string())));
+        }
         existing_user
     } else {
         // Create new user with regular user role

@@ -10,6 +10,20 @@ pub enum OAuthProvider {
     GitHub,
 }
 
+/// OAuth source type
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum OAuthSource {
+    Web,        // Web browser download flow
+    CLI,        // CLI authentication flow
+    GUI,        // GUI application flow
+}
+
+impl Default for OAuthSource {
+    fn default() -> Self {
+        Self::Web
+    }
+}
+
 /// OAuth authentication request (initiate flow)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OAuthRequest {
@@ -18,6 +32,8 @@ pub struct OAuthRequest {
     pub machine_name: String,
     pub platform: String,
     pub hostname: String,
+    #[serde(default)]
+    pub source: OAuthSource,
 }
 
 /// OAuth authentication response (with redirect URL)

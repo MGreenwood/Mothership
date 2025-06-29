@@ -40,7 +40,11 @@ services:
       - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID}
       - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}
       # OAuth callback URLs for production (Cloudflare tunnel)
-      - OAUTH_BASE_URL=https://app.mothershipproject.dev
+      - OAUTH_BASE_URL=https://api.mothershipproject.dev
+      # Web UI base URL for OAuth success redirect (production)
+      - WEB_UI_BASE_URL=https://app.mothershipproject.dev
+      # Auth server URL for device flow (production)
+      - AUTH_SERVER_URL=https://auth.mothershipproject.dev
       # WebSocket base URL for production (Cloudflare tunnel)
       - WEBSOCKET_BASE_URL=wss://api.mothershipproject.dev
       # Database configuration

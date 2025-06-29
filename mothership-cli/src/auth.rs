@@ -1,11 +1,12 @@
 use anyhow::Result;
 use colored::*;
-use mothership_common::auth::{OAuthRequest, OAuthResponse, OAuthProvider};
+use mothership_common::auth::{AuthRequest, AuthResponse, TokenRequest, TokenResponse, OAuthRequest, OAuthResponse, OAuthProvider, OAuthSource};
 
 use uuid;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use std::io::Write;
 
 use crate::config::ConfigManager;
 
@@ -25,8 +26,131 @@ pub async fn handle_auth(config_manager: &ConfigManager, method: Option<crate::A
         Some(crate::AuthMethod::Google) => handle_oauth_auth(config_manager, OAuthProvider::Google).await,
         Some(crate::AuthMethod::Github) => handle_oauth_auth(config_manager, OAuthProvider::GitHub).await,
         Some(crate::AuthMethod::Device) | None => {
-            println!("{}", "ℹ️  Using OAuth authentication is recommended. Use 'mothership auth google' or 'mothership auth github'".yellow());
-            handle_oauth_auth(config_manager, OAuthProvider::Google).await
+            handle_device_auth(config_manager).await
+        }
+    }
+}
+
+/// Handle device flow authentication using local auth server
+async fn handle_device_auth(config_manager: &ConfigManager) -> Result<()> {
+    println!("{}", "🔐 Starting device authentication...".cyan().bold());
+
+    // Try auto-login first
+    if let Ok(true) = try_auto_login(config_manager).await {
+        println!("{}", "✅ Already authenticated! Using stored credentials.".green().bold());
+        return Ok(());
+    }
+
+    let config = config_manager.load_config()?;
+    let machine_info = get_machine_info();
+    
+    // Step 1: Request device code from Mothership server
+    println!("{}", "📱 Requesting device authorization...".dimmed());
+    
+    let auth_request = AuthRequest {
+        machine_id: machine_info.machine_id.clone(),
+        machine_name: machine_info.machine_name.clone(),
+        platform: machine_info.platform.clone(),
+        hostname: machine_info.hostname.clone(),
+    };
+    
+    let client = reqwest::Client::new();
+    let response = client
+        .post(&format!("{}/auth/start", config.mothership_url))
+        .json(&auth_request)
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        let error_text = response.text().await?;
+        return Err(anyhow::anyhow!("Device authorization request failed: {}", error_text));
+    }
+
+    let device_response: mothership_common::protocol::ApiResponse<AuthResponse> = response.json().await?;
+    
+    if !device_response.success {
+        return Err(anyhow::anyhow!("Device authorization failed: {}", 
+            device_response.error.unwrap_or_default()));
+    }
+
+    let auth_data = device_response.data.unwrap();
+    let device_code = &auth_data.device_code;
+    let verification_url = &auth_data.auth_url;
+
+    // Step 2: Show user the verification URL
+    println!();
+    println!("{}", "🌐 Complete authorization in your browser:".green().bold());
+    println!("{}", format!("   {}", verification_url).cyan());
+    println!();
+    println!("{}", "⏳ Waiting for authorization... (Press Ctrl+C to cancel)".dimmed());
+
+    // Try to open browser automatically
+    if let Err(e) = open::that(verification_url) {
+        println!("{}", format!("⚠️  Failed to open browser automatically: {}", e).yellow());
+    }
+
+    // Step 3: Poll for authorization completion
+    let poll_interval = auth_data.interval;
+    let expires_in = auth_data.expires_in;
+    
+    let start_time = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(expires_in);
+    
+    loop {
+        if start_time.elapsed() > timeout {
+            return Err(anyhow::anyhow!("Device authorization timed out. Please try again."));
+        }
+
+        tokio::time::sleep(std::time::Duration::from_secs(poll_interval)).await;
+
+        // Poll the token endpoint
+        let token_request = TokenRequest {
+            device_code: device_code.clone(),
+        };
+        
+        let poll_response = client
+            .post(&format!("{}/auth/token", config.mothership_url))
+            .json(&token_request)
+            .send()
+            .await?;
+
+        let poll_result: mothership_common::protocol::ApiResponse<TokenResponse> = poll_response.json().await?;
+
+        if poll_result.success {
+            // Success! Extract the access token
+            let token_data = poll_result.data.unwrap();
+            
+            let user_email = None; // Device flow doesn't provide email
+            let user_name = Some(token_data.username);
+
+            // Save credentials
+            save_credentials(config_manager, &token_data.access_token, user_email, user_name).await?;
+            
+            println!();
+            println!("{}", "✅ Authentication successful!".green().bold());
+            println!("{}", "   Device authorized and credentials saved".dimmed());
+            
+            return Ok(());
+        } else {
+            // Check for specific error codes
+            let error = poll_result.error.as_deref().unwrap_or("");
+            match error {
+                "Authorization pending" => {
+                    // Still waiting for user to authorize
+                    print!(".");
+                    std::io::Write::flush(&mut std::io::stdout()).unwrap();
+                    continue;
+                }
+                "Access denied" => {
+                    return Err(anyhow::anyhow!("Authorization was denied. Please try again."));
+                }
+                "Expired token" => {
+                    return Err(anyhow::anyhow!("Device code expired. Please try again."));
+                }
+                _ => {
+                    return Err(anyhow::anyhow!("Authorization failed: {}", error));
+                }
+            }
         }
     }
 }
@@ -56,6 +180,7 @@ async fn handle_oauth_auth(config_manager: &ConfigManager, provider: OAuthProvid
         machine_name: machine_info.machine_name.clone(),
         platform: machine_info.platform.clone(),
         hostname: machine_info.hostname.clone(),
+        source: OAuthSource::CLI,  // Indicate this is CLI-initiated OAuth
     };
 
     let client = reqwest::Client::new();
@@ -262,6 +387,7 @@ fn get_machine_info() -> OAuthRequest {
         machine_name: format!("{}-mothership-cli", hostname),
         platform: std::env::consts::OS.to_string(),
         hostname,
+        source: OAuthSource::CLI,
     }
 }
 

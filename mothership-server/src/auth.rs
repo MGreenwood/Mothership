@@ -61,8 +61,12 @@ impl AuthService {
         }
 
         // Point to the auth server for browser authentication
+        // Use AUTH_SERVER_URL environment variable for production, fallback to localhost for development
+        let auth_server_url = std::env::var("AUTH_SERVER_URL")
+            .unwrap_or_else(|_| "http://localhost:3001".to_string());
         let auth_url = format!(
-            "http://localhost:3001/auth/authorize?device_code={}",
+            "{}/auth/authorize?device_code={}",
+            auth_server_url.trim_end_matches('/'),
             device_code
         );
 
