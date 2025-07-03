@@ -3,8 +3,8 @@ name = "mothership-gui"
 version = "0.1.0"
 description = "Mothership GUI Application with Vim Integration"
 authors = ["Mothership Team"]
-license = "MIT"
-repository = "https://github.com/mothership/mothership"
+license = "Proprietary"
+repository = "https://github.com/mgreenwood1001/mothership"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

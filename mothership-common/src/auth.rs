@@ -34,6 +34,7 @@ pub struct OAuthRequest {
     pub hostname: String,
     #[serde(default)]
     pub source: OAuthSource,
+    pub callback_url: Option<String>, // URL where the user's server should receive the token
 }
 
 /// OAuth authentication response (with redirect URL)
@@ -52,6 +53,17 @@ pub struct OAuthCallback {
     pub provider: OAuthProvider,
 }
 
+/// Server-to-server authentication callback (sent to user's server)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerAuthCallback {
+    pub token: String,
+    pub user_id: Uuid,
+    pub username: String,
+    pub email: String,
+    pub provider: OAuthProvider,
+    pub expires_at: DateTime<Utc>,
+}
+
 /// User profile from OAuth provider
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OAuthProfile {
@@ -63,7 +75,7 @@ pub struct OAuthProfile {
     pub avatar_url: Option<String>,
 }
 
-/// Legacy device flow (keeping for backward compatibility)
+#[deprecated(since = "0.1.0", note = "Use OAuth authentication instead")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthRequest {
     pub machine_id: String,    // Unique machine identifier
@@ -72,6 +84,7 @@ pub struct AuthRequest {
     pub hostname: String,      // Machine hostname
 }
 
+#[deprecated(since = "0.1.0", note = "Use OAuth authentication instead")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthResponse {
     pub auth_url: String,      // URL to open in browser for OAuth
@@ -80,11 +93,13 @@ pub struct AuthResponse {
     pub interval: u64,         // Polling interval in seconds
 }
 
+#[deprecated(since = "0.1.0", note = "Use OAuth authentication instead")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenRequest {
     pub device_code: String,
 }
 
+#[deprecated(since = "0.1.0", note = "Use OAuth authentication instead")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenResponse {
     pub access_token: String,

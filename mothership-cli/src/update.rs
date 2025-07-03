@@ -5,9 +5,23 @@ use mothership_common::protocol::ApiResponse;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use tracing::{error, info};
+use tracing::info;
 
 use crate::config::ConfigManager;
+use crate::connections;
+
+/// Get the server URL to use for updates
+/// Prioritizes active server connection over config file
+fn get_server_url(config_manager: &ConfigManager) -> Result<String> {
+    // First, check if there's an active server connection
+    if let Some(server_url) = connections::get_active_server_url() {
+        return Ok(server_url);
+    }
+    
+    // Fallback to config file
+    let config = config_manager.load_config()?;
+    Ok(config.mothership_url)
+}
 
 /// Update command arguments
 #[derive(Args)]
@@ -49,8 +63,7 @@ struct VersionInfo {
 /// Handle the update command
 pub async fn handle_update(args: UpdateArgs) -> Result<()> {
     let config_manager = ConfigManager::new()?;
-    let config = config_manager.load_config()?;
-    let server_url = config.mothership_url;
+    let server_url = get_server_url(&config_manager)?;
     
     if args.list_versions {
         return list_available_versions(&server_url).await;
@@ -59,28 +72,38 @@ pub async fn handle_update(args: UpdateArgs) -> Result<()> {
     let current_version = env!("CARGO_PKG_VERSION");
     let platform = detect_platform();
     
-    println!("{}", "🔍 Checking for updates...".blue());
+    println!("{}", "🔍 Getting latest version...".blue());
     println!("Current version: {}", current_version.green());
     println!("Platform: {}", platform.cyan());
     println!("Server: {}", server_url.cyan());
     println!();
     
-    // Check for updates
-    let update_info = check_for_updates(&server_url, current_version, &platform).await?;
+    // Always get the absolute latest version directly from server
+    let latest_info = get_latest_version_direct(&server_url).await?;
+    let latest_version = latest_info.version.clone();
     
-    if !update_info.update_available && !args.force {
+    // Compare versions using semantic version comparison
+    let update_available = current_version != latest_version;
+    
+    // Check if specific version was requested
+    let version_specified = args.version.is_some();
+    
+    // Determine target version - use specified version or latest
+    let target_version = args.version.unwrap_or(latest_version.clone());
+    
+    if !update_available && !args.force && !version_specified {
         println!("{}", "✅ You're running the latest version!".green());
         return Ok(());
     }
     
     if args.check_only {
-        if update_info.update_available {
+        if update_available || version_specified {
             println!("{}", format!("🆕 Update available: {} → {}", 
-                current_version, update_info.latest_version).yellow());
+                current_version, target_version).yellow());
             
-            if !update_info.changes.is_empty() {
+            if target_version == latest_version && !latest_info.changes.is_empty() {
                 println!("\n📝 Changes:");
-                for change in &update_info.changes {
+                for change in &latest_info.changes {
                     println!("  • {}", change);
                 }
             }
@@ -92,15 +115,14 @@ pub async fn handle_update(args: UpdateArgs) -> Result<()> {
         return Ok(());
     }
     
-    // Perform update
-    let target_version = args.version.unwrap_or(update_info.latest_version.clone());
-    
-    if args.force || update_info.update_available {
+    // Perform update if needed or forced
+    if args.force || update_available || version_specified {
         println!("{}", format!("⬇️  Updating to version {}...", target_version).yellow());
         
-        if !update_info.changes.is_empty() {
+        // Show changes if updating to latest
+        if target_version == latest_version && !latest_info.changes.is_empty() {
             println!("\n📝 What's new:");
-            for change in &update_info.changes {
+            for change in &latest_info.changes {
                 println!("  • {}", change);
             }
             println!();
@@ -115,18 +137,49 @@ pub async fn handle_update(args: UpdateArgs) -> Result<()> {
     Ok(())
 }
 
-/// Check for updates from the server
+/// Get the latest version directly from the server (bypasses incremental updates)
+async fn get_latest_version_direct(server_url: &str) -> Result<VersionInfo> {
+    // Get authentication token
+    let token = get_auth_token()?;
+    
+    let client = reqwest::Client::new();
+    
+    let url = format!("{}/cli/latest", server_url);
+    let response = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", token))
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        return Err(anyhow::anyhow!("Server error: {}", response.status()));
+    }
+
+    let api_response: ApiResponse<VersionInfo> = response.json().await?;
+
+    match api_response {
+        ApiResponse { success: true, data: Some(data), .. } => Ok(data),
+        ApiResponse { error: Some(err), .. } => Err(anyhow::anyhow!("Server error: {}", err)),
+        _ => Err(anyhow::anyhow!("Unexpected response format")),
+    }
+}
+
+/// Check for updates from the server (legacy function for backward compatibility)
 async fn check_for_updates(
     server_url: &str,
     current_version: &str,
     platform: &str,
 ) -> Result<UpdateCheckResponse> {
+    // Get authentication token
+    let token = get_auth_token()?;
+    
     let client = reqwest::Client::new();
     let binary_name = if cfg!(windows) { "mothership.exe" } else { "mothership" };
     
     let url = format!("{}/cli/update-check", server_url);
     let response = client
         .get(&url)
+        .header("Authorization", format!("Bearer {}", token))
         .query(&[
             ("current_version", current_version),
             ("platform", platform),
@@ -134,13 +187,13 @@ async fn check_for_updates(
         ])
         .send()
         .await?;
-    
+
     if !response.status().is_success() {
         return Err(anyhow::anyhow!("Server error: {}", response.status()));
     }
-    
+
     let api_response: ApiResponse<UpdateCheckResponse> = response.json().await?;
-    
+
     match api_response {
         ApiResponse { success: true, data: Some(data), .. } => Ok(data),
         ApiResponse { error: Some(err), .. } => Err(anyhow::anyhow!("Server error: {}", err)),
@@ -150,17 +203,24 @@ async fn check_for_updates(
 
 /// List all available versions
 async fn list_available_versions(server_url: &str) -> Result<()> {
+    // Get authentication token
+    let token = get_auth_token()?;
+    
     let client = reqwest::Client::new();
     
     let url = format!("{}/cli/versions", server_url);
-    let response = client.get(&url).send().await?;
-    
+    let response = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", token))
+        .send()
+        .await?;
+
     if !response.status().is_success() {
         return Err(anyhow::anyhow!("Server error: {}", response.status()));
     }
-    
+
     let api_response: ApiResponse<Vec<VersionInfo>> = response.json().await?;
-    
+
     match api_response {
         ApiResponse { success: true, data: Some(versions), .. } => {
             println!("{}", "📦 Available versions:".blue());
@@ -206,17 +266,112 @@ async fn download_and_install_update(
     let cli_binary = if cfg!(windows) { "mothership.exe" } else { "mothership" };
     let daemon_binary = if cfg!(windows) { "mothership-daemon.exe" } else { "mothership-daemon" };
     
+    // Verify binaries exist on server before downloading
+    let cli_url = format!("{}/cli/download/{}/{}/{}", server_url, version, platform, cli_binary);
+    let daemon_url = format!("{}/cli/download/{}/{}/{}", server_url, version, platform, daemon_binary);
+    
+    // Check CLI binary
+    let cli_response = client.head(&cli_url)
+        .header("Authorization", format!("Bearer {}", token))
+        .send()
+        .await?;
+    
+    if !cli_response.status().is_success() {
+        return Err(anyhow::anyhow!("CLI binary not found on server for version {} ({})", version, platform));
+    }
+    
+    // Check daemon binary
+    let daemon_response = client.head(&daemon_url)
+        .header("Authorization", format!("Bearer {}", token))
+        .send()
+        .await?;
+    
+    if !daemon_response.status().is_success() {
+        return Err(anyhow::anyhow!("Daemon binary not found on server for version {} ({})", version, platform));
+    }
+    
     println!("⬇️  Downloading CLI...");
-    download_binary(&client, server_url, version, platform, cli_binary, &token).await?;
+    download_binary_safe(&client, server_url, version, platform, cli_binary, &token).await?;
     
     println!("⬇️  Downloading daemon...");
-    download_binary(&client, server_url, version, platform, daemon_binary, &token).await?;
+    download_binary_safe(&client, server_url, version, platform, daemon_binary, &token).await?;
+    
+    // Handle self-update for CLI binary
+    let cli_install_path = get_binary_install_path(cli_binary)?;
+    if is_self_update(&cli_install_path)? {
+        return perform_self_update(&cli_install_path).await;
+    }
     
     Ok(())
 }
 
-/// Download a single binary
-async fn download_binary(
+/// Check if this is a self-update (CLI updating itself)
+fn is_self_update(install_path: &PathBuf) -> Result<bool> {
+    let current_exe = std::env::current_exe()?;
+    Ok(current_exe == *install_path)
+}
+
+/// Perform a self-update using a restart script
+async fn perform_self_update(install_path: &PathBuf) -> Result<()> {
+    println!("🔄 This is a self-update. Creating restart script...");
+    
+    let temp_dir = std::env::temp_dir();
+    let new_binary_path = temp_dir.join("mothership-new.exe");
+    let restart_script_path = temp_dir.join("mothership-restart.bat");
+    
+    // Move the downloaded binary to temp location
+    let temp_download_path = temp_dir.join("mothership-downloaded.exe");
+    if temp_download_path.exists() {
+        std::fs::rename(&temp_download_path, &new_binary_path)?;
+    } else {
+        return Err(anyhow::anyhow!("Downloaded binary not found in temp location"));
+    }
+    
+    // Create restart script with properly escaped paths
+    let restart_script = format!("@echo off\r\n\
+echo Waiting for mothership process to exit...\r\n\
+timeout /t 2 /nobreak >nul\r\n\
+\r\n\
+echo Replacing mothership binary...\r\n\
+copy /Y \"{new_binary}\" \"{install_path}\" >nul\r\n\
+if errorlevel 1 (\r\n\
+    echo Failed to replace binary. Please try again.\r\n\
+    pause\r\n\
+    exit /b 1\r\n\
+)\r\n\
+\r\n\
+echo Cleaning up...\r\n\
+del \"{new_binary}\" >nul 2>&1\r\n\
+del \"%~f0\" >nul 2>&1\r\n\
+\r\n\
+echo Update completed successfully!\r\n\
+echo You can now use the new version of mothership.\r\n\
+pause\r\n", 
+        new_binary = new_binary_path.to_str().unwrap().replace("/", "\\"),
+        install_path = install_path.to_str().unwrap().replace("/", "\\")
+    );
+    
+    // Write script with Windows line endings
+    use std::io::Write;
+    let mut file = std::fs::File::create(&restart_script_path)?;
+    file.write_all(restart_script.as_bytes())?;
+    file.flush()?;
+    
+    println!("✅ Update downloaded successfully!");
+    println!("🔄 Running update script...");
+    
+    // Run the restart script
+    let _status = std::process::Command::new("cmd")
+        .arg("/C")
+        .arg(&restart_script_path)
+        .spawn()?;
+        
+    // Exit this process to allow the script to replace the binary
+    std::process::exit(0)
+}
+
+/// Download a single binary with safe self-update handling
+async fn download_binary_safe(
     client: &reqwest::Client,
     server_url: &str,
     version: &str,
@@ -241,27 +396,47 @@ async fn download_binary(
     // Determine installation path
     let install_path = get_binary_install_path(binary_name)?;
     
-    // Create backup of current binary
-    if install_path.exists() {
-        let backup_path = install_path.with_extension(format!("{}.backup", 
-            install_path.extension().and_then(|e| e.to_str()).unwrap_or("")));
-        fs::copy(&install_path, &backup_path)?;
-        info!("Created backup: {}", backup_path.display());
+    // Check if this is a self-update
+    if is_self_update(&install_path)? {
+        // For self-update, download to temp location first
+        let temp_dir = std::env::temp_dir();
+        let temp_path = temp_dir.join("mothership-downloaded.exe");
+        
+        // Create backup of current binary
+        if install_path.exists() {
+            let backup_path = install_path.with_extension(format!("{}.backup", 
+                install_path.extension().and_then(|e| e.to_str()).unwrap_or("")));
+            fs::copy(&install_path, &backup_path)?;
+            info!("Created backup: {}", backup_path.display());
+        }
+        
+        // Write new binary to temp location
+        fs::write(&temp_path, binary_data)?;
+        println!("✅ Downloaded to temp location: {}", temp_path.display());
+    } else {
+        // For non-self-update (like daemon), proceed normally
+        // Create backup of current binary
+        if install_path.exists() {
+            let backup_path = install_path.with_extension(format!("{}.backup", 
+                install_path.extension().and_then(|e| e.to_str()).unwrap_or("")));
+            fs::copy(&install_path, &backup_path)?;
+            info!("Created backup: {}", backup_path.display());
+        }
+        
+        // Write new binary
+        fs::write(&install_path, binary_data)?;
+        
+        // Make executable on Unix systems
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&install_path)?.permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&install_path, perms)?;
+        }
+        
+        println!("✅ Updated: {}", install_path.display());
     }
-    
-    // Write new binary
-    fs::write(&install_path, binary_data)?;
-    
-    // Make executable on Unix systems
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&install_path)?.permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&install_path, perms)?;
-    }
-    
-    println!("✅ Updated: {}", install_path.display());
     
     Ok(())
 }

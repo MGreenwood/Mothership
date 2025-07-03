@@ -3,7 +3,7 @@
 
 [server]
 # API server settings
-host = "0.0.0.0"
+host = "0.0.0.0"  # Always bind to all network interfaces
 port = 7523        # API endpoints: /auth/*, /projects/*, /cli/*
 
 # Web UI server settings  
@@ -49,7 +49,7 @@ track_downloads = true
 
 # Deployment Architecture:
 # ┌─────────────────────┐     ┌─────────────────────┐
-# │   API Server        │     │   Web UI Server    │
+# │   API Server        │     │   Web UI Server     │
 # │   Port 7523         │     │   Port 8080         │
 # │                     │     │                     │
 # │ • /auth/*          │     │ • /                 │
@@ -58,15 +58,25 @@ track_downloads = true
 # │ • /gateway         │     │ • /download/auth... │
 # │ • WebSocket /sync  │     │                     │
 # └─────────────────────┘     └─────────────────────┘
+
+# Example nginx configuration for dual-port setup:
 #
-# Benefits:
-# • Security: Different firewall rules for API vs Web
-# • Reverse Proxy: nginx can route API and Web separately
-# • Scaling: API and Web can be load balanced independently
-# • CDN: Web UI can be cached/CDN'd separately
-#
-# Example nginx config:
 # server {
-#     location /api/ { proxy_pass http://localhost:7523/; }
-#     location /     { proxy_pass http://localhost:8080/; }
+#     listen 443 ssl;
+#     server_name your-domain.com;
+#
+#     ssl_certificate /path/to/cert.pem;
+#     ssl_certificate_key /path/to/key.pem;
+#
+#     # API endpoints
+#     location /api/ { proxy_pass http://your-domain.com:7523/; }
+#     location /     { proxy_pass http://your-domain.com:8080/; }
+#
+#     # WebSocket support
+#     location /sync {
+#         proxy_pass http://your-domain.com:7523/sync;
+#         proxy_http_version 1.1;
+#         proxy_set_header Upgrade $http_upgrade;
+#         proxy_set_header Connection "upgrade";
+#     }
 # } 

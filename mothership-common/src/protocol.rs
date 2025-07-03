@@ -2,7 +2,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::collections::HashMap;
-
+use uuid::Uuid;
+use crate::transaction::TransactionStatus;
 
 use crate::{CheckpointId, FileChange, ProjectId, RiftId, UserId};
 
@@ -116,8 +117,14 @@ pub enum SyncMessage {
     /// Server reports conflict that needs resolution
     ConflictDetected {
         rift_id: RiftId,
+        path: PathBuf,
         conflict: Conflict,
         suggestions: Vec<Resolution>,
+        server_content: String,
+        client_diff: FileDiff,
+        server_timestamp: DateTime<Utc>,
+        client_timestamp: DateTime<Utc>,
+        auto_created_rift: Option<ConflictRiftInfo>,
     },
 
     // Bidirectional
@@ -165,6 +172,85 @@ pub enum SyncMessage {
         author: UserId,
         timestamp: DateTime<Utc>,
         file_size_after: u64,
+    },
+
+    // Transaction-related messages
+    BeginTransaction {
+        transaction_id: Uuid,
+        description: String,
+        author: Uuid,
+        rift_id: Uuid,
+    },
+    
+    AddFileModification {
+        transaction_id: Uuid,
+        path: PathBuf,
+        diff: FileDiff,
+        previous_hash: String,
+    },
+    
+    AddFileCreation {
+        transaction_id: Uuid,
+        path: PathBuf,
+        content: String,
+    },
+    
+    AddFileDeletion {
+        transaction_id: Uuid,
+        path: PathBuf,
+        previous_hash: String,
+    },
+    
+    CommitTransaction {
+        transaction_id: Uuid,
+    },
+    
+    RollbackTransaction {
+        transaction_id: Uuid,
+    },
+    
+    TransactionStatus {
+        transaction_id: Uuid,
+        status: TransactionStatus,
+        error: Option<String>,
+    },
+    
+    // Directory CRDT messages
+    DirectoryUpdate {
+        path: PathBuf,
+        crdt_operations: Vec<CRDTOperation>,
+        timestamp: DateTime<Utc>,
+    },
+
+    ForceSync {
+        path: PathBuf,
+        server_content: String,
+        server_timestamp: DateTime<Utc>,
+    },
+
+    RequestLatestContent {
+        path: PathBuf,
+    },
+
+    ContentResponse {
+        path: PathBuf,
+        content: String,
+        timestamp: DateTime<Utc>,
+    },
+
+    // Automatic Conflict Rift Creation
+    CreateConflictRift {
+        original_rift_id: Uuid,
+        conflict_rift_name: String,
+        conflicting_files: Vec<ConflictingFile>,
+        author: Uuid,
+        timestamp: DateTime<Utc>,
+    },
+
+    ConflictRiftCreated {
+        original_rift_id: Uuid,
+        new_rift_id: Uuid,
+        conflict_rift_name: String,
     },
 }
 
@@ -334,4 +420,66 @@ pub struct BeamResponse {
     pub websocket_url: String,       // WebSocket endpoint for real-time sync
     pub initial_sync_required: bool,
     pub checkpoint_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CRDTOperation {
+    pub id: Uuid,
+    pub path: PathBuf,
+    pub operation_type: CRDTOperationType,
+    pub timestamp: DateTime<Utc>,
+    pub author: Uuid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CRDTOperationType {
+    CreateFile { name: String },
+    DeleteFile { name: String },
+    CreateDirectory { name: String },
+    DeleteDirectory { name: String },
+    RenameEntry { old_name: String, new_name: String },
+}
+
+/// Represents the type of conflict detected by the server
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ConflictType {
+    /// Multiple clients modified the same region
+    ContentConflict {
+        path: PathBuf,
+        server_version: String,
+        conflicting_changes: Vec<ConflictingChange>,
+    },
+    /// File was deleted on server but modified by client
+    DeleteConflict {
+        path: PathBuf,
+        client_changes: FileDiff,
+    },
+    /// File was renamed on server but modified by client
+    RenameConflict {
+        old_path: PathBuf,
+        new_path: PathBuf,
+        client_changes: FileDiff,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConflictingChange {
+    pub author: Uuid,
+    pub timestamp: DateTime<Utc>,
+    pub diff: FileDiff,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConflictingFile {
+    pub path: PathBuf,
+    pub content: String,
+    pub original_content: String,
+    pub diff: FileDiff,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConflictRiftInfo {
+    pub rift_id: Uuid,
+    pub rift_name: String,
+    pub description: Option<String>,
 } 

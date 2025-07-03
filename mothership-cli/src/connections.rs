@@ -96,7 +96,7 @@ pub fn get_active_server() -> Result<Option<ServerConnection>> {
 const MOTHERSHIP_DEFAULT_PORT: u16 = 7523;
 
 /// Fallback ports to try if default doesn't work
-const MOTHERSHIP_FALLBACK_PORTS: &[u16] = &[443, 80, 8080, 3000];
+const MOTHERSHIP_FALLBACK_PORTS: &[u16] = &[443, 80, 8080];
 
 /// Smart server discovery with automatic port detection
 async fn discover_server_with_ports(server_input: &str) -> Result<(String, ServerCapabilities)> {
@@ -291,7 +291,7 @@ pub async fn handle_connect(_config_manager: &ConfigManager, server_url: String)
 async fn offer_to_sync_existing_projects() -> Result<()> {
     // TODO: Scan for .mothership directories and offer to sync them
     // For now, just show info message
-    print_info("💡 Tip: Run 'mothership deploy' in existing project directories to sync them to the server");
+    print_info("💡 Tip: Run 'mothership init' in existing project directories to sync them to the server");
     Ok(())
 }
 

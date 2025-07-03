@@ -1,108 +1,77 @@
-version: '3.8'
-
 services:
-  postgres:
-    image: postgres:16
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
-    environment:
-      - POSTGRES_DB=mothership
-      - POSTGRES_USER=mothership
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-mothership_dev}
-    env_file:
-      - .env
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./migrations:/docker-entrypoint-initdb.d/
-    networks:
-      - mothership-network
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U mothership -d mothership"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-
-  mothership-server:
+  mothership:
     build:
       context: .
       dockerfile: Dockerfile.server
     ports:
-      - "${MOTHERSHIP_PORT:-7523}:7523"
-      - "${MOTHERSHIP_WEB_PORT:-8080}:8080"
+      - "${MOTHERSHIP_PORT:-7523}:7523"  # API port
+      - "${WEB_PORT:-8080}:8080"         # Web UI port
     environment:
-      - MOTHERSHIP_PORT=7523
-      - RUST_LOG=${RUST_LOG:-info}
+      # Server settings
+      - MOTHERSHIP_PORT=${MOTHERSHIP_PORT}
+      - RUST_LOG=${RUST_LOG}
       - JWT_SECRET=${JWT_SECRET}
       - ADMIN_SECRET=${ADMIN_SECRET}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      # Database settings
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/mothership
+      # OAuth configuration
+      - OAUTH_BASE_URL=https://api.mothershipproject.dev
+      - WEB_UI_BASE_URL=https://app.mothershipproject.dev
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
       - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID}
       - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}
-      # OAuth callback URLs for production (Cloudflare tunnel)
-      - OAUTH_BASE_URL=https://api.mothershipproject.dev
-      # Web UI base URL for OAuth success redirect (production)
-      - WEB_UI_BASE_URL=https://app.mothershipproject.dev
-      # Auth server URL for device flow (production)
-      - AUTH_SERVER_URL=https://auth.mothershipproject.dev
-      # WebSocket base URL for production (Cloudflare tunnel)
-      - WEBSOCKET_BASE_URL=wss://api.mothershipproject.dev
-      # Database configuration
-      - DATABASE_URL=postgresql://mothership:${POSTGRES_PASSWORD:-mothership_dev}@postgres:5432/mothership
-    env_file:
-      - .env
+    volumes:
+      - ./storage:/app/storage
     depends_on:
-      postgres:
+      db:
         condition: service_healthy
-    networks:
-      - mothership-network
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:7523/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
-
-  auth-server:
-    build:
-      context: ./auth-server
-      dockerfile: Dockerfile
-    ports:
-      - "${AUTH_SERVER_PORT:-3001}:3000"
-    environment:
-      - PORT=3000
-      - MOTHERSHIP_API=http://mothership-server:7523
-      - NODE_ENV=production
-    env_file:
-      - .env
-    depends_on:
-      mothership-server:
-        condition: service_healthy
+    restart: unless-stopped
     networks:
-      - mothership-network
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:3000/health || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
+      - mothership-net
 
-  cloudflared:
+  tunnel:
     image: cloudflare/cloudflared:latest
     command: tunnel --config /etc/cloudflared/config.yml run
     volumes:
       - ./mothership-tunnel.yml:/etc/cloudflared/config.yml:ro
-      - /c/Users/craft/.cloudflared:/etc/cloudflared/credentials:ro
+      - ~/.cloudflared:/etc/cloudflared/credentials:ro
     depends_on:
-      mothership-server:
-        condition: service_healthy
-    networks:
-      - mothership-network
+      - mothership
     restart: unless-stopped
+    networks:
+      - mothership-net
 
-networks:
-  mothership-network:
-    driver: bridge
+  db:
+    image: postgres:13-alpine
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=mothership
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - mothership-net
 
 volumes:
-  postgres_data: 
+  postgres_data:
+
+networks:
+  mothership-net:
+    driver: bridge 

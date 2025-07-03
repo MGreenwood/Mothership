@@ -1,19 +1,25 @@
 use axum::{
     extract::{Path, State, WebSocketUpgrade},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Json, Response},
     routing::{delete, get, post},
     Router,
 };
+use axum_extra::extract::cookie::{Cookie, CookieJar};
 use mothership_common::{
-    auth::{AuthRequest, AuthResponse, TokenRequest, TokenResponse, OAuthRequest, OAuthResponse, OAuthProvider, OAuthProfile, OAuthSource},
-    protocol::{ApiResponse, BeamRequest, BeamResponse, GatewayRequest},
-    GatewayProject, Project, ProjectId, User, UserRole,
+    auth::{OAuthProvider, OAuthRequest, OAuthResponse, OAuthSource, OAuthProfile},
+    protocol::{BeamRequest, BeamResponse, GatewayRequest},
+    ApiResponse, Project, User, UserRole, GatewayProject, ProjectId,
 };
-use uuid;
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 use tracing::{error, info, warn};
+use uuid::Uuid;
+use url;
+use urlencoding;
 
 mod auth;
 mod cli_distribution;
@@ -41,6 +47,29 @@ pub struct AppState {
     pub sync: SyncState,
     pub config: ServerConfig,
     pub whitelist: Option<UserWhitelist>,
+    pub sessions: Arc<RwLock<HashMap<String, SessionData>>>,
+    pub temp_tokens: Arc<RwLock<HashMap<String, TempTokenData>>>,
+}
+
+#[derive(Clone, Debug)]
+struct SessionData {
+    user_id: Uuid,
+    username: String,
+    email: String,
+    token: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+    expires_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Clone, Debug)]
+struct TempTokenData {
+    user_id: Uuid,
+    username: String,
+    email: String,
+    token: String,
+    provider: OAuthProvider,
+    created_at: chrono::DateTime<chrono::Utc>,
+    expires_at: chrono::DateTime<chrono::Utc>,
 }
 
 #[tokio::main]
@@ -48,219 +77,241 @@ async fn main() -> anyhow::Result<()> {
     // Load environment variables - try multiple locations
     dotenvy::dotenv().ok(); // Current directory (for Docker)
     dotenvy::from_filename("../.env").ok(); // Parent directory (for local development)
-    
+
+    // Initialize logging
+    tracing_subscriber::fmt()
+        .with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string()))
+        .init();
+
     // Load server configuration
     let config = ServerConfig::load_from_file("server.config")?;
-    info!("✅ Server configuration loaded");
-    info!("🔧 Config: host={}, port={}, web_port={:?}", 
-        config.server.host, config.server.port, config.server.web_port);
-    
-    // Load user whitelist if enabled
+    info!("🔧 Loaded server configuration");
+
+    // Load whitelist if enabled
     let whitelist = config.load_whitelist()?;
-    if config.auth.whitelist_enabled {
-        if whitelist.is_some() {
-            info!("✅ User whitelist loaded and active");
-        } else {
-            warn!("⚠️ Whitelist enabled but no valid whitelist file found");
-        }
-    }
-    
-    // Debug: Check if OAuth environment variables are loaded
-    if config.features.oauth_enabled {
-        println!("🔍 Environment Check - GOOGLE_CLIENT_ID: {}", 
-            std::env::var("GOOGLE_CLIENT_ID").map(|s| format!("{}...", &s[..10.min(s.len())])).unwrap_or_else(|_| "NOT SET".to_string()));
-        println!("🔍 Environment Check - GOOGLE_CLIENT_SECRET: {}", 
-            std::env::var("GOOGLE_CLIENT_SECRET").map(|s| format!("{}...", &s[..10.min(s.len())])).unwrap_or_else(|_| "NOT SET".to_string()));
+    if let Some(ref whitelist) = whitelist {
+        info!("📋 Loaded whitelist");
     }
 
-    // Initialize tracing with config debug level
-    let subscriber = tracing_subscriber::fmt()
-        .with_target(false)
-        .compact();
-    
-    if config.server.debug_logging {
-        subscriber.with_max_level(tracing::Level::DEBUG).init();
-        info!("🔍 Debug logging enabled");
-    } else {
-        subscriber.with_max_level(tracing::Level::INFO).init();
-    }
-
-    // Use port from config (can be overridden by environment)
-    let port = std::env::var("MOTHERSHIP_PORT")
-        .ok()
-        .and_then(|p| p.parse::<u16>().ok())
-        .unwrap_or(config.server.port);
-
-    let jwt_secret = std::env::var("JWT_SECRET")
-        .unwrap_or_else(|_| {
-            warn!("JWT_SECRET not set, using default (NOT SECURE FOR PRODUCTION)");
-            "mothership-default-jwt-secret-change-me".to_string()
-        });
-
-    info!("🚀 Starting Mothership Server on port {}", port);
-
-    // Initialize PostgreSQL database
+    // Set up database connection
     let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| {
-            warn!("DATABASE_URL not set, using default PostgreSQL connection");
-            "postgresql://mothership:mothership_dev@postgres:5432/mothership".to_string()
-        });
-    
+        .unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/mothership".to_string());
+
+    info!("🗄️ Connecting to database...");
     let db = Database::new(&database_url).await?;
-    
-    // Ensure database schema exists
-    if let Err(e) = db.ensure_schema().await {
-        error!("Failed to ensure database schema: {}", e);
-        std::process::exit(1);
-    }
-    
-    // Initialize auth service
-    let auth = AuthService::new(jwt_secret);
-    
-    // Initialize OAuth service if enabled
-    let oauth = if config.features.oauth_enabled {
-        OAuthService::new().unwrap_or_else(|e| {
-            warn!("OAuth service initialization failed: {}. OAuth login will not be available.", e);
-            // Return a minimal OAuth service that will fail gracefully
-            OAuthService::new().unwrap_or_else(|_| panic!("Failed to create OAuth service"))
-        })
-    } else {
-        // Create a dummy OAuth service when disabled
-        OAuthService::new().unwrap_or_else(|_| panic!("Failed to create OAuth service"))
-    };
-    
-    // Initialize sync manager
+    info!("✅ Database connected");
+
     // Initialize storage engine
-    let storage_root = PathBuf::from("./storage");
-    let storage = Arc::new(StorageEngine::new(storage_root).await?);
+    let storage_root = std::env::var("STORAGE_ROOT")
+        .unwrap_or_else(|_| "storage".to_string());
+
+    info!("📦 Initializing storage engine at {}", storage_root);
+    let storage = Arc::new(StorageEngine::new(storage_root.into()).await?);
     info!("✅ Storage engine initialized");
 
-    // Initialize sync state with storage
+    // Initialize services
+    let auth = AuthService::new(
+        std::env::var("JWT_SECRET")
+            .unwrap_or_else(|_| "mothership_dev_secret".to_string())
+    );
+
+    let oauth = OAuthService::new().expect("Failed to initialize OAuth service");
+
+    // Initialize sync state
     let sync = SyncState::new(db.clone(), storage.clone());
-    info!("✅ Sync state initialized");
 
-    let state = AppState { db, auth, oauth, sync, config: config.clone(), whitelist };
+    // Create application state
+    let state = AppState {
+        db: db.clone(),
+        auth,
+        oauth,
+        sync,
+        config: config.clone(),
+        whitelist,
+        sessions: Arc::new(RwLock::new(HashMap::new())),
+        temp_tokens: Arc::new(RwLock::new(HashMap::new())),
+    };
 
-    // Build the router with conditional features
-    let mut app = Router::new()
-        // Health check (always available)
-        .route("/health", get(health_check))
-        // Server capabilities (always available)
-        .route("/capabilities", get(server_capabilities))
-        
-        // Authentication endpoints (always available if auth required)
-        .route("/auth/start", post(auth_start))
-        .route("/auth/token", post(auth_token))
-        .route("/auth/verify", post(auth_verify))
-        .route("/auth/check", get(auth_check))
-        .route("/auth/authorize-device", post(auth_authorize_device))
-        
-        // Admin endpoints (always available)
-        .route("/admin/create", post(create_admin_user))
-        
-        // Gateway (project discovery)
-        .route("/gateway", post(gateway))
-        .route("/gateway/create", post(create_gateway))
-        
-        // Project management
-        .route("/projects", get(list_projects))
-        .route("/projects/by-name/:name", get(get_project_by_name))
-        .route("/projects/:id", get(get_project))
-        .route("/projects/:id/beam", post(beam_into_project))
-        .route("/projects/:id/upload-initial", post(upload_initial_files))
-        .route("/projects/:id/checkpoint", post(create_checkpoint))
-        .route("/projects/:id/history", get(get_project_history))
-        .route("/projects/:id/restore/:checkpoint_id", post(restore_checkpoint))
-        .route("/projects/:id", delete(delete_project));
-
-    // Add OAuth endpoints only if enabled
-    if config.features.oauth_enabled {
-        info!("🔐 OAuth endpoints enabled");
-        app = app
-            .route("/auth/oauth/start", post(oauth_start))
-            .route("/auth/oauth/test", get(oauth_test))
-            .route("/auth/callback/google", get(oauth_callback_google))
-            .route("/auth/callback/github", get(oauth_callback_github))
-            .route("/auth/success", get(oauth_success_page))
-            .route("/auth/error", get(oauth_error_page));
-    }
-
-    // Add WebSocket sync only if enabled
-    if config.features.websocket_sync_enabled {
-        info!("🔄 WebSocket sync enabled");
-        app = app.route("/sync/:rift_id", get(websocket_handler));
-    }
-
-    // Add CLI distribution endpoints only if enabled
-    if config.features.cli_distribution_enabled {
-        info!("📦 CLI distribution endpoints enabled");
-        app = app.nest("/", cli_distribution::routes());
-    }
-
-    // Handle web UI routing based on configuration
-    if let Some(web_port) = config.server.web_port {
-        // Separate web server on different port
-        info!("🌐 Starting separate web UI server on port {}", web_port);
-        
-        let mut web_app = Router::new()
-            .nest("/", web_ui::routes());
-            
-        // Add OAuth endpoints to web UI server for seamless authentication
-        if config.features.oauth_enabled {
-            info!("🔐 Adding OAuth endpoints to web UI server");
-            web_app = web_app
-                .route("/auth/oauth/start", post(oauth_start))
-                .route("/auth/oauth/test", get(oauth_test))
-                .route("/auth/callback/google", get(oauth_callback_google))
-                .route("/auth/callback/github", get(oauth_callback_github))
-                .route("/auth/success", get(oauth_success_page))
-                .route("/auth/error", get(oauth_error_page));
-        }
-        
-        let web_app = web_app
-            .layer(CorsLayer::permissive())
-            .with_state(state.clone());
-        
-        let web_host = config.server.host.parse::<std::net::IpAddr>()
-            .unwrap_or_else(|_| {
-                warn!("Invalid host address in config: {}, using 0.0.0.0", config.server.host);
-                std::net::IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0))
-            });
-        let web_addr = SocketAddr::new(web_host, web_port);
-        
-        // Start web server in background
-        let web_listener = tokio::net::TcpListener::bind(web_addr).await?;
-        info!("🎨 Web UI available at http://{}:{}", web_host, web_port);
-        
-        tokio::spawn(async move {
-            if let Err(e) = axum::serve(web_listener, web_app).await {
-                error!("Web UI server error: {}", e);
-            }
-        });
-    } else {
-        // Same port - add web UI routes to main app
-        info!("🌐 Web UI integrated on main server port");
-        app = app.nest("/", web_ui::routes());
-    }
-
-    // Apply final layers and state to main app
-    let app = app
-        .layer(CorsLayer::permissive())
-        .with_state(state);
-
-    // Start the main server
     let host = config.server.host.parse::<std::net::IpAddr>()
         .unwrap_or_else(|_| {
             warn!("Invalid host address in config: {}, using 0.0.0.0", config.server.host);
             std::net::IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0))
         });
-    let addr = SocketAddr::new(host, port);
-    info!("🚀 Mothership API Server listening on {} (config: {}:{})", addr, config.server.host, config.server.port);
-    
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+
+    // Check if dual port mode is enabled
+    if let Some(web_port) = config.server.web_port {
+        info!("🚀 Starting Mothership in dual port mode");
+        
+        // Create API router (no web UI routes)
+        let api_router = create_api_router(state.clone());
+        
+        // Create Web UI router (web UI routes only)
+        let web_router = create_web_router(state.clone());
+        
+        // Start API server
+        let api_addr = std::net::SocketAddr::new(host, config.server.port);
+        info!("🔧 API Server listening on {}", api_addr);
+        
+        // Start Web UI server
+        let web_addr = std::net::SocketAddr::new(host, web_port);
+        info!("🌐 Web UI Server listening on {}", web_addr);
+        
+        // Start both servers concurrently
+        let api_listener = tokio::net::TcpListener::bind(api_addr).await?;
+        let web_listener = tokio::net::TcpListener::bind(web_addr).await?;
+        
+        let api_server = axum::serve(api_listener, api_router);
+        let web_server = axum::serve(web_listener, web_router);
+        
+        // Run both servers concurrently
+        tokio::try_join!(api_server, web_server)?;
+    } else {
+        info!("🚀 Starting Mothership in single port mode");
+        
+        // Single port mode: create combined router with all routes
+        let app = create_combined_router(state);
+        let addr = std::net::SocketAddr::new(host, config.server.port);
+        
+        info!("🚀 Mothership Server listening on {}", addr);
+        
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        axum::serve(listener, app).await?;
+    }
 
     Ok(())
+}
+
+/// Create API-only router for dual port mode
+fn create_api_router(state: AppState) -> Router {
+    Router::new()
+        // Health check (always available)
+        .route("/health", get(health_check))
+        // Server capabilities (always available)
+        .route("/capabilities", get(server_capabilities))
+        
+        // Authentication routes
+        .route("/auth/check", get(auth_check))
+        .route("/auth/oauth/test", get(oauth_test))
+        .route("/auth/oauth/start", post(oauth_start))
+        .route("/auth/oauth/callback/google", get(oauth_callback_google))
+        .route("/auth/oauth/callback/github", get(oauth_callback_github))
+        .route("/auth/finalize", get(web_ui::auth_finalize))
+        
+        // Admin routes
+        .route("/admin/create", post(create_admin_user))
+        
+        // Project routes
+        .route("/projects", get(list_projects))
+        .route("/projects/:id", get(get_project))
+        .route("/projects/name/:name", get(get_project_by_name))
+        .route("/projects/:id/beam", post(beam_into_project))
+        .route("/projects/:id/files", post(upload_initial_files))
+        .route("/projects/:id/checkpoints", post(create_checkpoint))
+        .route("/projects/:id/history", get(get_project_history))
+        .route("/projects/:id/checkpoints/:checkpoint_id/restore", post(restore_checkpoint))
+        .route("/projects/:id", delete(delete_project))
+        
+        // Gateway routes
+        .route("/gateway", get(gateway))
+        .route("/gateway/create", post(create_gateway))
+        
+        // WebSocket route
+        .route("/ws/:rift_id", get(websocket_handler))
+        
+        // CLI distribution routes
+        .merge(crate::cli_distribution::routes())
+        
+        // Add CORS middleware to allow requests from web UI
+        .layer(
+            CorsLayer::new()
+                .allow_origin("https://app.mothershipproject.dev".parse::<HeaderValue>().unwrap())
+                .allow_methods([
+                    axum::http::Method::GET,
+                    axum::http::Method::POST,
+                    axum::http::Method::PUT,
+                    axum::http::Method::DELETE,
+                    axum::http::Method::OPTIONS,
+                ])
+                .allow_headers([
+                    axum::http::header::AUTHORIZATION,
+                    axum::http::header::CONTENT_TYPE,
+                    axum::http::header::ACCEPT,
+                ])
+                .allow_credentials(true)
+        )
+        
+        .with_state(state)
+}
+
+/// Create Web UI-only router for dual port mode
+fn create_web_router(state: AppState) -> Router {
+    Router::new()
+        // Health check for web server
+        .route("/health", get(health_check))
+        
+        // OAuth routes (needed for web UI)
+        .route("/auth/oauth/test", get(oauth_test))
+        .route("/auth/oauth/start", post(oauth_start))
+        .route("/auth/oauth/callback/google", get(oauth_callback_google))
+        .route("/auth/oauth/callback/github", get(oauth_callback_github))
+        
+        // Web UI routes
+        .merge(crate::web_ui::routes())
+        
+        .with_state(state)
+}
+
+/// Create combined router for single port mode (legacy compatibility)
+fn create_combined_router(state: AppState) -> Router {
+    Router::new()
+        // Health check (always available)
+        .route("/health", get(health_check))
+        // Server capabilities (always available)
+        .route("/capabilities", get(server_capabilities))
+        
+        // Authentication routes
+        .route("/auth/check", get(auth_check))
+        .route("/auth/oauth/test", get(oauth_test))
+        .route("/auth/oauth/start", post(oauth_start))
+        .route("/auth/oauth/callback/google", get(oauth_callback_google))
+        .route("/auth/oauth/callback/github", get(oauth_callback_github))
+        .route("/auth/finalize", get(web_ui::auth_finalize))
+        .route("/auth/success", get(oauth_success_page))
+        .route("/auth/error", get(oauth_error_page))
+        
+        // Admin routes
+        .route("/admin/create", post(create_admin_user))
+        
+        // Project routes
+        .route("/projects", get(list_projects))
+        .route("/projects/:id", get(get_project))
+        .route("/projects/name/:name", get(get_project_by_name))
+        .route("/projects/:id/beam", post(beam_into_project))
+        .route("/projects/:id/files", post(upload_initial_files))
+        .route("/projects/:id/checkpoints", post(create_checkpoint))
+        .route("/projects/:id/history", get(get_project_history))
+        .route("/projects/:id/checkpoints/:checkpoint_id/restore", post(restore_checkpoint))
+        .route("/projects/:id", delete(delete_project))
+        
+        // Gateway routes
+        .route("/gateway", get(gateway))
+        .route("/gateway/create", post(create_gateway))
+        
+        // WebSocket route
+        .route("/ws/:rift_id", get(websocket_handler))
+        
+        // Web UI routes
+        .merge(crate::web_ui::routes())
+        
+        // CLI distribution routes
+        .merge(crate::cli_distribution::routes())
+        
+        .with_state(state)
+}
+
+/// Create the application router (deprecated - use create_combined_router)
+fn create_router(state: AppState) -> Router {
+    create_combined_router(state)
 }
 
 /// Health check endpoint
@@ -283,7 +334,7 @@ struct ServerCapabilities {
 async fn server_capabilities(
     State(state): State<AppState>,
 ) -> Json<ApiResponse<ServerCapabilities>> {
-    let mut auth_methods = vec!["device_code".to_string()];
+    let mut auth_methods = vec![];
     let mut oauth_providers = vec![];
     let mut features = vec![
         "project_sync".to_string(),
@@ -317,7 +368,7 @@ async fn server_capabilities(
 
     let capabilities = ServerCapabilities {
         auth_methods,
-        sso_domain: None, // TODO: Support SSO domains
+        sso_domain: None,
         oauth_providers,
         features,
         name: "Mothership Server".to_string(),
@@ -325,50 +376,6 @@ async fn server_capabilities(
     };
     
     Json(ApiResponse::success(capabilities))
-}
-
-/// Start the authentication flow
-async fn auth_start(
-    State(state): State<AppState>,
-    Json(req): Json<AuthRequest>,
-) -> Result<Json<ApiResponse<AuthResponse>>, StatusCode> {
-    info!("Auth start request from machine: {}", req.machine_id);
-    
-    match state.auth.start_auth_flow(req).await {
-        Ok(response) => Ok(Json(ApiResponse::success(response))),
-        Err(e) => {
-            error!("Auth start failed: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
-}
-
-/// Exchange device code for tokens
-async fn auth_token(
-    State(state): State<AppState>,
-    Json(req): Json<TokenRequest>,
-) -> Result<Json<ApiResponse<TokenResponse>>, StatusCode> {
-    match state.auth.exchange_token(req).await {
-        Ok(response) => Ok(Json(ApiResponse::success(response))),
-        Err(e) => {
-            warn!("Token exchange failed: {}", e);
-            Ok(Json(ApiResponse::error(e.to_string())))
-        }
-    }
-}
-
-/// Verify an existing token
-async fn auth_verify(
-    State(state): State<AppState>,
-    Json(token): Json<String>,
-) -> Result<Json<ApiResponse<String>>, StatusCode> {
-    match state.auth.verify_token(&token) {
-        Ok(claims) => Ok(Json(ApiResponse::success(format!(
-            "Token valid for user: {}",
-            claims.username
-        )))),
-        Err(e) => Ok(Json(ApiResponse::error(e.to_string()))),
-    }
 }
 
 /// Check authentication via Authorization header (for CLI)
@@ -486,6 +493,7 @@ async fn oauth_start(
     Json(req): Json<OAuthRequest>,
 ) -> Result<Json<ApiResponse<OAuthResponse>>, StatusCode> {
     info!("🔐 OAuth start request for provider: {:?} from {:?} source on machine: {}", req.provider, req.source, req.machine_id);
+    info!("🔐 Callback URL: {:?}", req.callback_url);
     
     // Check if OAuth is enabled
     if !state.config.features.oauth_enabled {
@@ -493,7 +501,7 @@ async fn oauth_start(
         return Ok(Json(ApiResponse::error("OAuth is disabled".to_string())));
     }
     
-    match state.oauth.get_authorization_url(req.provider, req.source).await {
+    match state.oauth.get_authorization_url(req.provider, req.source, req.callback_url).await {
         Ok((auth_url, csrf_state)) => {
             info!("✅ Generated OAuth URL: {}", auth_url);
             let response = OAuthResponse {
@@ -552,7 +560,7 @@ async fn oauth_callback_handler(
     info!("✅ OAuth callback has required parameters");
 
     match state.oauth.exchange_code(code, csrf_state).await {
-        Ok((profile, source)) => {
+        Ok((profile, source, callback_url)) => {
             info!("OAuth success for {} user: {} ({})", 
                 match provider {
                     OAuthProvider::Google => "Google",
@@ -603,38 +611,126 @@ async fn oauth_callback_handler(
 
             match state.auth.encode_token(&claims) {
                 Ok(token) => {
-                    // Handle CLI vs Web OAuth differently
-                    match source {
-                        OAuthSource::CLI | OAuthSource::GUI => {
+                    // Handle different OAuth flows
+                    match (source, callback_url) {
+                        (OAuthSource::Web, Some(callback_url)) => {
+                            // Store token temporarily and redirect browser with code
+                            let temp_code = uuid::Uuid::new_v4().to_string();
+                            let temp_token_data = TempTokenData {
+                                user_id: user.id,
+                                username: user.username.clone(),
+                                email: user.email.clone(),
+                                token: token.clone(),
+                                provider,
+                                created_at: chrono::Utc::now(),
+                                expires_at: chrono::Utc::now() + chrono::Duration::minutes(5), // 5 minute expiry
+                            };
+                            
+                            // Store temporary token
+                            {
+                                let mut temp_tokens = state.temp_tokens.write().await;
+                                temp_tokens.insert(temp_code.clone(), temp_token_data);
+                            }
+                            
+                            info!("🔄 Stored temporary token with code: {}", temp_code);
+                            info!("🔄 Callback URL from request: {}", callback_url);
+                            
+                            // Redirect browser to user's server with the code
+                            let finalize_url = format!("{}/auth/finalize?code={}", 
+                                std::env::var("OAUTH_BASE_URL")
+                                    .or_else(|_| std::env::var("MOTHERSHIP_SERVER_URL"))
+                                    .unwrap_or_else(|_| "http://localhost:7523".to_string()),
+                                temp_code
+                            );
+                            
+                            info!("🔄 Redirecting browser to: {}", finalize_url);
+                            info!("🔄 This should trigger the /auth/finalize endpoint on the user's server");
+                            Ok(axum::response::Redirect::to(&finalize_url).into_response())
+                        }
+                        (OAuthSource::CLI | OAuthSource::GUI, _) => {
                             // For CLI/GUI: Store token in temporary session and redirect to clean URL
-                            let session_id = uuid::Uuid::new_v4().to_string();
+                            let _session_id = uuid::Uuid::new_v4().to_string();
                             
                             // Store token data temporarily (you'd want Redis in production)
                             // For now, we'll serve the page directly with embedded token
                             let success_html = generate_cli_success_page(&token, &user.username, &user.email);
                             return Ok(axum::response::Html(success_html).into_response());
                         }
-                        OAuthSource::Web => {
-                            // For Web: Redirect to download page as before
-                            let web_ui_url = std::env::var("WEB_UI_BASE_URL")
-                                .or_else(|_| std::env::var("OAUTH_BASE_URL")) // Fallback to OAuth base URL
-                                .unwrap_or_else(|_| {
-                                    if let Some(web_port) = state.config.server.web_port {
-                                        // Dual port mode - use web UI port
-                                        format!("http://localhost:{}", web_port)
-                                    } else {
-                                        // Single port mode - use main server port
-                                        "http://localhost:7523".to_string()
-                                    }
-                                });
+                        (OAuthSource::Web, None) => {
+                            // For Web without callback URL: Create secure session and redirect to clean URL
+                            let session_id = uuid::Uuid::new_v4().to_string();
+                            let session_data = SessionData {
+                                user_id: user.id,
+                                username: user.username.clone(),
+                                email: user.email.clone(),
+                                token: token.clone(),
+                                created_at: chrono::Utc::now(),
+                                expires_at: chrono::Utc::now() + chrono::Duration::hours(24),
+                            };
                             
-                            Ok(axum::response::Redirect::to(&format!(
-                                "{}/download/authenticated?token={}&user={}&email={}",
-                                web_ui_url,
-                                urlencoding::encode(&token),
+                            // Store session
+                            {
+                                let mut sessions = state.sessions.write().await;
+                                sessions.insert(session_id.clone(), session_data);
+                            }
+                            
+                            // Determine the correct web UI URL
+                            let web_ui_url = if let Some(web_port) = state.config.server.web_port {
+                                // Use the same host as the current request but different port
+                                let host = std::env::var("MOTHERSHIP_HOST")
+                                    .unwrap_or_else(|_| "localhost".to_string());
+                                format!("http://{}:{}", host, web_port)
+                            } else {
+                                std::env::var("WEB_UI_BASE_URL")
+                                    .or_else(|_| std::env::var("OAUTH_BASE_URL"))
+                                    .unwrap_or_else(|_| "http://localhost:7523".to_string())
+                            };
+                            
+                            info!("Creating session for web UI: {}", web_ui_url);
+                            
+                            // Create session cookie - determine secure flag and domain
+                            let is_secure = web_ui_url.starts_with("https");
+                            let is_localhost = web_ui_url.contains("localhost") || web_ui_url.contains("127.0.0.1");
+                            
+                            let mut cookie_builder = Cookie::build(("mothership_session", session_id))
+                                .http_only(true)
+                                .secure(is_secure)
+                                .same_site(axum_extra::extract::cookie::SameSite::Lax)
+                                .path("/");
+                            
+                            // Set domain for non-localhost URLs
+                            if !is_localhost {
+                                // Extract base domain from web_ui_url
+                                if let Ok(url) = url::Url::parse(&web_ui_url) {
+                                    if let Some(domain) = url.domain() {
+                                        // Get the base domain (e.g., "mothershipproject.dev" from "app.mothershipproject.dev")
+                                        let parts: Vec<&str> = domain.split('.').collect();
+                                        if parts.len() >= 2 {
+                                            let base_domain = format!(".{}.{}", parts[parts.len() - 2], parts[parts.len() - 1]);
+                                            info!("🍪 Setting cookie domain to: {}", base_domain);
+                                            cookie_builder = cookie_builder.domain(base_domain);
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            let cookie = cookie_builder.build();
+                            
+                            info!("Session cookie created - secure: {}, localhost: {}, domain: {:?}", 
+                                  is_secure, is_localhost, cookie.domain());
+                            
+                            // Redirect to auth success with user data
+                            let success_url = format!("/auth/success?user_id={}&username={}&email={}&token={}",
+                                user.id,
                                 urlencoding::encode(&user.username),
-                                urlencoding::encode(&user.email)
-                            )).into_response())
+                                urlencoding::encode(&user.email),
+                                urlencoding::encode(&token)
+                            );
+                            
+                            Ok((
+                                CookieJar::new().add(cookie),
+                                axum::response::Redirect::to(&success_url)
+                            ).into_response())
                         }
                     }
                 }
@@ -734,27 +830,25 @@ async fn find_available_username(db: &Database, candidate: &str) -> Result<Strin
     } else {
         candidate.to_string()
     };
-    
-    // Check if base username is available
-    if !db.user_exists_by_username(&base_username).await? {
+
+    // Try the base username first
+    if db.get_user_by_username(&base_username).await?.is_none() {
         return Ok(base_username);
     }
-    
-    // Try with numbers appended
-    for i in 1..=999 {
-        let numbered_username = format!("{}{}", base_username, i);
-        if !db.user_exists_by_username(&numbered_username).await? {
-            info!("🔄 Username '{}' taken, using '{}'", base_username, numbered_username);
-            return Ok(numbered_username);
+
+    // Try appending numbers until we find an available one
+    for i in 2..1000 {
+        let username = format!("{}{}", base_username, i);
+        if db.get_user_by_username(&username).await?.is_none() {
+            return Ok(username);
         }
     }
-    
-    // Fallback with timestamp if all numbers taken
-    let timestamp_username = format!("{}{}", base_username, chrono::Utc::now().timestamp());
-    Ok(timestamp_username)
+
+    // If we get here, something is very wrong
+    Err(anyhow::anyhow!("Could not find an available username"))
 }
 
-/// Get human-readable provider name
+/// Get provider name for logging
 fn provider_name(provider: &OAuthProvider) -> &'static str {
     match provider {
         OAuthProvider::Google => "Google",
@@ -762,13 +856,14 @@ fn provider_name(provider: &OAuthProvider) -> &'static str {
     }
 }
 
-/// Generate CLI success page with embedded token (no URL exposure)
+/// Generate success page for CLI/GUI OAuth flow
 fn generate_cli_success_page(token: &str, username: &str, email: &str) -> String {
-    format!(r#"<!DOCTYPE html>
+    format!(r#"
+<!DOCTYPE html>
 <html>
 <head>
     <title>Mothership Authentication Success</title>
-    <meta charset="utf-8">
+    <link rel="icon" type="image/png" href="/static/icon.png">
     <style>
         body {{
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -792,174 +887,119 @@ fn generate_cli_success_page(token: &str, username: &str, email: &str) -> String
         .success-icon {{ font-size: 48px; margin-bottom: 20px; }}
         h1 {{ color: #2d3748; margin-bottom: 20px; }}
         .user-info {{ background: #f7fafc; padding: 20px; border-radius: 8px; margin: 20px 0; }}
-        .token-section {{ background: #e8f4fd; padding: 20px; border-radius: 8px; margin: 20px 0; text-align: left; }}
-        .token-textarea {{ 
-            width: 100%; 
-            height: 120px; 
-            padding: 15px; 
-            border: 2px solid #007acc; 
-            border-radius: 4px; 
-            font-family: 'Courier New', monospace; 
-            font-size: 12px; 
-            background: #f8f9fa; 
+        .token-container {{
+            background: #e8f4fd;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+            text-align: left;
+        }}
+        .token-textarea {{
+            width: 100%;
+            height: 100px;
+            padding: 15px;
+            border: 2px solid #007acc;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            background: #f8f9fa;
             resize: none;
             word-wrap: break-word;
             overflow-wrap: break-word;
-            box-sizing: border-box;
+            margin: 10px 0;
         }}
-        .buttons {{ margin-top: 15px; text-align: center; }}
-        .btn {{ 
-            background: #007acc; 
-            color: white; 
-            border: none; 
-            padding: 10px 20px; 
-            border-radius: 4px; 
+        .button-container {{
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            margin-top: 15px;
+        }}
+        .button {{
+            background: #007acc;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
             cursor: pointer;
             font-size: 14px;
-            margin: 0 5px;
         }}
-        .btn:hover {{ background: #005fa3; }}
-        .btn.copy {{ background: #28a745; }}
-        .btn.copy:hover {{ background: #1e7e34; }}
-        .instructions {{ 
-            background: #fff3cd; 
-            padding: 15px; 
-            border-radius: 8px; 
+        .button.copy {{
+            background: #28a745;
+        }}
+        .instructions {{
+            background: #fff3cd;
+            padding: 15px;
+            border-radius: 8px;
             border-left: 4px solid #ffc107;
             margin-top: 20px;
             text-align: left;
         }}
-        .tip {{ 
-            background: #d1ecf1; 
-            padding: 15px; 
-            border-radius: 8px; 
-            margin-top: 15px; 
-            font-size: 12px; 
-            color: #0c5460;
+        kbd {{
+            background: #f8f9fa;
+            padding: 2px 6px;
+            border-radius: 3px;
+            border: 1px solid #ddd;
         }}
     </style>
 </head>
 <body>
     <div class="container">
         <div class="success-icon">✅</div>
-        <h1>CLI Authentication Successful!</h1>
+        <h1>Authentication Successful!</h1>
         
         <div class="user-info">
-            <p><strong>User:</strong> {}</p>
+            <p><strong>Username:</strong> {}</p>
             <p><strong>Email:</strong> {}</p>
         </div>
         
-        <div class="token-section">
-            <h4 style="margin-top: 0; color: #0066cc;">🖥️ For Terminal/CLI Users:</h4>
-            <p style="margin: 10px 0; font-size: 14px;">Copy the token below and paste it in your terminal when prompted:</p>
+        <div class="token-container">
+            <h4 style="margin-top: 0; color: #0066cc;">Copy your authentication token:</h4>
+            <textarea id="token-textarea" readonly class="token-textarea" onclick="this.select()">{}</textarea>
             
-            <textarea id="token-textarea" class="token-textarea" readonly onclick="this.select()" title="Click to select all text">{}</textarea>
-            
-            <div class="buttons">
-                <button class="btn" onclick="selectAllToken()">📝 Select All</button>
-                <button class="btn copy" onclick="copyToClipboard()">📋 Copy Token</button>
+            <div class="button-container">
+                <button onclick="selectAllToken()" class="button">📝 Select All</button>
+                <button onclick="copyToken()" class="button copy">📋 Copy Token</button>
             </div>
         </div>
         
         <div class="instructions">
             <h4 style="margin-top: 0; color: #856404;">📝 Instructions:</h4>
             <ol style="margin: 10px 0; padding-left: 20px; font-size: 14px;">
-                <li>Click the "Copy Token" button above, or</li>
-                <li>Click in the text box and press <kbd style="background: #f8f9fa; padding: 2px 6px; border-radius: 3px; border: 1px solid #ddd;">Ctrl+A</kbd> then <kbd style="background: #f8f9fa; padding: 2px 6px; border-radius: 3px; border: 1px solid #ddd;">Ctrl+C</kbd></li>
-                <li>Go back to your terminal and paste the token when prompted</li>
-                <li>You can close this window after copying the token</li>
+                <li>Copy the token above using one of the buttons</li>
+                <li>Switch back to your terminal</li>
+                <li>Paste the token when prompted</li>
             </ol>
-        </div>
-        
-        <div class="tip">
-            💡 <strong>Security Note:</strong> This token is not visible in the URL for your security. It's only shown on this page.
         </div>
     </div>
 
     <script>
-        // Token is embedded securely in the page, not in URL
-        const rawToken = '{}';
-        
+        // Auto-select token on page load
+        window.onload = function() {{
+            selectAllToken();
+        }};
+
         function selectAllToken() {{
             const textarea = document.getElementById('token-textarea');
-            if (textarea) {{
-                textarea.focus();
-                textarea.select();
-                textarea.setSelectionRange(0, textarea.value.length);
-            }}
+            textarea.focus();
+            textarea.select();
         }}
-        
-        async function copyToClipboard() {{
-            const btn = event.target;
-            const originalText = btn.textContent;
-            
+
+        async function copyToken() {{
+            const textarea = document.getElementById('token-textarea');
             try {{
-                // Try modern clipboard API first
-                await navigator.clipboard.writeText(rawToken);
-                
-                // Show success feedback
-                btn.textContent = '✅ Copied!';
-                btn.style.background = '#28a745';
-                
-                setTimeout(() => {{
-                    btn.textContent = originalText;
-                    btn.style.background = '#28a745';
-                }}, 2000);
-                
+                await navigator.clipboard.writeText(textarea.value);
+                alert('✅ Token copied to clipboard!');
             }} catch (err) {{
-                console.error('Modern clipboard API failed:', err);
-                
-                // Fallback: Try legacy execCommand method
-                try {{
-                    const textarea = document.getElementById('token-textarea');
-                    textarea.select();
-                    textarea.setSelectionRange(0, textarea.value.length);
-                    
-                    const successful = document.execCommand('copy');
-                    if (successful) {{
-                        btn.textContent = '✅ Copied!';
-                        btn.style.background = '#28a745';
-                        
-                        setTimeout(() => {{
-                            btn.textContent = originalText;
-                            btn.style.background = '#28a745';
-                        }}, 2000);
-                    }} else {{
-                        throw new Error('execCommand failed');
-                    }}
-                }} catch (fallbackErr) {{
-                    console.error('All clipboard methods failed:', fallbackErr);
-                    
-                    // Final fallback: Select text and show instructions
-                    selectAllToken();
-                    btn.textContent = '📋 Text Selected!';
-                    btn.style.background = '#ffc107';
-                    
-                    alert('❌ Automatic copy failed.\\n\\nThe token text has been selected for you.\\nPress Ctrl+C (or Cmd+C on Mac) to copy it manually.');
-                    
-                    setTimeout(() => {{
-                        btn.textContent = originalText;
-                        btn.style.background = '#28a745';
-                    }}, 3000);
-                }}
+                alert('❌ Failed to copy automatically. Please select and copy the token manually.');
+                selectAllToken();
             }}
         }}
-        
-        // Auto-select token when page loads
-        document.addEventListener('DOMContentLoaded', function() {{
-            selectAllToken();
-        }});
-        
-        // Also select when clicking anywhere on the textarea
-        document.getElementById('token-textarea').addEventListener('click', selectAllToken);
     </script>
 </body>
 </html>"#, 
         username, 
-        email, 
-        token,  // Token safely embedded in textarea
-        token   // Token for JavaScript (properly escaped)
-    )
+        email,
+        token)
 }
 
 /// Serve OAuth success page
@@ -970,7 +1010,7 @@ async fn oauth_success_page(
     let user = query.get("user").unwrap_or(&String::new()).clone();
     let email = query.get("email").unwrap_or(&String::new()).clone();
     
-        // Create a simple success page with embedded token
+    // Create a simple success page with embedded token
     let html_content = format!(r#"<!DOCTYPE html>
 <html>
 <head>
@@ -993,262 +1033,125 @@ async fn oauth_success_page(
             border-radius: 12px;
             box-shadow: 0 10px 30px rgba(0,0,0,0.2);
             text-align: center;
-            max-width: 500px;
+            max-width: 600px;
             width: 100%;
         }}
         .success-icon {{ font-size: 48px; margin-bottom: 20px; }}
         h1 {{ color: #2d3748; margin-bottom: 20px; }}
         .user-info {{ background: #f7fafc; padding: 20px; border-radius: 8px; margin: 20px 0; }}
-        .status {{ color: #38a169; font-weight: 500; margin-top: 20px; }}
-        .spinner {{ 
-            border: 3px solid #f3f3f3; 
-            border-top: 3px solid #667eea; 
-            border-radius: 50%; 
-            width: 20px; 
-            height: 20px; 
-            animation: spin 1s linear infinite; 
-            display: inline-block;
-            margin-right: 10px;
+        .token-container {{
+            background: #e8f4fd;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+            text-align: left;
         }}
-        @keyframes spin {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}
+        .token-textarea {{
+            width: 100%;
+            height: 100px;
+            padding: 15px;
+            border: 2px solid #007acc;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            background: #f8f9fa;
+            resize: none;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+            margin: 10px 0;
+        }}
+        .button-container {{
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            margin-top: 15px;
+        }}
+        .button {{
+            background: #007acc;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }}
+        .button.copy {{
+            background: #28a745;
+        }}
+        .instructions {{
+            background: #fff3cd;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid #ffc107;
+            margin-top: 20px;
+            text-align: left;
+        }}
+        kbd {{
+            background: #f8f9fa;
+            padding: 2px 6px;
+            border-radius: 3px;
+            border: 1px solid #ddd;
+        }}
     </style>
 </head>
 <body>
     <div class="container">
         <div class="success-icon">✅</div>
         <h1>Authentication Successful!</h1>
+        
         <div class="user-info">
-            <p><strong>User:</strong> {}</p>
+            <p><strong>Username:</strong> {}</p>
             <p><strong>Email:</strong> {}</p>
         </div>
-        <div class="status" id="status">
-            <div class="spinner"></div>
-            Completing authentication...
+        
+        <div class="token-container">
+            <h4 style="margin-top: 0; color: #0066cc;">Copy your authentication token:</h4>
+            <textarea id="token-textarea" readonly class="token-textarea" onclick="this.select()">{}</textarea>
+            
+            <div class="button-container">
+                <button onclick="selectAllToken()" class="button">📝 Select All</button>
+                <button onclick="copyToken()" class="button copy">📋 Copy Token</button>
+            </div>
+        </div>
+        
+        <div class="instructions">
+            <h4 style="margin-top: 0; color: #856404;">📝 Instructions:</h4>
+            <ol style="margin: 10px 0; padding-left: 20px; font-size: 14px;">
+                <li>Copy the token above using one of the buttons</li>
+                <li>Switch back to your terminal</li>
+                <li>Paste the token when prompted</li>
+            </ol>
         </div>
     </div>
-    
+
     <script>
-        console.log('OAuth Success - Script loaded successfully!');
-        
-        // Token data  
-        const token = '{}';
-        const user = '{}';
-        const email = '{}';
-        
-        console.log('OAuth Success - Token received:', token ? token.substring(0, 20) + '...' : 'NO TOKEN');
-        console.log('OAuth Success - User:', user);
-        console.log('OAuth Success - Email:', email);
-        
-        // Handle authentication completion
-        async function handleAuthCompletion() {{
-            const tokenData = {{
-                token: token,
-                user: user,
-                email: email
-            }};
-            
-            // Check if this is CLI-initiated OAuth
-            const urlParams = new URLSearchParams(window.location.search);
-            const source = urlParams.get('source');
-            const isCLIAuth = source === 'cli';
-            
-            // Check if we're in a local development environment
-            const isLocalhost = window.location.hostname === 'localhost' || 
-                               window.location.hostname === '127.0.0.1' ||
-                               window.location.hostname.includes('.local');
-            
-            if (isLocalhost) {{
-                // Try to send to local GUI callback endpoint for development
-                const callbacks = [
-                    {{ url: 'http://localhost:7524/oauth/callback', name: 'GUI (Tauri)', method: 'POST' }}
-                ];
-                
-                let successCount = 0;
-                
-                for (const callback of callbacks) {{
-                    try {{
-                        console.log(`🔍 Trying ${{callback.name}} callback...`);
-                        
-                        const response = await fetch(callback.url, {{
-                            method: 'POST',
-                            headers: {{
-                                'Content-Type': 'application/json',
-                            }},
-                            body: JSON.stringify(tokenData)
-                        }});
-                        
-                        if (response.ok) {{
-                            console.log(`✅ ${{callback.name}} callback successful!`);
-                            successCount++;
-                        }} else {{
-                            console.log(`⚠️ ${{callback.name}} callback failed: HTTP ${{response.status}}`);
-                        }}
-                    }} catch (error) {{
-                        console.log(`⚠️ ${{callback.name}} callback failed: ${{error.message}}`);
-                    }}
-                }}
-                
-                if (successCount > 0) {{
-                    document.getElementById('status').innerHTML = `✅ Authentication completed! Sent to ${{successCount}} app(s). You can close this window.`;
-                    setTimeout(() => window.close(), 2000);
-                    return;
-                }}
-            }}
-            
-            // For production/web environments, redirect to download page with token (unless CLI-initiated)
-            if (!isLocalhost && !isCLIAuth) {{
-                console.log('🌐 Production environment detected, redirecting to download page...');
-                const baseUrl = window.location.origin; // Use current domain (https://app.mothershipproject.dev)
-                const downloadUrl = `${{baseUrl}}/download/authenticated?token=${{encodeURIComponent(token)}}&user=${{encodeURIComponent(user)}}&email=${{encodeURIComponent(email)}}`;
-                console.log('🔗 Redirecting to:', downloadUrl);
-                window.location.href = downloadUrl;
-                return;
-            }}
-            
-            // For CLI-initiated OAuth, always show manual copy interface
-            if (isCLIAuth) {{
-                console.log('🖥️ CLI-initiated OAuth detected, showing manual token copy interface...');
-            }}
-            
-            // Fallback: show manual token copy (for localhost when GUI callback fails)
-                
-                // Fallback: Show manual copy option  
-                document.getElementById('status').innerHTML = `
-                    <div style="text-align: left; max-width: 600px; margin: 0 auto;">
-                        <h3 style="color: #28a745; text-align: center; margin-bottom: 20px;">✅ Authentication Successful!</h3>
-                        
-                        <div style="background: #e8f4fd; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
-                            <h4 style="margin-top: 0; color: #0066cc;">For Terminal/CLI Users:</h4>
-                            <p style="margin: 10px 0; font-size: 14px;">Copy the token below and paste it in your terminal when prompted:</p>
-                            
-                            <div style="position: relative;">
-                                <textarea id="token-textarea" readonly style="
-                                    width: 100%; 
-                                    height: 100px; 
-                                    padding: 15px; 
-                                    border: 2px solid #007acc; 
-                                    border-radius: 4px; 
-                                    font-family: 'Courier New', monospace; 
-                                    font-size: 12px; 
-                                    background: #f8f9fa; 
-                                    resize: none;
-                                    word-wrap: break-word;
-                                    overflow-wrap: break-word;
-                                " onclick="this.select()" title="Click to select all text">${{token}}</textarea>
-                            </div>
-                            
-                            <div style="margin-top: 15px; text-align: center;">
-                                <button onclick="selectAllToken()" style="
-                                    background: #007acc; 
-                                    color: white; 
-                                    border: none; 
-                                    padding: 10px 20px; 
-                                    border-radius: 4px; 
-                                    cursor: pointer;
-                                    font-size: 14px;
-                                    margin-right: 10px;
-                                ">📝 Select All Text</button>
-                                
-                                <button onclick="tryClipboardCopy()" style="
-                                    background: #28a745; 
-                                    color: white; 
-                                    border: none; 
-                                    padding: 10px 20px; 
-                                    border-radius: 4px; 
-                                    cursor: pointer;
-                                    font-size: 14px;
-                                ">📋 Try Auto-Copy</button>
-                            </div>
-                        </div>
-                        
-                        <div style="background: #fff3cd; padding: 15px; border-radius: 8px; border-left: 4px solid #ffc107;">
-                            <h4 style="margin-top: 0; color: #856404;">📝 Manual Instructions:</h4>
-                            <ol style="margin: 10px 0; padding-left: 20px; font-size: 14px;">
-                                <li>Click in the text box above to select the token</li>
-                                <li>Press <kbd style="background: #f8f9fa; padding: 2px 6px; border-radius: 3px; border: 1px solid #ddd;">Ctrl+A</kbd> to select all text</li>
-                                <li>Press <kbd style="background: #f8f9fa; padding: 2px 6px; border-radius: 3px; border: 1px solid #ddd;">Ctrl+C</kbd> to copy (or <kbd style="background: #f8f9fa; padding: 2px 6px; border-radius: 3px; border: 1px solid #ddd;">Cmd+C</kbd> on Mac)</li>
-                                <li>Go back to your terminal and paste with <kbd style="background: #f8f9fa; padding: 2px 6px; border-radius: 3px; border: 1px solid #ddd;">Ctrl+V</kbd> (or <kbd style="background: #f8f9fa; padding: 2px 6px; border-radius: 3px; border: 1px solid #ddd;">Cmd+V</kbd> on Mac)</li>
-                            </ol>
-                        </div>
-                        
-                        <div style="background: #d1ecf1; padding: 15px; border-radius: 8px; margin-top: 15px; text-align: center;">
-                            <p style="margin: 0; font-size: 12px; color: #0c5460;">
-                                💡 <strong>Tip:</strong> You can also right-click in the text box and select "Copy" from the context menu
-                            </p>
-                        </div>
-                    </div>
-                    
-                    <scr' + 'ipt>
-                        // Store the raw token value
-                        const rawToken = token;
-                        
-                        function selectAllToken() {{
-                            const textarea = document.getElementById('token-textarea');
-                            if (textarea) {{
-                                textarea.focus();
-                                textarea.select();
-                                // Also try to select all content
-                                textarea.setSelectionRange(0, textarea.value.length);
-                            }}
-                        }}
-                        
-                        async function tryClipboardCopy() {{
-                            try {{
-                                await navigator.clipboard.writeText(rawToken);
-                                alert('✅ Token copied to clipboard successfully!');
-                            }} catch (err) {{
-                                console.error('Clipboard copy failed:', err);
-                                selectAllToken();
-                                alert('❌ Automatic copy failed. The token text has been selected - please copy it manually with Ctrl+C (Cmd+C on Mac).');
-                            }}
-                        }}
-                        
-                        // Auto-select the token when the page loads with better timing
-                        function autoSelectWhenReady() {{
-                            const textarea = document.getElementById('token-textarea');
-                            if (textarea && textarea.offsetParent !== null) {{
-                                // Element is visible and ready
-                                selectAllToken();
-                                
-                                // Show a subtle indication that text is selected
-                                const status = document.createElement('div');
-                                status.style.cssText = 'margin-top: 10px; padding: 8px; background: #e7f3ff; border-radius: 4px; font-size: 12px; color: #0066cc;';
-                                status.innerHTML = '✨ Token text is now selected and ready to copy!';
-                                textarea.parentNode.appendChild(status);
-                                
-                                // Remove the status after a few seconds
-                                setTimeout(() => {{
-                                    if (status.parentNode) {{
-                                        status.parentNode.removeChild(status);
-                                    }}
-                                }}, 3000);
-                            }} else {{
-                                // Try again in a moment
-                                setTimeout(autoSelectWhenReady, 100);
-                            }}
-                        }}
-                        
-                        // Start checking when DOM is ready
-                        if (document.readyState === 'loading') {{
-                            document.addEventListener('DOMContentLoaded', autoSelectWhenReady);
-                        }} else {{
-                            autoSelectWhenReady();
-                        }}
-                    </scr' + 'ipt>
-                `;
+        // Auto-select token on page load
+        window.onload = function() {{
+            selectAllToken();
+        }};
+
+        function selectAllToken() {{
+            const textarea = document.getElementById('token-textarea');
+            textarea.focus();
+            textarea.select();
+        }}
+
+        async function copyToken() {{
+            const textarea = document.getElementById('token-textarea');
+            try {{
+                await navigator.clipboard.writeText(textarea.value);
+                alert('✅ Token copied to clipboard!');
+            }} catch (err) {{
+                alert('❌ Failed to copy automatically. Please select and copy the token manually.');
+                selectAllToken();
             }}
         }}
-        
-        // Handle authentication completion immediately
-        handleAuthCompletion();
     </script>
 </body>
 </html>"#, 
         user, 
-        email, 
-        serde_json::to_string(&token).unwrap_or_else(|_| "\"\"".to_string()),
-        serde_json::to_string(&user).unwrap_or_else(|_| "\"\"".to_string()),
-        serde_json::to_string(&email).unwrap_or_else(|_| "\"\"".to_string()));
+        email,
+        token);
     
     Ok(axum::response::Html(html_content))
 }
@@ -1439,7 +1342,7 @@ async fn create_admin_user(
 async fn gateway(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(req): Json<GatewayRequest>,
+    Json(_req): Json<GatewayRequest>,
 ) -> Result<Json<ApiResponse<Vec<GatewayProject>>>, StatusCode> {
     // Extract user ID from JWT token instead of requiring it in request
     let auth_header = headers.get("authorization")
@@ -1489,8 +1392,19 @@ async fn gateway(
         }
     }
 
-    match state.db.get_user_projects(user_id, req.include_inactive).await {
-        Ok(projects) => Ok(Json(ApiResponse::success(projects))),
+    match state.db.get_user_projects(user_id).await {
+        Ok(projects) => {
+            // Convert Project to GatewayProject
+            let gateway_projects: Vec<GatewayProject> = projects.into_iter().map(|project| {
+                GatewayProject {
+                    project,
+                    active_rifts: vec![], // TODO: Get actual active rifts
+                    your_rifts: vec![],   // TODO: Get user's rifts
+                    last_activity: None,  // TODO: Get last activity
+                }
+            }).collect();
+            Ok(Json(ApiResponse::success(gateway_projects)))
+        }
         Err(e) => {
             error!("Gateway request failed: {}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
@@ -2071,10 +1985,10 @@ struct RestoreData {
 async fn websocket_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
-    Path(_rift_id): Path<String>,
+    Path(rift_id): Path<String>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Result<Response, StatusCode> {
-    info!("🔐 WebSocket connection request with authentication");
+    info!("🔐 WebSocket connection request with authentication for rift: {}", rift_id);
     
     // AUTHENTICATION FIX: Extract and validate token from query parameters
     let token = params.get("token")
@@ -2096,7 +2010,7 @@ async fn websocket_handler(
             StatusCode::UNAUTHORIZED
         })?;
     
-    // Verify user exists in database
+    // SECURITY: Verify user exists in database
     match state.db.get_user(user_id).await {
         Ok(Some(_user)) => {
             info!("✅ WebSocket connection authenticated for user: {} ({})", claims.username, user_id);
@@ -2121,6 +2035,33 @@ async fn websocket_handler(
         }
     }
     
+    // SECURITY: Parse and validate rift ID
+    let rift_uuid = uuid::Uuid::parse_str(&rift_id)
+        .map_err(|_| {
+            warn!("❌ WebSocket connection rejected: Invalid rift ID format: {}", rift_id);
+            StatusCode::BAD_REQUEST
+        })?;
+    
+    // SECURITY: Verify user has access to this specific rift
+    match state.db.get_rift(rift_uuid).await {
+        Ok(Some(rift)) => {
+            // Check if user is a collaborator on this rift
+            if !rift.collaborators.contains(&user_id) {
+                warn!("❌ WebSocket connection rejected: User {} not authorized for rift {}", user_id, rift_id);
+                return Err(StatusCode::FORBIDDEN);
+            }
+            info!("✅ User {} authorized for rift: {}", user_id, rift_id);
+        }
+        Ok(None) => {
+            warn!("❌ WebSocket connection rejected: Rift not found: {}", rift_id);
+            return Err(StatusCode::NOT_FOUND);
+        }
+        Err(e) => {
+            error!("❌ Database error during rift authorization: {}", e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    }
+    
     // Check whitelist if enabled
     if let Some(whitelist) = &state.whitelist {
         let user = state.db.get_user(user_id).await
@@ -2133,11 +2074,11 @@ async fn websocket_handler(
         }
     }
     
-    info!("✅ WebSocket connection authenticated and authorized for user: {}", claims.username);
+    info!("✅ WebSocket connection authenticated and authorized for user: {} on rift: {}", claims.username, rift_id);
     
     Ok(ws.on_upgrade(move |socket| async move {
-        info!("📡 WebSocket connection established for user: {}", claims.username);
-        sync::handle_websocket(socket, state.sync).await;
-        info!("📡 WebSocket connection closed for user: {}", claims.username);
+        info!("📡 WebSocket connection established for user: {} on rift: {}", claims.username, rift_id);
+        sync::handle_websocket(socket, state.sync, rift_id.clone()).await;
+        info!("📡 WebSocket connection closed for user: {} on rift: {}", claims.username, rift_id);
     }))
 } 

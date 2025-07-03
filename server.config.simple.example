@@ -3,7 +3,7 @@
 # 
 # For more advanced configuration, use the TOML format (server.config.example)
 
-# Basic server settings
+# Basic server settings (always use 0.0.0.0 to allow network access)
 host=0.0.0.0
 port=7523
 web_port=8080
@@ -34,7 +34,5 @@ require_auth=true
 # Disable OAuth for CLI-only deployment:
 # oauth_enabled=false
 
-# Local development (localhost only):
-# host=127.0.0.1
-# port=7523
+# Enable debug logging:
 # debug_logging=true 

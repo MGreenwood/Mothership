@@ -69,7 +69,10 @@ async function safeInvoke(command, args = {}) {
             case 'authenticate_with_mothership':
                 throw new Error('Authentication requires Tauri desktop app')
             case 'start_google_oauth':
-                throw new Error('OAuth authentication requires Tauri desktop app')
+                // Redirect to the API server's OAuth endpoint in browser mode
+                const apiBase = window.MOTHERSHIP_API_BASE_URL || 'http://localhost:7523';
+                window.location.href = apiBase + '/auth/oauth/start';
+                return null;
             case 'create_gateway':
                 console.log('Mock: Would create gateway:', args)
                 // Simulate gateway creation

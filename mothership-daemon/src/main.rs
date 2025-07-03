@@ -1,6 +1,6 @@
 use anyhow::Result;
 use std::env;
-use tracing::{info};
+use tracing::info;
 
 mod daemon;
 mod file_watcher;

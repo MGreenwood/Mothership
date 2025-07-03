@@ -1,0 +1,9 @@
+services:
+  mothership:
+    environment:
+      # Use production URLs for OAuth and web UI
+      - OAUTH_BASE_URL=https://api.mothershipproject.dev
+      - WEB_UI_BASE_URL=https://app.mothershipproject.dev
+      - AUTH_SERVER_URL=https://api.mothershipproject.dev
+      - WEBSOCKET_BASE_URL=wss://api.mothershipproject.dev
+      - MOTHERSHIP_SERVER_URL=https://api.mothershipproject.dev 

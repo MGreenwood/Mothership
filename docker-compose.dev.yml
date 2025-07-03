@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  mothership-server:
+  mothership:
     build:
       context: .
       dockerfile: Dockerfile.server
@@ -12,48 +12,53 @@ services:
       - RUST_LOG=${RUST_LOG:-debug}
       - JWT_SECRET=${JWT_SECRET}
       - ADMIN_SECRET=${ADMIN_SECRET}
+      # OAuth configuration
+      - OAUTH_ENABLED=true
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
       - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID}
       - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}
-      # OAuth callback URLs for Docker
       - OAUTH_BASE_URL=${OAUTH_BASE_URL:-http://localhost:7523}
+      # Feature flags
+      - WEBSOCKET_SYNC_ENABLED=true
+      - CHAT_ENABLED=true
+      - FILE_UPLOADS_ENABLED=true
+      - CLI_DISTRIBUTION_ENABLED=true
     env_file:
       - .env
-    networks:
-      - mothership-network
-    # Removed volume mounts for development - use production build
-    command: ["./mothership-server"]
+    volumes:
+      - .:/app
+      - target:/app/target
+      - cargo_registry:/usr/local/cargo/registry
+    command: ["cargo", "watch", "-x", "run"]
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:7523/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
-
-  auth-server:
-    build:
-      context: ./auth-server
-      dockerfile: Dockerfile
-    ports:
-      - "${AUTH_SERVER_PORT:-3001}:3000"
-    environment:
-      - PORT=3000
-      - AUTH_SERVER_PORT=${AUTH_SERVER_PORT:-3001}
-      - MOTHERSHIP_API=http://mothership-server:7523
-      - NODE_ENV=development
-    env_file:
-      - .env
     depends_on:
-      mothership-server:
+      db:
         condition: service_healthy
-    networks:
-      - mothership-network
-    volumes:
-      # Mount source for hot reload with nodemon
-      - ./auth-server:/app
-      - /app/node_modules
 
-networks:
-  mothership-network:
-    driver: bridge 
+  db:
+    image: postgres:13-alpine
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=mothership
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  target:
+  cargo_registry: 

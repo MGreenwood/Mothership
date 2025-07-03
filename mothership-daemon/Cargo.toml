@@ -1,6 +1,6 @@
 [package]
 name = "mothership-daemon"
-version = "0.1.0"
+version = "0.0.0"
 edition = "2021"
 
 [[bin]]
@@ -18,7 +18,7 @@ tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "trace"] }
 
 # File watching
-notify = "6.0"
+notify = "6.1"
 walkdir = "2.0"
 
 # Serialization
@@ -45,6 +45,7 @@ reqwest = { version = "0.11", features = ["json"] }
 # WebSocket support for real-time sync
 tokio-tungstenite = { version = "0.20", features = ["native-tls"] }
 futures-util = "0.3"
+futures = "0.3"
 
 # Common types
 mothership-common = { path = "../mothership-common" }
@@ -66,6 +67,7 @@ windows = { version = "0.52", features = [
 tray-icon = "0.14"
 winit = "0.29"
 image = "0.24"  # For loading PNG icons
+winapi = { version = "0.3", features = ["winuser"] }
 
 # Windows registry for auto-start
 winreg = "0.52"
@@ -75,6 +77,12 @@ dirs = "5.0"
 
 # URL encoding for WebSocket authentication
 urlencoding = "2.1"
+
+# Crypto for hashing
+sha2 = "0.10"
+
+# Random number generation
+rand = "0.8"
 
 [features]
 default = []

@@ -2,8 +2,8 @@
 # Copy this to "server.config" for a secure, private server deployment
 
 [server]
-# Bind to localhost only for security (use reverse proxy for external access)
-host = "127.0.0.1"
+# Bind to all interfaces and use a reverse proxy for security
+host = "0.0.0.0"
 port = 7523
 max_connections = 100
 request_timeout = 30
@@ -51,9 +51,13 @@ binaries_path = "cli-binaries"
 max_downloads_per_hour = 50  # Rate limiting
 track_downloads = true
 
-# Usage Instructions:
+# Security Best Practices:
 # 1. Create team-whitelist.config with authorized users
 # 2. Set OAuth environment variables (GOOGLE_CLIENT_ID, etc.)
 # 3. Set strong JWT_SECRET environment variable  
-# 4. Users visit http://server:7523/ to authenticate and download CLI
-# 5. Use reverse proxy (nginx/caddy) for HTTPS and external access 
+# 4. Configure a reverse proxy (nginx/caddy) with:
+#    - HTTPS termination
+#    - Rate limiting
+#    - IP filtering if needed
+#    - Security headers
+# 5. Use firewall rules to restrict access if needed 

@@ -1,0 +1,58 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT r.id, r.project_id, r.name, r.parent_rift_id, r.created_at, r.is_active,\n                   ARRAY_AGG(rc.user_id) as collaborators\n            FROM rifts r\n            LEFT JOIN rift_collaborators rc ON r.id = rc.rift_id\n            WHERE r.project_id = $1\n            GROUP BY r.id, r.project_id, r.name, r.parent_rift_id, r.created_at, r.is_active\n            ORDER BY r.created_at ASC\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "project_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "parent_rift_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "is_active",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 6,
+        "name": "collaborators",
+        "type_info": "UuidArray"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "8000e7d3cb2eb761a8a951d3a3edf70895b8867782f245486e385ee8ee5b90fa"
+}

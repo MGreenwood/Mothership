@@ -3,6 +3,7 @@ use colored::*;
 use mothership_common::{
     protocol::{ApiResponse, BeamRequest, BeamResponse, SyncMessage},
     Project, ProjectId, RiftId,
+    ClientConfig,
 };
 use std::path::PathBuf;
 use std::fs;
@@ -211,6 +212,47 @@ struct ProjectMetadata {
     rift_id: Option<String>, // CRITICAL FIX: Store rift_id for daemon WebSocket connection
 }
 
+/// Load stored authentication token for WebSocket connection
+fn load_auth_token() -> Option<String> {
+    use serde::{Deserialize, Serialize};
+    
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct StoredCredentials {
+        access_token: String,
+        user_email: Option<String>,
+        user_name: Option<String>,
+        stored_at: String,
+    }
+    
+    // Try to load OAuth credentials first
+    if let Some(config_dir) = dirs::config_dir() {
+        let credentials_path = config_dir.join("mothership").join("credentials.json");
+        if credentials_path.exists() {
+            if let Ok(credentials_content) = std::fs::read_to_string(&credentials_path) {
+                if let Ok(credentials) = serde_json::from_str::<StoredCredentials>(&credentials_content) {
+                    return Some(credentials.access_token);
+                }
+            }
+        }
+    }
+    
+    // Fallback to old config format
+    if let Some(config_dir) = dirs::config_dir() {
+        let config_path = config_dir.join("mothership").join("config.json");
+        if config_path.exists() {
+            if let Ok(config_content) = std::fs::read_to_string(&config_path) {
+                if let Ok(config_json) = serde_json::from_str::<serde_json::Value>(&config_content) {
+                    if let Some(token) = config_json.get("auth_token").and_then(|t| t.as_str()) {
+                        return Some(token.to_string());
+                    }
+                }
+            }
+        }
+    }
+    
+    None
+}
+
 /// Perform initial sync by connecting to WebSocket and requesting all files
 async fn perform_initial_sync(
     websocket_url: &str,
@@ -222,8 +264,18 @@ async fn perform_initial_sync(
 ) -> Result<()> {
     print_info("Connecting to sync server...");
     
-    // Connect to WebSocket
-    let (ws_stream, _) = connect_async(websocket_url).await
+    // AUTHENTICATION FIX: Add auth token to WebSocket URL
+    let auth_token = load_auth_token()
+        .ok_or_else(|| anyhow!("No authentication token found. Please run 'mothership auth' first."))?;
+    
+    let authenticated_url = if websocket_url.contains('?') {
+        format!("{}&token={}", websocket_url, urlencoding::encode(&auth_token))
+    } else {
+        format!("{}?token={}", websocket_url, urlencoding::encode(&auth_token))
+    };
+    
+    // Connect to WebSocket with authentication
+    let (ws_stream, _) = connect_async(&authenticated_url).await
         .map_err(|e| anyhow!("Failed to connect to WebSocket: {}", e))?;
     
     let (mut ws_sender, mut ws_receiver) = ws_stream.split();
@@ -267,6 +319,13 @@ async fn perform_initial_sync(
                             create_project_metadata(project_path, project_id, project_name, mothership_url, Some(rift_id))?;
                             
                             print_success("Project files synchronized successfully!");
+                            
+                            // CRITICAL FIX: Close this temporary connection gracefully with proper close frame
+                            let close_frame = tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                                code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Normal,
+                                reason: "Initial sync completed".into(),
+                            };
+                            let _ = ws_sender.send(tokio_tungstenite::tungstenite::Message::Close(Some(close_frame))).await;
                             return Ok(());
                         }
                         SyncMessage::RiftJoined { current_files, .. } => {
@@ -290,6 +349,13 @@ async fn perform_initial_sync(
                             create_project_metadata(project_path, project_id, project_name, mothership_url, Some(rift_id))?;
                             
                             print_success("Project files synchronized successfully!");
+                            
+                            // CRITICAL FIX: Close this temporary connection gracefully with proper close frame
+                            let close_frame = tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                                code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Normal,
+                                reason: "Initial sync completed".into(),
+                            };
+                            let _ = ws_sender.send(tokio_tungstenite::tungstenite::Message::Close(Some(close_frame))).await;
                             return Ok(());
                         }
                         SyncMessage::Error { message, .. } => {
@@ -349,63 +415,95 @@ fn create_project_metadata(
     Ok(())
 }
 
+/// Check if the current directory is a Mothership project and return its metadata
+fn get_current_project_metadata() -> Option<ProjectMetadata> {
+    let current_dir = std::env::current_dir().ok()?;
+    let mothership_dir = current_dir.join(".mothership");
+    
+    if mothership_dir.exists() && mothership_dir.is_dir() {
+        let metadata_path = mothership_dir.join("project.json");
+        if metadata_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&metadata_path) {
+                if let Ok(metadata) = serde_json::from_str::<ProjectMetadata>(&content) {
+                    return Some(metadata);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Handle beam command - either with explicit project name or auto-detect from current directory
 pub async fn handle_beam(
-    config_manager: &ConfigManager,
+    _config_manager: &ConfigManager,
     project: String,
     rift: Option<String>,
     local_dir: Option<std::path::PathBuf>,
     force_sync: bool,
 ) -> Result<()> {
-    // Check if authenticated
-    if !config_manager.is_authenticated()? {  
-        print_api_error("Not authenticated. Please run 'mothership auth' first.");
-        return Ok(());
-    }
+    // If no project specified (empty string), try to detect from current directory
+    let (project_name, project_path) = if project.is_empty() {
+        if let Some(metadata) = get_current_project_metadata() {
+            print_info("📍 Detected Mothership project in current directory");
+            (metadata.project_name, std::env::current_dir()?)
+        } else {
+            return Err(anyhow!("No project specified and not in a Mothership project directory.\nPlease specify a project name or run this command from a project directory."));
+        }
+    } else {
+        // Check if project exists locally first
+        let is_local = is_project_local(&project);
+        
+        // Determine project path based on local_dir or existing project
+        let path = if let Some(ref dir) = local_dir {
+            if !dir.exists() {
+                return Err(anyhow!("Specified directory does not exist: {}", dir.display()));
+            }
+            // Create a subdirectory for the project when using --local-dir
+            let project_dir = dir.join(&project);
+            project_dir
+        } else if is_local {
+            // If project exists locally, use that directory
+            let current_dir = std::env::current_dir()?;
+            if current_dir.file_name().and_then(|n| n.to_str()) == Some(&project) {
+                current_dir
+            } else {
+                current_dir.join(&project)
+            }
+        } else {
+            // Project doesn't exist locally and no directory specified
+            print_info("Project doesn't exist locally. Please specify a directory:");
+            println!("  {}", format!("mothership beam \"{}\" --local-dir <path>", project).green());
+            println!("  {}", "Example: mothership beam \"my-project\" --local-dir .".dimmed());
+            return Ok(());
+        };
+        
+        (project, path)
+    };
 
-    // Get the active server connection (instead of hardcoded localhost)
+    // Get active server configuration
     let active_server = connections::get_active_server()?
         .ok_or_else(|| anyhow!("No active server connection. Please run 'mothership connect <server-url>' first."))?;
-
-    let config = config_manager.load_config()?;
-    let client = get_http_client(&config);
-
-    // First, determine the project name to check local status
-    let project_name_for_check = if project.parse::<Uuid>().is_ok() {
-        // If it's a UUID, we'll need to fetch the project name later
-        None
-    } else {
-        // It's already a project name
-        Some(project.clone())
-    };
-
-    // Check if project is local (if we have the name)
-    let is_local = if let Some(name) = &project_name_for_check {
-        is_project_local(name)
-    } else {
-        false // We'll check after fetching project details
-    };
-
-    // If project is not local and no local_dir provided, require it
-    if !is_local && local_dir.is_none() && project_name_for_check.is_some() {
-        print_api_error(&format!(
-            "Project '{}' is not available locally. Please specify where to clone it:",
-            project_name_for_check.unwrap()
-        ));
-        println!("  {}", format!("mothership beam \"{}\" --local-dir <path>", project).green());
-        println!("  {}", "Example: mothership beam \"my-project\" --local-dir .".dimmed());
-        return Ok(());
-    }
-
+    
+    // Ensure daemon is running
+    ensure_daemon_running().await?;
+    
     // Try to parse as UUID first, otherwise treat as project name
-    let (project_id, project_name) = if let Ok(uuid) = project.parse::<Uuid>() {
+    let (project_id, project_name) = if let Ok(uuid) = project_name.parse::<Uuid>() {
         // It's a UUID - we need to fetch the project details to get the name
         print_info(&format!("Looking up project by ID: {}", uuid));
         
+        let client_config = ClientConfig {
+            mothership_url: active_server.url.clone(),
+            local_workspace: PathBuf::from("."),
+            auth_token: active_server.auth_token.clone(),
+            user_id: Some(Uuid::new_v4()),
+        };
+        
         let lookup_url = format!("{}/projects/{}", active_server.url, uuid);
-        let response = client.get(&lookup_url).send().await?;
+        let response = get_http_client(&client_config).get(&lookup_url).send().await?;
         
         if !response.status().is_success() {
-            return Err(anyhow!("Project with ID '{}' not found.", uuid));
+            return Err(anyhow!("Project ID {} not found", uuid));
         }
         
         let project_response: ApiResponse<Project> = response.json().await?;
@@ -428,19 +526,30 @@ pub async fn handle_beam(
         (uuid, project_data.name)
     } else {
         // It's a project name - look it up
-        print_info(&format!("Looking up project by name: {}", project));
+        print_info(&format!("Looking up project by name: {}", project_name));
         
-        let lookup_url = format!("{}/projects/by-name/{}", active_server.url, urlencoding::encode(&project));
-        let response = client.get(&lookup_url).send().await?;
+        let client_config = ClientConfig {
+            mothership_url: active_server.url.clone(),
+            local_workspace: PathBuf::from("."),
+            auth_token: active_server.auth_token.clone(),
+            user_id: Some(Uuid::new_v4()),
+        };
+        
+        let lookup_url = format!("{}/projects?name={}", active_server.url, project_name);
+        let response = get_http_client(&client_config).get(&lookup_url).send().await?;
         
         if !response.status().is_success() {
-            return Err(anyhow!("Project '{}' not found. Use 'mothership gateway list' to see available projects.", project));
+            return Err(anyhow!("Project '{}' not found. Use 'mothership gateway list' to see available projects.", project_name));
         }
         
-        let project_response: ApiResponse<Project> = response.json().await?;
-        let project_data = project_response.data.ok_or_else(|| {
+        let project_response: ApiResponse<Vec<Project>> = response.json().await?;
+        let projects = project_response.data.ok_or_else(|| {
             anyhow!("No project data received: {}", project_response.error.unwrap_or_else(|| "Unknown error".to_string()))
         })?;
+        
+        let project_data = projects.into_iter()
+            .find(|p| p.name == project_name)
+            .ok_or_else(|| anyhow!("Project '{}' not found", project_name))?;
         
         (project_data.id, project_data.name.clone())
     };
@@ -454,7 +563,14 @@ pub async fn handle_beam(
     };
 
     let beam_url = format!("{}/projects/{}/beam", active_server.url, project_id);
-    let response = client
+    let client_config = ClientConfig {
+        mothership_url: active_server.url.clone(),
+        local_workspace: PathBuf::from("."),
+        auth_token: active_server.auth_token.clone(),
+        user_id: Some(Uuid::new_v4()),
+    };
+    
+    let response = get_http_client(&client_config)
         .post(&beam_url)
         .json(&beam_request)
         .send()
@@ -474,64 +590,29 @@ pub async fn handle_beam(
     print_info(&format!("Rift ID: {}", beam_data.rift_id));
     print_info(&format!("WebSocket URL: {}", beam_data.websocket_url));
 
-    // 🔥 SMART RIFT DIRECTORY DETECTION
-    let current_dir = std::env::current_dir()?;
-    let project_path = if let Some(local_dir_path) = local_dir {
-        // User specified a local directory to clone to - create project subdirectory
-        let base_path = if local_dir_path.is_absolute() {
-            local_dir_path
-        } else {
-            current_dir.join(local_dir_path)
-        };
-        
-        // Create the project directory inside the specified path
-        let project_dir = base_path.join(&project_name);
-        
-        if project_dir.exists() {
-            if !project_dir.is_dir() {
-                return Err(anyhow!("Project path exists but is not a directory: {}", project_dir.display()));
-            }
-            print_info(&format!("Using existing project directory: {}", project_dir.display()));
-        } else {
-            print_info(&format!("Creating project directory: {}", project_dir.display()));
-            std::fs::create_dir_all(&project_dir)?;
-        }
-        
-        project_dir
-    } else {
-        // No local_dir specified - use existing local project logic
-        // Look for a directory with the project name in current directory
-        let project_dir = current_dir.join(&project_name);
-        
-        if project_dir.exists() && project_dir.is_dir() {
-            print_info(&format!("Found project directory: {}", project_dir.display()));
-            project_dir
-        } else {
-            // Check if current directory name matches the project
-            if let Some(current_name) = current_dir.file_name().and_then(|n| n.to_str()) {
-                if current_name == project_name {
-                    print_info(&format!("Using current directory as project directory: {}", current_dir.display()));
-                    current_dir
-                } else {
-                    // Create the project directory
-                    print_info(&format!("Creating project directory: {}", project_dir.display()));
-                    std::fs::create_dir_all(&project_dir)?;
-                    project_dir
-                }
-            } else {
-                // Fallback to current directory
-                print_info(&format!("Using current directory: {}", current_dir.display()));
-                current_dir
-            }
-        }
-    };
+    // Create the project directory first
+    tokio::fs::create_dir_all(&project_path).await?;
 
     // Create project metadata regardless of sync requirements (using active server URL)
     create_project_metadata(&project_path, &project_id, &project_name, &active_server.url, Some(&beam_data.rift_id))?;
     
-    // Note: Initial sync will be handled by the background daemon
+    // CRITICAL FIX: Perform initial sync if required (download all files)
     if beam_data.initial_sync_required {
-        print_info("Initial sync will be handled by background daemon...");
+        print_info("Performing initial file download...");
+        
+        // Perform initial sync by downloading all project files
+        if let Err(e) = perform_initial_sync(
+            &beam_data.websocket_url,
+            &beam_data.rift_id,
+            &project_path,
+            &project_id,
+            &project_name,
+            &active_server.url,
+        ).await {
+            print_api_error(&format!("Failed to download project files: {}", e));
+            print_info("Project structure created, but files may be missing");
+            print_info("Try running 'mothership sync' in the project directory");
+        }
     }
     
     // Ensure daemon is running and register project with it

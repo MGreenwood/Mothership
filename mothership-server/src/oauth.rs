@@ -20,7 +20,7 @@ struct OAuthConfig {
 #[derive(Clone)]
 pub struct OAuthService {
     providers: HashMap<OAuthProvider, OAuthConfig>,
-    pending_states: std::sync::Arc<RwLock<HashMap<String, (OAuthProvider, OAuthSource)>>>,
+    pending_states: std::sync::Arc<RwLock<HashMap<String, (OAuthProvider, OAuthSource, Option<String>)>>>,
 }
 
 impl OAuthService {
@@ -29,7 +29,7 @@ impl OAuthService {
 
         // Get OAuth base URL from environment or use default
         let oauth_base_url = std::env::var("OAUTH_BASE_URL")
-            .unwrap_or_else(|_| "http://localhost:7523".to_string());
+            .unwrap_or_else(|_| "https://app.mothersh.io".to_string());
 
         // Configure Google OAuth
         let google_client_id = std::env::var("GOOGLE_CLIENT_ID");
@@ -47,7 +47,7 @@ impl OAuthService {
                     AuthUrl::new("https://accounts.google.com/o/oauth2/v2/auth".to_string())?,
                     Some(TokenUrl::new("https://oauth2.googleapis.com/token".to_string())?),
                 )
-                .set_redirect_uri(RedirectUrl::new(format!("{}/auth/callback/google", oauth_base_url))?),
+                .set_redirect_uri(RedirectUrl::new(format!("{}/auth/oauth/callback/google", oauth_base_url))?),
                 scopes: vec!["openid".to_string(), "email".to_string(), "profile".to_string()],
                 user_info_url: "https://www.googleapis.com/oauth2/v2/userinfo".to_string(),
             };
@@ -69,7 +69,7 @@ impl OAuthService {
                     AuthUrl::new("https://github.com/login/oauth/authorize".to_string())?,
                     Some(TokenUrl::new("https://github.com/login/oauth/access_token".to_string())?),
                 )
-                .set_redirect_uri(RedirectUrl::new(format!("{}/auth/callback/github", oauth_base_url))?),
+                .set_redirect_uri(RedirectUrl::new(format!("{}/auth/oauth/callback/github", oauth_base_url))?),
                 scopes: vec!["user:email".to_string()],
                 user_info_url: "https://api.github.com/user".to_string(),
             };
@@ -83,7 +83,7 @@ impl OAuthService {
     }
 
     /// Generate authorization URL for OAuth flow
-    pub async fn get_authorization_url(&self, provider: OAuthProvider, source: OAuthSource) -> Result<(String, String), AuthError> {
+    pub async fn get_authorization_url(&self, provider: OAuthProvider, source: OAuthSource, callback_url: Option<String>) -> Result<(String, String), AuthError> {
         let config = self.providers.get(&provider)
             .ok_or_else(|| AuthError::OAuthError(format!("Provider {:?} not configured", provider)))?;
 
@@ -94,23 +94,27 @@ impl OAuthService {
         let (auth_url, csrf_token) = config.client
             .authorize_url(CsrfToken::new_random)
             .add_scopes(scopes)
+            .add_extra_param("prompt", "select_account")
+            .add_extra_param("access_type", "online")
+            .add_extra_param("include_granted_scopes", "false")
+            .add_extra_param("login_hint", "")
             .url();
 
         let state = csrf_token.secret().clone();
         
-        // Store the state for validation along with source
+        // Store the state for validation along with source and callback URL
         {
             let mut pending_states = self.pending_states.write().await;
-            pending_states.insert(state.clone(), (provider, source));
+            pending_states.insert(state.clone(), (provider, source, callback_url));
         }
 
         Ok((auth_url.to_string(), state))
     }
 
     /// Exchange authorization code for user profile
-    pub async fn exchange_code(&self, code: String, state: String) -> Result<(OAuthProfile, OAuthSource), AuthError> {
+    pub async fn exchange_code(&self, code: String, state: String) -> Result<(OAuthProfile, OAuthSource, Option<String>), AuthError> {
         // Validate state and get provider
-        let (provider, source) = {
+        let (provider, source, callback_url) = {
             let mut pending_states = self.pending_states.write().await;
             pending_states.remove(&state)
                 .ok_or_else(|| AuthError::OAuthError("Invalid or expired state".to_string()))?
@@ -129,7 +133,7 @@ impl OAuthService {
         // Fetch user profile
         let profile = self.fetch_user_profile(&provider, token.access_token().secret()).await?;
         
-        Ok((profile, source))
+        Ok((profile, source, callback_url))
     }
 
     /// Fetch user profile from OAuth provider

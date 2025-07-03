@@ -422,10 +422,12 @@ async fn start_google_oauth(state: State<'_, AppState>) -> Result<OAuthResponse,
     // Create OAuth request
     let oauth_request = OAuthRequest {
         provider: OAuthProvider::Google,
+        source: mothership_common::auth::OAuthSource::GUI,
         machine_id: uuid::Uuid::new_v4().to_string(),
         machine_name: "Mothership GUI".to_string(),
         platform: std::env::consts::OS.to_string(),
         hostname: "mothership-gui".to_string(),
+        callback_url: Some(format!("{}/auth/oauth/callback/google", state.server_url)),  // Use the correct callback URL
     };
     
     let response = client
@@ -804,7 +806,7 @@ fn main() {
             projects: Vec::new(),
         })),
         auth_token: Arc::new(Mutex::new(None)),
-        server_url: "http://localhost:7523".to_string(),
+        server_url: "https://api.mothershipproject.dev".to_string(),
         app_handle: None,
     };
 

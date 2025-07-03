@@ -6,6 +6,7 @@ use axum::{
     routing::get,
     Router,
 };
+use mothership_common::protocol::ApiResponse;
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 use tracing::{info, warn, error};
@@ -21,7 +22,7 @@ pub fn routes() -> Router<crate::AppState> {
         .route("/cli/update-check", get(check_for_updates))
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 struct VersionInfo {
     version: String,
     platforms: Vec<String>,
@@ -117,9 +118,16 @@ curl -L -o /tmp/mothership-daemon "{server_url}/cli/download/$LATEST_VERSION/$PL
 chmod +x /tmp/mothership-daemon
 sudo mv /tmp/mothership-daemon /usr/local/bin/
 
-# Set server URL for CLI
+# Create CLI config
 mkdir -p ~/.config/mothership
-echo "server_url={server_url}" > ~/.config/mothership/config.toml
+cat > ~/.config/mothership/config.json << EOF
+{{
+    "mothership_url": "{server_url}",
+    "auth_token": null,
+    "local_workspace": "$HOME/mothership",
+    "user_id": null
+}}
+EOF
 
 echo ""
 echo -e "${{GREEN}}✅ Installation complete!${{NC}}"
@@ -180,7 +188,7 @@ async fn serve_install_script_platform(
 async fn list_versions(
     State(state): State<crate::AppState>,
     headers: HeaderMap,
-) -> Result<axum::Json<Vec<VersionInfo>>, StatusCode> {
+) -> Result<axum::Json<ApiResponse<Vec<VersionInfo>>>, StatusCode> {
     // Always require authentication for version info (sensitive data)
     let (user_id, username, _) = verify_authenticated_user(&state, &headers).await?;
     info!("📋 Listing versions for user: {} ({})", username, user_id);
@@ -188,14 +196,14 @@ async fn list_versions(
     let versions = get_available_versions().await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     
-    Ok(axum::Json(versions))
+    Ok(axum::Json(ApiResponse::success(versions)))
 }
 
 /// Get the latest version info
 async fn get_latest_version(
     State(state): State<crate::AppState>,
     headers: HeaderMap,
-) -> Result<axum::Json<VersionInfo>, StatusCode> {
+) -> Result<axum::Json<ApiResponse<VersionInfo>>, StatusCode> {
     // Always require authentication for version info (sensitive data)
     let (user_id, username, _) = verify_authenticated_user(&state, &headers).await?;
     info!("📋 Getting latest version for user: {} ({})", username, user_id);
@@ -204,10 +212,10 @@ async fn get_latest_version(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     
     let latest = versions.into_iter()
-        .max_by(|a, b| a.version.cmp(&b.version))
+        .max_by(|a, b| compare_versions(&a.version, &b.version))
         .ok_or(StatusCode::NOT_FOUND)?;
     
-    Ok(axum::Json(latest))
+    Ok(axum::Json(ApiResponse::success(latest)))
 }
 
 /// Download a specific binary
@@ -247,7 +255,7 @@ async fn check_for_updates(
     Query(query): Query<UpdateCheckQuery>,
     State(state): State<crate::AppState>,
     headers: HeaderMap,
-) -> Result<axum::Json<UpdateCheckResponse>, StatusCode> {
+) -> Result<axum::Json<ApiResponse<UpdateCheckResponse>>, StatusCode> {
     // Always require authentication for update checks (reveals version info)
     let (user_id, username, _) = verify_authenticated_user(&state, &headers).await?;
     info!("🔄 Checking updates for user: {} ({})", username, user_id);
@@ -256,7 +264,8 @@ async fn check_for_updates(
     let binary = query.binary.unwrap_or_else(|| "mothership".to_string());
     
     let latest = get_latest_version(State(state.clone()), headers.clone()).await?;
-    let latest_version = latest.0.version.clone();
+    let latest_data = latest.0.data.unwrap();
+    let latest_version = latest_data.version.clone();
     let update_available = version_compare(&current_version, &latest_version);
     
     let download_url = if update_available && !platform.is_empty() {
@@ -266,13 +275,15 @@ async fn check_for_updates(
         None
     };
     
-    Ok(axum::Json(UpdateCheckResponse {
+    let response = UpdateCheckResponse {
         current_version,
         latest_version,
         update_available,
         download_url,
-        changes: latest.0.changes,
-    }))
+        changes: latest_data.changes,
+    };
+    
+    Ok(axum::Json(ApiResponse::success(response)))
 }
 
 // Helper functions
@@ -355,10 +366,67 @@ async fn get_server_url(_state: &crate::AppState) -> String {
 }
 
 async fn get_available_versions() -> Result<Vec<VersionInfo>> {
-    // Read from cli-binaries directory or database
-    // For now, return current version
+    // Try to read from cli-binaries directory first
+    // Check both the root path and the Docker container mount path
+    let cli_binaries_paths = vec![
+        std::path::Path::new("cli-binaries"),
+        std::path::Path::new("/app/cli-binaries"),
+    ];
+    
+    for cli_binaries_path in cli_binaries_paths {
+        if cli_binaries_path.exists() {
+            let mut versions = Vec::new();
+            
+            // Scan for version directories
+            if let Ok(entries) = std::fs::read_dir(cli_binaries_path) {
+                for entry in entries {
+                    if let Ok(entry) = entry {
+                        if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+                            let version_name = entry.file_name().to_string_lossy().to_string();
+                            if is_valid_version(&version_name) {
+                                // Check if this version has Windows binaries (as a proxy for completeness)
+                                let windows_path = entry.path().join("x86_64-pc-windows-msvc");
+                                if windows_path.exists() {
+                                    let cli_path = windows_path.join("mothership.exe");
+                                    let daemon_path = windows_path.join("mothership-daemon.exe");
+                                    
+                                    if cli_path.exists() && daemon_path.exists() {
+                                        versions.push(VersionInfo {
+                                            version: version_name,
+                                            platforms: vec![
+                                                "x86_64-unknown-linux-gnu".to_string(),
+                                                "aarch64-unknown-linux-gnu".to_string(),
+                                                "x86_64-apple-darwin".to_string(),
+                                                "aarch64-apple-darwin".to_string(),
+                                                "x86_64-pc-windows-msvc".to_string(),
+                                            ],
+                                            release_date: chrono::Utc::now(),
+                                            changes: vec![
+                                                "🔥 Rift system for seamless project collaboration".to_string(),
+                                                "✅ Real-time collaboration working".to_string(),
+                                                "🚀 Self-hosted CLI distribution".to_string(),
+                                                "🔧 Enhanced project detection and management".to_string(),
+                                            ],
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            if !versions.is_empty() {
+                // Sort by version (latest first) using proper semantic version comparison
+                versions.sort_by(|a, b| compare_versions(&b.version, &a.version));
+                return Ok(versions);
+            }
+        }
+    }
+    
+    // Fallback to current version if no binaries found
     Ok(vec![VersionInfo {
-        version: env!("CARGO_PKG_VERSION").to_string(),
+        version: "0.1.0".to_string(),
         platforms: vec![
             "x86_64-unknown-linux-gnu".to_string(),
             "aarch64-unknown-linux-gnu".to_string(),
@@ -368,7 +436,7 @@ async fn get_available_versions() -> Result<Vec<VersionInfo>> {
         ],
         release_date: chrono::Utc::now(),
         changes: vec![
-            "🔥 Fixed file watcher async/sync boundary issue".to_string(),
+            "🔥 Rift system for seamless project collaboration".to_string(),
             "✅ Real-time collaboration working".to_string(),
             "🚀 Self-hosted CLI distribution".to_string(),
         ],
@@ -396,6 +464,32 @@ fn is_valid_binary(binary: &str) -> bool {
 fn version_compare(current: &str, latest: &str) -> bool {
     // Simple version comparison - in production would use semver
     current != latest
+}
+
+/// Compare two semantic versions (e.g., "0.0.26" vs "0.0.9")
+/// Returns Ordering for use in sort functions
+fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    let parse_version = |v: &str| -> Vec<u32> {
+        v.split('.')
+            .map(|part| part.parse::<u32>().unwrap_or(0))
+            .collect()
+    };
+    
+    let a_parts = parse_version(a);
+    let b_parts = parse_version(b);
+    
+    // Compare each version component
+    for i in 0..std::cmp::max(a_parts.len(), b_parts.len()) {
+        let a_part = a_parts.get(i).unwrap_or(&0);
+        let b_part = b_parts.get(i).unwrap_or(&0);
+        
+        match a_part.cmp(b_part) {
+            std::cmp::Ordering::Equal => continue,
+            other => return other,
+        }
+    }
+    
+    std::cmp::Ordering::Equal
 }
 
 fn generate_windows_install_script(server_url: &str, auth_required: bool) -> String {
@@ -440,7 +534,7 @@ Write-Host "📋 Detected platform: $Platform" -ForegroundColor Blue
 Write-Host "🔍 Checking latest version..." -ForegroundColor Yellow
 try {{
     $LatestInfo = Invoke-RestMethod -Uri "{server_url}/cli/latest" -Headers $Headers
-    $LatestVersion = $LatestInfo.version
+    $LatestVersion = $LatestInfo.data.version
     Write-Host "📦 Latest version: $LatestVersion" -ForegroundColor Green
 }} catch {{
     Write-Host "❌ Failed to get latest version (check your token)" -ForegroundColor Red
@@ -471,7 +565,13 @@ if ($CurrentPath -notlike "*$InstallDir*") {{
 # Create config
 $ConfigDir = "$env:USERPROFILE\.config\mothership"
 New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
-"server_url={server_url}" | Out-File -FilePath "$ConfigDir\config.toml" -Encoding UTF8
+$ConfigJson = @{{
+    "mothership_url" = "{server_url}"
+    "auth_token" = $null
+    "local_workspace" = "$env:USERPROFILE\mothership"
+    "user_id" = $null
+}} | ConvertTo-Json
+$ConfigJson | Out-File -FilePath "$ConfigDir\config.json" -Encoding UTF8
 
 Write-Host ""
 Write-Host "✅ Installation complete!" -ForegroundColor Green
@@ -505,7 +605,7 @@ Write-Host "📋 Detected platform: $Platform" -ForegroundColor Blue
 # Get latest version
 Write-Host "🔍 Checking latest version..." -ForegroundColor Yellow
 $LatestInfo = Invoke-RestMethod -Uri "{server_url}/cli/latest"
-$LatestVersion = $LatestInfo.version
+$LatestVersion = $LatestInfo.data.version
 
 Write-Host "📦 Latest version: $LatestVersion" -ForegroundColor Green
 
@@ -533,7 +633,13 @@ if ($CurrentPath -notlike "*$InstallDir*") {{
 # Create config
 $ConfigDir = "$env:USERPROFILE\.config\mothership"
 New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
-"server_url={server_url}" | Out-File -FilePath "$ConfigDir\config.toml" -Encoding UTF8
+$ConfigJson = @{{
+    "mothership_url" = "{server_url}"
+    "auth_token" = $null
+    "local_workspace" = "$env:USERPROFILE\mothership"
+    "user_id" = $null
+}} | ConvertTo-Json
+$ConfigJson | Out-File -FilePath "$ConfigDir\config.json" -Encoding UTF8
 
 Write-Host ""
 Write-Host "✅ Installation complete!" -ForegroundColor Green

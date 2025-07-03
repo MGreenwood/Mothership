@@ -120,50 +120,107 @@ impl SyncState {
     }
 }
 
-pub async fn handle_websocket(socket: WebSocket, state: SyncState) {
+pub async fn handle_websocket(socket: WebSocket, state: SyncState, rift_id: String) {
     let (sender, mut receiver) = socket.split();
     let mut broadcast_receiver = state.broadcaster.subscribe();
+
+    // SECURITY FIX: Define the specific rift channel this client should listen to
+    let my_rift_channel = format!("rift_{}", rift_id);
+    
+    info!("🔒 WebSocket client restricted to channel: {}", my_rift_channel);
 
     // Spawn task to handle broadcasting to this client
     let sender_task = {
         let mut sender = sender;
+        let my_channel = my_rift_channel.clone();
         tokio::spawn(async move {
-            while let Ok((_channel, message)) = broadcast_receiver.recv().await {
+            let mut consecutive_errors = 0;
+            while let Ok((channel, message)) = broadcast_receiver.recv().await {
+                // SECURITY FIX: Only process messages for THIS rift
+                if channel != my_channel {
+                    // Silently ignore messages from other rifts
+                    continue;
+                }
+                
                 let json = match serde_json::to_string(&message) {
                     Ok(json) => json,
                     Err(e) => {
-                        error!("Failed to serialize message: {}", e);
+                        error!("Failed to serialize message for channel {}: {}", channel, e);
+                        consecutive_errors += 1;
+                        if consecutive_errors >= 3 {
+                            error!("Too many consecutive serialization errors, closing connection");
+                            break;
+                        }
                         continue;
                     }
                 };
                 
-                if let Err(e) = sender.send(Message::Text(json)).await {
-                    error!("Failed to send message to client: {}", e);
-                    break;
+                match sender.send(Message::Text(json)).await {
+                    Ok(_) => {
+                        consecutive_errors = 0; // Reset on success
+                        info!("✅ Message sent to client on channel: {}", channel);
+                        
+                        // CRITICAL FIX: Add small delay after sending to prevent overwhelming client
+                        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                    }
+                    Err(e) => {
+                        error!("Failed to send message to client on channel {}: {}", channel, e);
+                        consecutive_errors += 1;
+                        if consecutive_errors >= 3 {
+                            error!("Too many consecutive send errors, closing connection");
+                            break;
+                        }
+                        // Add small delay before retry
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    }
                 }
             }
+            info!("Broadcast receiver task completed for channel: {}", my_channel);
         })
     };
 
     // Handle incoming messages
+    let mut consecutive_errors = 0;
     while let Some(msg) = receiver.next().await {
-        let msg = match msg {
-            Ok(msg) => msg,
-            Err(e) => {
-                error!("WebSocket error: {}", e);
-                break;
-            }
-        };
-
         match msg {
-            Message::Text(text) => {
-                if let Err(e) = handle_sync_message(&text, &state).await {
-                    error!("Error handling sync message: {}", e);
+            Ok(Message::Text(text)) => {
+                match handle_sync_message(&text, &state, &rift_id).await {
+                    Ok(_) => {
+                        consecutive_errors = 0; // Reset on success
+                    }
+                    Err(e) => {
+                        error!("Error handling sync message: {}", e);
+                        consecutive_errors += 1;
+                        if consecutive_errors >= 3 {
+                            error!("Too many consecutive message handling errors, closing connection");
+                            break;
+                        }
+                    }
                 }
             }
-            Message::Close(_) => {
-                info!("WebSocket connection closed");
+            Ok(Message::Close(_)) => {
+                info!("WebSocket connection closed gracefully");
                 break;
+            }
+            Ok(Message::Ping(_)) => {
+                // Reset error counter on successful ping
+                consecutive_errors = 0;
+                // Note: We can't send pong directly since sender is in another task
+                // The WebSocket protocol should handle this automatically
+            }
+            Ok(Message::Pong(_)) => {
+                // Reset error counter on successful pong
+                consecutive_errors = 0;
+            }
+            Err(e) => {
+                error!("WebSocket error: {}", e);
+                consecutive_errors += 1;
+                if consecutive_errors >= 3 {
+                    error!("Too many consecutive WebSocket errors, closing connection");
+                    break;
+                }
+                // Add small delay before continuing
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
             }
             _ => {
                 // Ignore other message types
@@ -171,19 +228,39 @@ pub async fn handle_websocket(socket: WebSocket, state: SyncState) {
         }
     }
 
+    info!("WebSocket connection closed for rift: {}", rift_id);
     sender_task.abort();
 }
 
-async fn handle_sync_message(message: &str, state: &SyncState) -> Result<()> {
+async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &str) -> Result<()> {
     let sync_message: SyncMessage = serde_json::from_str(message)?;
     
     match sync_message {
         SyncMessage::JoinRift { rift_id: msg_rift_id, last_checkpoint } => {
             info!("Client joining rift: {} (last checkpoint: {:?})", msg_rift_id, last_checkpoint);
             
-            // Get current live state for the rift
-            let live_files = state.storage.get_live_state(msg_rift_id).await?;
+            // SECURITY CHECK: Verify client is authorized for this rift
+            let msg_rift_id_str = msg_rift_id.to_string();
+            if msg_rift_id_str != client_rift_id {
+                error!("🚨 SECURITY: Client attempted to join unauthorized rift {} (authorized: {})", msg_rift_id_str, client_rift_id);
+                return Err(anyhow::anyhow!("Unauthorized rift access attempt"));
+            }
             
+            // Get current live state for the rift
+            let live_files = match state.storage.get_live_state(msg_rift_id).await {
+                Ok(files) => {
+                    info!("✅ Retrieved {} files from rift {}", files.len(), msg_rift_id);
+                    files
+                }
+                Err(e) => {
+                    error!("❌ Failed to get live state for rift {}: {}", msg_rift_id, e);
+                    return Err(e);
+                }
+            };
+
+            // CRITICAL FIX: Add delay before sending RiftJoined to ensure connection is stable
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
             let response = SyncMessage::RiftJoined {
                 rift_id: msg_rift_id,
                 current_files: live_files,
@@ -191,12 +268,37 @@ async fn handle_sync_message(message: &str, state: &SyncState) -> Result<()> {
                 last_checkpoint,
             };
             
-            // Send only to the joining client (not broadcast to all)
-            let channel = format!("rift_{}", msg_rift_id);
-            let _ = state.broadcaster.send((channel, response));
+            // Test serialization before sending
+            match serde_json::to_string(&response) {
+                Ok(json) => {
+                    info!("✅ RiftJoined message serialized successfully ({} bytes)", json.len());
+                    
+                    // Send only to the joining client (not broadcast to all)
+                    let channel = format!("rift_{}", msg_rift_id);
+                    match state.broadcaster.send((channel.clone(), response)) {
+                        Ok(_) => {
+                            info!("✅ RiftJoined message sent to channel: {}", channel);
+                        }
+                        Err(e) => {
+                            error!("❌ Failed to send RiftJoined message to channel {}: {}", channel, e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("❌ Failed to serialize RiftJoined message: {}", e);
+                    return Err(anyhow::anyhow!("Serialization failed: {}", e));
+                }
+            }
         }
 
         SyncMessage::FileChanged { rift_id: msg_rift_id, path, content, timestamp: _ } => {
+            // SECURITY CHECK: Verify client is authorized for this rift
+            let msg_rift_id_str = msg_rift_id.to_string();
+            if msg_rift_id_str != client_rift_id {
+                error!("🚨 SECURITY: Client attempted to modify unauthorized rift {} (authorized: {})", msg_rift_id_str, client_rift_id);
+                return Err(anyhow::anyhow!("Unauthorized rift modification attempt"));
+            }
+            
             info!("📝 File changed in rift {}: {} ({} bytes)", msg_rift_id, path.display(), content.len());
             
             // PERFORMANCE FIX: Get original content to generate diff
@@ -209,7 +311,13 @@ async fn handle_sync_message(message: &str, state: &SyncState) -> Result<()> {
             state.storage.update_live_state(msg_rift_id, path.clone(), content.clone()).await?;
             
             // PERFORMANCE FIX: Generate diff instead of sending full content
-            let diff_change = DiffEngine::create_diff_change(path.clone(), &original_content, &content);
+            let diff_engine = DiffEngine::new();
+            let diff = diff_engine.generate_line_diff(&original_content, &content);
+            let diff_change = FileDiffChange {
+                path: path.clone(),
+                diff,
+                file_size: content.len() as u64,
+            };
             
             info!("📊 Generated diff for {}: original {} bytes -> new {} bytes", 
                 path.display(), original_content.len(), content.len());
@@ -226,6 +334,13 @@ async fn handle_sync_message(message: &str, state: &SyncState) -> Result<()> {
         }
 
         SyncMessage::FileDiffChanged { rift_id: msg_rift_id, path, diff, file_size, timestamp: _ } => {
+            // SECURITY CHECK: Verify client is authorized for this rift
+            let msg_rift_id_str = msg_rift_id.to_string();
+            if msg_rift_id_str != client_rift_id {
+                error!("🚨 SECURITY: Client attempted to modify unauthorized rift {} (authorized: {})", msg_rift_id_str, client_rift_id);
+                return Err(anyhow::anyhow!("Unauthorized rift modification attempt"));
+            }
+            
             info!("📝 Diff change in rift {}: {} ({} bytes)", msg_rift_id, path.display(), file_size);
             
             // PERFORMANCE FIX: Apply diff to get new content
@@ -234,7 +349,8 @@ async fn handle_sync_message(message: &str, state: &SyncState) -> Result<()> {
                 Err(_) => String::new(), // New file
             };
             
-            let new_content = DiffEngine::apply_diff(&original_content, &diff)?;
+            let diff_engine = DiffEngine::new();
+            let new_content = diff_engine.apply_diff(&original_content, &diff)?;
             
             // Update live working state
             state.storage.update_live_state(msg_rift_id, path.clone(), new_content).await?;
@@ -247,6 +363,13 @@ async fn handle_sync_message(message: &str, state: &SyncState) -> Result<()> {
         }
 
         SyncMessage::BatchDiffChanges { rift_id: msg_rift_id, changes, timestamp: _, compressed } => {
+            // SECURITY CHECK: Verify client is authorized for this rift
+            let msg_rift_id_str = msg_rift_id.to_string();
+            if msg_rift_id_str != client_rift_id {
+                error!("🚨 SECURITY: Client attempted to modify unauthorized rift {} (authorized: {})", msg_rift_id_str, client_rift_id);
+                return Err(anyhow::anyhow!("Unauthorized rift modification attempt"));
+            }
+            
             info!("📦 Batch diff changes in rift {}: {} changes (compressed: {})", 
                 msg_rift_id, changes.len(), compressed);
             
@@ -261,7 +384,8 @@ async fn handle_sync_message(message: &str, state: &SyncState) -> Result<()> {
                     Err(_) => String::new(), // New file
                 };
                 
-                let new_content = DiffEngine::apply_diff(&original_content, &change.diff)?;
+                let diff_engine = DiffEngine::new();
+                let new_content = diff_engine.apply_diff(&original_content, &change.diff)?;
                 
                 // Update live working state
                 state.storage.update_live_state(msg_rift_id, change.path.clone(), new_content).await?;
@@ -283,6 +407,13 @@ async fn handle_sync_message(message: &str, state: &SyncState) -> Result<()> {
         }
 
         SyncMessage::CreateCheckpoint { rift_id: msg_rift_id, message } => {
+            // SECURITY CHECK: Verify client is authorized for this rift
+            let msg_rift_id_str = msg_rift_id.to_string();
+            if msg_rift_id_str != client_rift_id {
+                error!("🚨 SECURITY: Client attempted to create checkpoint in unauthorized rift {} (authorized: {})", msg_rift_id_str, client_rift_id);
+                return Err(anyhow::anyhow!("Unauthorized checkpoint creation attempt"));
+            }
+            
             info!("📸 Checkpoint requested for rift: {} (message: {:?})", msg_rift_id, message);
             
             // Create actual checkpoint using storage engine

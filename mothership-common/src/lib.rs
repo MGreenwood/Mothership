@@ -4,8 +4,19 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 pub mod auth;
+pub mod crdt;
+pub mod diff;
 pub mod protocol;
-pub mod diff; // PERFORMANCE FIX: Diff utilities for efficient sync
+pub mod transaction;
+
+pub use auth::*;
+pub use crdt::*;
+pub use diff::*;
+pub use protocol::*;
+pub use transaction::{Transaction, TransactionStatus};
+
+// Re-export commonly used types
+pub use protocol::{SyncMessage, ConflictRiftInfo, FileDiff, DiffOperation, FileDiffChange};
 
 // Core ID types
 pub type UserId = Uuid;

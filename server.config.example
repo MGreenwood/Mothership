@@ -2,7 +2,7 @@
 # Copy this file to "server.config" and customize as needed
 
 [server]
-# Server bind address (use "127.0.0.1" for local only, "0.0.0.0" for network access)
+# Server bind address (always use "0.0.0.0" to allow network access)
 host = "0.0.0.0"
 
 # Server port

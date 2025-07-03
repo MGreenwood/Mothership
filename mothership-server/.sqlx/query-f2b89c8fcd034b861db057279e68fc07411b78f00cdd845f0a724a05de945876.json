@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO rifts (id, project_id, name, is_active)\n            VALUES ($1, $2, $3, true)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Varchar"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f2b89c8fcd034b861db057279e68fc07411b78f00cdd845f0a724a05de945876"
+}

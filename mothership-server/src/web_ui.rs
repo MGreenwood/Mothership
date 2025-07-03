@@ -1,13 +1,18 @@
 use axum::{
-    extract::{Query, State},
+    extract::{Query, State, Json},
     http::StatusCode,
-    response::{Html, Response},
-    routing::get,
+    response::{Html, Response, IntoResponse},
+    routing::{get, post},
     Router,
 };
+use axum_extra::extract::cookie::CookieJar;
 use serde::Deserialize;
-use tracing::{info, warn};
+use tracing::{info, warn, error};
 use tower_http::services::ServeDir;
+use axum_extra::extract::cookie::Cookie;
+use time::Duration;
+use url;
+use urlencoding;
 
 /// Web UI routes for authentication and CLI downloads
 pub fn routes() -> Router<crate::AppState> {
@@ -16,6 +21,8 @@ pub fn routes() -> Router<crate::AppState> {
         .route("/login", get(login_page))
         .route("/download", get(download_page))
         .route("/download/authenticated", get(authenticated_download_page))
+        .route("/auth/callback", post(auth_callback))
+        .route("/auth/finalize", get(auth_finalize))
         .route("/robots.txt", get(robots_txt))
         // Serve static files (icon.png, etc.)
         .nest_service("/static", ServeDir::new("content"))
@@ -288,7 +295,7 @@ async fn login_page(State(state): State<crate::AppState>) -> Result<Html<String>
         <h1>❌ Authentication Disabled</h1>
         <div class="error">
             <h3>OAuth authentication is disabled on this server</h3>
-            <p>Contact your administrator to enable OAuth authentication or use device code authentication via the CLI.</p>
+            <p>Contact your administrator to enable OAuth authentication.</p>
         </div>
         <a href="/" class="btn">← Back to Home</a>
     </div>
@@ -407,6 +414,9 @@ async fn login_page(State(state): State<crate::AppState>) -> Result<Html<String>
             <button class="auth-btn" onclick="testOAuth()" style="background: rgba(100, 100, 100, 0.8);">
                 🔍 Test OAuth Setup
             </button>
+            <button class="auth-btn" onclick="signOut()" style="background: rgba(200, 50, 50, 0.8);">
+                🚪 Sign Out of Google
+            </button>
         </div>
         
         <div class="back-link">
@@ -415,21 +425,38 @@ async fn login_page(State(state): State<crate::AppState>) -> Result<Html<String>
     </div>
     
     <script>
+        async function signOut() {{
+            // Clear any existing Google session
+            const googleUrl = 'https://accounts.google.com/logout';
+            const w = window.open(googleUrl, '_blank', 'width=700,height=600');
+            setTimeout(() => {{
+                if (w) w.close();
+                window.location.reload();
+            }}, 2000);
+        }}
+        
         async function startOAuth(provider) {{
             try {{
                 console.log('Starting OAuth for provider:', provider);
                 
-                const response = await fetch('/auth/oauth/start', {{
+                // Get the API server URL for OAuth
+                const apiUrl = 'https://api.mothershipproject.dev';
+                const callbackUrl = apiUrl + '/auth/oauth/callback/google';  // Match the server's callback URL
+                console.log('API URL:', apiUrl);
+                console.log('Callback URL:', callbackUrl);
+                
+                const response = await fetch(apiUrl + '/auth/oauth/start', {{
                     method: 'POST',
                     headers: {{
                         'Content-Type': 'application/json',
                     }},
                     body: JSON.stringify({{
-                        provider: provider === 'google' ? 'Google' : 'GitHub', // Proper enum case
+                        provider: provider === 'google' ? 'Google' : 'GitHub',
                         machine_id: 'web-' + Math.random().toString(36).substr(2, 9),
                         machine_name: 'web-browser-oauth',
                         platform: navigator.platform || 'unknown',
-                        hostname: window.location.hostname
+                        hostname: window.location.hostname,
+                        callback_url: callbackUrl
                     }})
                 }});
                 
@@ -592,31 +619,87 @@ async fn download_page(State(state): State<crate::AppState>) -> Html<String> {
 
 /// Authenticated download page (after successful OAuth)
 async fn authenticated_download_page(
-    Query(query): Query<DownloadPageQuery>,
+    jar: CookieJar,
     State(state): State<crate::AppState>,
 ) -> Result<Html<String>, StatusCode> {
-    // This page is typically reached via OAuth callback redirect
-    let token = query.token.clone();
-    let username = query.user.clone();
-    let email = query.email.clone();
-    
-    if token.is_none() {
-        warn!("Authenticated download page accessed without token");
-        return Ok(Html(format!(r#"
+    // Get session from secure cookie
+    let session_id = match jar.get("mothership_session") {
+        Some(cookie) => {
+            info!("Found session cookie: {}", cookie.value());
+            cookie.value().to_string()
+        }
+        None => {
+            warn!("Authenticated download page accessed without session cookie");
+            return Ok(Html(format!(r#"
 <!DOCTYPE html>
 <html>
-<head><title>Missing Token</title></head>
+<head><title>Session Expired</title></head>
 <body>
-    <h1>Missing Authentication Token</h1>
-    <p>Please <a href="/login">sign in again</a>.</p>
+    <h1>Session Expired</h1>
+    <p>Your session has expired. Please <a href="/login">sign in again</a>.</p>
 </body>
 </html>
-        "#)));
-    }
+            "#)));
+        }
+    };
     
-    info!("Authenticated download page accessed by user: {:?} ({:?})", username, email);
+    // Retrieve session data
+    let session_data = {
+        let sessions = state.sessions.read().await;
+        let session_count = sessions.len();
+        info!("Total active sessions: {}", session_count);
+        sessions.get(&session_id).cloned()
+    };
     
-    Ok(generate_download_page_html(token, username, email, &state).await)
+    let session_data = match session_data {
+        Some(data) => {
+            let now = chrono::Utc::now();
+            info!("Session found - expires at: {}, current time: {}", data.expires_at, now);
+            
+            // Check if session is expired
+            if now > data.expires_at {
+                warn!("Expired session used for download page: {} (expired at {}, current: {})", session_id, data.expires_at, now);
+                // Clean up expired session
+                {
+                    let mut sessions = state.sessions.write().await;
+                    sessions.remove(&session_id);
+                }
+                return Ok(Html(format!(r#"
+<!DOCTYPE html>
+<html>
+<head><title>Session Expired</title></head>
+<body>
+    <h1>Session Expired</h1>
+    <p>Your session has expired. Please <a href="/login">sign in again</a>.</p>
+</body>
+</html>
+                "#)));
+            }
+            data
+        }
+        None => {
+            warn!("Invalid session ID used for download page: {}", session_id);
+            return Ok(Html(format!(r#"
+<!DOCTYPE html>
+<html>
+<head><title>Invalid Session</title></head>
+<body>
+    <h1>Invalid Session</h1>
+    <p>Your session is invalid. Please <a href="/login">sign in again</a>.</p>
+</body>
+</html>
+            "#)));
+        }
+    };
+    
+    info!("Authenticated download page accessed by user: {} ({})", session_data.username, session_data.email);
+    
+    Ok(generate_download_page_html(
+        Some(session_data.token), 
+        Some(session_data.username), 
+        Some(session_data.email), 
+        &state
+    ).await)
 }
 
 /// Generate the download page HTML
@@ -631,27 +714,8 @@ async fn generate_download_page_html(
         .unwrap_or_else(|_| "http://localhost:7523".to_string());
     
     let is_authenticated = token.is_some();
-    let auth_header = if let Some(ref t) = token {
-        format!("-H \"Authorization: Bearer {}\"", t)
-    } else {
-        String::new()
-    };
     
     let version = env!("CARGO_PKG_VERSION");
-    
-    // Pre-compute auth header strings to avoid temporary value issues
-    
-    // Pre-compute formatted strings for download links
-    let auth_attr_linux_x64_cli = if is_authenticated { format!(" {}", auth_header) } else { String::new() };
-    let auth_attr_linux_x64_daemon = if is_authenticated { format!(" {}", auth_header) } else { String::new() };
-    let auth_attr_linux_arm64_cli = if is_authenticated { format!(" {}", auth_header) } else { String::new() };
-    let auth_attr_linux_arm64_daemon = if is_authenticated { format!(" {}", auth_header) } else { String::new() };
-    let auth_attr_macos_x64_cli = if is_authenticated { format!(" {}", auth_header) } else { String::new() };
-    let auth_attr_macos_x64_daemon = if is_authenticated { format!(" {}", auth_header) } else { String::new() };
-    let auth_attr_macos_arm64_cli = if is_authenticated { format!(" {}", auth_header) } else { String::new() };
-    let auth_attr_macos_arm64_daemon = if is_authenticated { format!(" {}", auth_header) } else { String::new() };
-    let auth_attr_windows_cli = if is_authenticated { format!(" {}", auth_header) } else { String::new() };
-    let auth_attr_windows_daemon = if is_authenticated { format!(" {}", auth_header) } else { String::new() };
     
     let html = format!(r#"
 <!DOCTYPE html>
@@ -802,11 +866,20 @@ async fn generate_download_page_html(
         
         <div class="download-methods">
             <div class="method">
+                <h3>🔑 Your Authentication Token</h3>
+                <p>Copy this token for use with the installation commands below:</p>
+                <div class="code-block">
+                    <button class="copy-btn" onclick="copyToClipboard('auth-token')">Copy</button>
+                    <code id="auth-token">{}</code>
+                </div>
+            </div>
+            
+            <div class="method">
                 <h3>🚀 Quick Install (Unix/Linux/macOS)</h3>
                 <p>One-liner installation script:</p>
                 <div class="code-block">
                     <button class="copy-btn" onclick="copyToClipboard('unix-install')">Copy</button>
-                    <code id="unix-install">{}curl -sSL {}/cli/install | bash</code>
+                    <code id="unix-install">{}</code>
                 </div>
             </div>
             
@@ -815,7 +888,7 @@ async fn generate_download_page_html(
                 <p>PowerShell installation script:</p>
                 <div class="code-block">
                     <button class="copy-btn" onclick="copyToClipboard('windows-install')">Copy</button>
-                    <code id="windows-install">{}irm {}/cli/install/windows | iex</code>
+                    <code id="windows-install">{}</code>
                 </div>
             </div>
         </div>
@@ -827,32 +900,32 @@ async fn generate_download_page_html(
             <div class="platforms">
                 <div class="platform">
                     <h4>🐧 Linux x64</h4>
-                    <a href="{}/cli/download/{}/x86_64-unknown-linux-gnu/mothership" class="download-btn"{}>CLI</a>
-                    <a href="{}/cli/download/{}/x86_64-unknown-linux-gnu/mothership-daemon" class="download-btn"{}>Daemon</a>
+                    <a href="{}/cli/download/{}/x86_64-unknown-linux-gnu/mothership" class="download-btn">CLI</a>
+                    <a href="{}/cli/download/{}/x86_64-unknown-linux-gnu/mothership-daemon" class="download-btn">Daemon</a>
                 </div>
                 
                 <div class="platform">
                     <h4>🐧 Linux ARM64</h4>
-                    <a href="{}/cli/download/{}/aarch64-unknown-linux-gnu/mothership" class="download-btn"{}>CLI</a>
-                    <a href="{}/cli/download/{}/aarch64-unknown-linux-gnu/mothership-daemon" class="download-btn"{}>Daemon</a>
+                    <a href="{}/cli/download/{}/aarch64-unknown-linux-gnu/mothership" class="download-btn">CLI</a>
+                    <a href="{}/cli/download/{}/aarch64-unknown-linux-gnu/mothership-daemon" class="download-btn">Daemon</a>
                 </div>
                 
                 <div class="platform">
                     <h4>🍎 macOS x64</h4>
-                    <a href="{}/cli/download/{}/x86_64-apple-darwin/mothership" class="download-btn"{}>CLI</a>
-                    <a href="{}/cli/download/{}/x86_64-apple-darwin/mothership-daemon" class="download-btn"{}>Daemon</a>
+                    <a href="{}/cli/download/{}/x86_64-apple-darwin/mothership" class="download-btn">CLI</a>
+                    <a href="{}/cli/download/{}/x86_64-apple-darwin/mothership-daemon" class="download-btn">Daemon</a>
                 </div>
                 
                 <div class="platform">
                     <h4>🍎 macOS ARM64</h4>
-                    <a href="{}/cli/download/{}/aarch64-apple-darwin/mothership" class="download-btn"{}>CLI</a>
-                    <a href="{}/cli/download/{}/aarch64-apple-darwin/mothership-daemon" class="download-btn"{}>Daemon</a>
+                    <a href="{}/cli/download/{}/aarch64-apple-darwin/mothership" class="download-btn">CLI</a>
+                    <a href="{}/cli/download/{}/aarch64-apple-darwin/mothership-daemon" class="download-btn">Daemon</a>
                 </div>
                 
                 <div class="platform">
                     <h4>🪟 Windows x64</h4>
-                    <a href="{}/cli/download/{}/x86_64-pc-windows-msvc/mothership.exe" class="download-btn"{}>CLI</a>
-                    <a href="{}/cli/download/{}/x86_64-pc-windows-msvc/mothership-daemon.exe" class="download-btn"{}>Daemon</a>
+                    <a href="{}/cli/download/{}/x86_64-pc-windows-msvc/mothership.exe" class="download-btn">CLI</a>
+                    <a href="{}/cli/download/{}/x86_64-pc-windows-msvc/mothership-daemon.exe" class="download-btn">Daemon</a>
                 </div>
             </div>
         </div>
@@ -900,40 +973,206 @@ async fn generate_download_page_html(
             String::new()
         },
         if is_authenticated { 
-            format!("MOTHERSHIP_TOKEN={} ", token.as_ref().unwrap()) 
+            token.as_ref().unwrap()
         } else { 
-            String::new() 
+            "No token available - please authenticate first"
         },
-        server_url,
         if is_authenticated { 
-            format!("$env:MOTHERSHIP_TOKEN=\"{}\"; ", token.as_ref().unwrap()) 
+            format!("MOTHERSHIP_TOKEN={} curl -sSL {}/cli/install | bash", token.as_ref().unwrap(), server_url) 
         } else { 
             String::new() 
         },
-        server_url,
-        // Platform downloads with auth headers
-        server_url, version, &auth_attr_linux_x64_cli,
-        server_url, version, &auth_attr_linux_x64_daemon,
-        server_url, version, &auth_attr_linux_arm64_cli,
-        server_url, version, &auth_attr_linux_arm64_daemon,
-        server_url, version, &auth_attr_macos_x64_cli,
-        server_url, version, &auth_attr_macos_x64_daemon,
-        server_url, version, &auth_attr_macos_arm64_cli,
-        server_url, version, &auth_attr_macos_arm64_daemon,
-        server_url, version, &auth_attr_windows_cli,
-        server_url, version, &auth_attr_windows_daemon,
+        if is_authenticated { 
+            format!("$env:MOTHERSHIP_TOKEN=\"{}\"; irm {}/cli/install/windows | iex", token.as_ref().unwrap(), server_url) 
+        } else { 
+            String::new() 
+        },
+        // Platform downloads - exactly 20 pairs for 5 platforms × 2 binaries × 2 args each
+        server_url, version,
+        server_url, version,
+        server_url, version,
+        server_url, version,
+        server_url, version,
+        server_url, version,
+        server_url, version,
+        server_url, version,
+        server_url, version,
+        server_url, version,
         if is_authenticated {
             r#"<div class="warning">
                 <h3>🔒 Secure Token</h3>
                 <p>Your authentication token is embedded in the download links above. Keep this page secure and don't share the URLs with others.</p>
             </div>"#
         } else {
-            r#"<div class="note">
-                <h3>🌐 Public Downloads</h3>
-                <p>These downloads are publicly available. You'll still need to authenticate when using the CLI to access this server.</p>
+            r#"<div class="warning">
+                <h3>🔐 Authentication Required</h3>
+                <p>Direct downloads require authentication. Please use the installation scripts above or authenticate first.</p>
             </div>"#
         }
     );
 
     Html(html)
+}
+
+/// Handle server-to-server authentication callback
+async fn auth_callback(
+    State(state): State<crate::AppState>,
+    Json(callback_data): Json<mothership_common::auth::ServerAuthCallback>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    info!("🔄 Received auth callback for user: {} ({})", callback_data.username, callback_data.email);
+    
+    // Validate the token with the API server
+    let client = reqwest::Client::new();
+    let api_server_url = std::env::var("MOTHERSHIP_API_URL")
+        .unwrap_or_else(|_| "https://api.mothershipproject.dev".to_string());
+    
+    let validation_response = client
+        .get(&format!("{}/auth/check", api_server_url))
+        .bearer_auth(&callback_data.token)
+        .send()
+        .await
+        .map_err(|e| {
+            error!("❌ Failed to validate token with API server: {}", e);
+            StatusCode::BAD_REQUEST
+        })?;
+    
+    if !validation_response.status().is_success() {
+        error!("❌ Token validation failed: HTTP {}", validation_response.status());
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    
+    // Create local session
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let session_data = crate::SessionData {
+        user_id: callback_data.user_id,
+        username: callback_data.username.clone(),
+        email: callback_data.email.clone(),
+        token: callback_data.token,
+        created_at: chrono::Utc::now(),
+        expires_at: callback_data.expires_at,
+    };
+    
+    // Store session
+    {
+        let mut sessions = state.sessions.write().await;
+        sessions.insert(session_id.clone(), session_data);
+    }
+    
+    info!("✅ Created local session for user: {} ({})", callback_data.username, callback_data.email);
+    
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": "Authentication successful"
+    })))
+}
+
+/// Handle browser authentication finalization with temporary code
+pub async fn auth_finalize(
+    State(state): State<crate::AppState>,
+    query: axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<Response, StatusCode> {
+    let callback_url = query.get("callback_url")
+        .map(|url| url.to_string())
+        .unwrap_or_else(|| "https://app.mothersh.io".to_string());
+
+    let code = query.get("code")
+        .ok_or_else(|| {
+            error!("❌ Auth finalize missing 'code' parameter");
+            StatusCode::BAD_REQUEST
+        })?
+        .clone();
+    
+    info!("🔄 Processing auth finalize with code: {}", code);
+    
+    // Retrieve and validate temporary token
+    let temp_token_data = {
+        let mut temp_tokens = state.temp_tokens.write().await;
+        temp_tokens.remove(&code)
+    };
+    
+    let temp_token_data = match temp_token_data {
+        Some(data) => {
+            // Check if token is expired
+            if chrono::Utc::now() > data.expires_at {
+                error!("❌ Temporary token expired: {}", code);
+                return Ok(axum::response::Redirect::to("/auth/error?message=Authentication code expired. Please try again.").into_response());
+            }
+            data
+        }
+        None => {
+            error!("❌ Invalid or missing temporary token for code: {}", code);
+            return Ok(axum::response::Redirect::to("/auth/error?message=Invalid authentication code. Please try again.").into_response());
+        }
+    };
+    
+    info!("✅ Validated temporary token for user: {} ({})", temp_token_data.username, temp_token_data.email);
+    
+    // Create session
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let token = temp_token_data.token.clone();
+    let session_data = crate::SessionData {
+        user_id: temp_token_data.user_id,
+        username: temp_token_data.username.clone(),
+        email: temp_token_data.email.clone(),
+        token,
+        created_at: chrono::Utc::now(),
+        expires_at: chrono::Utc::now() + chrono::Duration::hours(24),
+    };
+    
+    // Store session
+    {
+        let mut sessions = state.sessions.write().await;
+        sessions.insert(session_id.clone(), session_data);
+    }
+    
+    info!("✅ Created session for user: {} ({})", temp_token_data.username, temp_token_data.email);
+    
+    // Get the web UI URL
+    let web_ui_url = std::env::var("WEB_UI_BASE_URL")
+        .or_else(|_| std::env::var("OAUTH_BASE_URL"))
+        .unwrap_or_else(|_| "http://localhost:7523".to_string());
+    
+    // Create session cookie - determine secure flag and domain
+    let is_secure = web_ui_url.starts_with("https");
+    let is_localhost = web_ui_url.contains("localhost") || web_ui_url.contains("127.0.0.1");
+    
+    let mut cookie_builder = Cookie::build(("mothership_session", session_id))
+        .http_only(true)
+        .secure(is_secure)
+        .same_site(axum_extra::extract::cookie::SameSite::Lax)
+        .path("/");
+    
+    // Set domain for non-localhost URLs
+    if !is_localhost {
+        // Extract base domain from web_ui_url
+        if let Ok(url) = url::Url::parse(&web_ui_url) {
+            if let Some(domain) = url.domain() {
+                // Get the base domain (e.g., "mothershipproject.dev" from "app.mothershipproject.dev")
+                let parts: Vec<&str> = domain.split('.').collect();
+                if parts.len() >= 2 {
+                    let base_domain = format!(".{}.{}", parts[parts.len() - 2], parts[parts.len() - 1]);
+                    info!("🍪 Setting cookie domain to: {}", base_domain);
+                    cookie_builder = cookie_builder.domain(base_domain);
+                }
+            }
+        }
+    }
+    
+    let cookie = cookie_builder.build();
+    
+    info!("Session cookie created - secure: {}, localhost: {}, domain: {:?}", 
+          is_secure, is_localhost, cookie.domain());
+    
+    // Redirect to success page with session cookie and user data
+    let success_url = format!("/download/authenticated?user_id={}&username={}&email={}&token={}",
+        temp_token_data.user_id,
+        urlencoding::encode(&temp_token_data.username),
+        urlencoding::encode(&temp_token_data.email),
+        urlencoding::encode(&temp_token_data.token)
+    );
+
+    Ok((
+        CookieJar::new().add(cookie),
+        axum::response::Redirect::to(&success_url)
+    ).into_response())
 } 

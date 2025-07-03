@@ -5,7 +5,20 @@ use serde::{Serialize, Deserialize};
 use std::io::{self, Write};
 use uuid;
 
-use crate::{config::ConfigManager, get_http_client, print_api_error, print_info, print_success};
+use crate::{config::ConfigManager, get_http_client, print_api_error, print_info, print_success, connections};
+
+/// Get the server URL to use for sync operations
+/// Prioritizes active server connection over config file
+fn get_server_url(config_manager: &ConfigManager) -> Result<String> {
+    // First, check if there's an active server connection
+    if let Some(server_url) = connections::get_active_server_url() {
+        return Ok(server_url);
+    }
+    
+    // Fallback to config file
+    let config = config_manager.load_config()?;
+    Ok(config.mothership_url)
+}
 
 pub async fn handle_status(config_manager: &ConfigManager) -> Result<()> {
     // Check if authenticated
@@ -38,10 +51,11 @@ pub async fn handle_checkpoint(config_manager: &ConfigManager, message: Option<S
     print_info(&format!("Creating checkpoint for {}: {}", project_name, checkpoint_msg));
 
     let config = config_manager.load_config()?;
+    let server_url = get_server_url(config_manager)?;
     let client = get_http_client(&config);
 
     // Create checkpoint via API
-    let checkpoint_url = format!("{}/projects/{}/checkpoint", config.mothership_url, project_id);
+    let checkpoint_url = format!("{}/projects/{}/checkpoint", server_url, project_id);
     let response = client
         .post(&checkpoint_url)
         .json(&serde_json::json!({
@@ -96,10 +110,11 @@ pub async fn handle_history(config_manager: &ConfigManager, limit: usize) -> Res
     print_info(&format!("Loading history for project: {}", project_name));
 
     let config = config_manager.load_config()?;
+    let server_url = get_server_url(config_manager)?;
     let client = get_http_client(&config);
 
     // Get checkpoint history from server
-    let history_url = format!("{}/projects/{}/history?limit={}", config.mothership_url, project_id, limit);
+    let history_url = format!("{}/projects/{}/history?limit={}", server_url, project_id, limit);
     let response = client.get(&history_url).send().await?;
 
     if !response.status().is_success() {
@@ -189,12 +204,13 @@ pub async fn handle_restore(config_manager: &ConfigManager, checkpoint_id: Strin
     }
 
     let config = config_manager.load_config()?;
+    let server_url = get_server_url(config_manager)?;
     let client = get_http_client(&config);
 
     print_info(&format!("Restoring to checkpoint {}...", &checkpoint_id[..8]));
 
     // Request checkpoint files from server
-    let restore_url = format!("{}/projects/{}/restore/{}", config.mothership_url, project_id, checkpoint_uuid);
+    let restore_url = format!("{}/projects/{}/restore/{}", server_url, project_id, checkpoint_uuid);
     let response = client.post(&restore_url).send().await?;
 
     if !response.status().is_success() {

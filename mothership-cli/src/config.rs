@@ -105,4 +105,80 @@ impl ConfigManager {
         
         Ok(workspace)
     }
+
+    /// Get the server URL from config or active connection
+    pub fn get_server_url(&self) -> Result<String> {
+        // First check if there's an active server connection
+        if let Some(url) = crate::connections::get_active_server_url() {
+            return Ok(url);
+        }
+        
+        // Fallback to config file
+        let config = self.load_config()?;
+        Ok(config.mothership_url)
+    }
+
+    /// Save authentication token
+    pub fn save_auth_token(&self, token: &str) -> Result<()> {
+        use serde::{Deserialize, Serialize};
+        
+        #[derive(Debug, Clone, Serialize, Deserialize)]
+        struct StoredCredentials {
+            access_token: String,
+            user_email: Option<String>,
+            user_name: Option<String>,
+            stored_at: String,
+        }
+
+        let creds = StoredCredentials {
+            access_token: token.to_string(),
+            user_email: None,
+            user_name: None,
+            stored_at: chrono::Utc::now().to_rfc3339(),
+        };
+
+        let creds_path = self.get_credentials_path()?;
+        let creds_json = serde_json::to_string_pretty(&creds)?;
+
+        // Ensure parent directory exists
+        if let Some(parent) = creds_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        fs::write(creds_path, creds_json)?;
+        Ok(())
+    }
+
+    /// Get stored authentication token
+    pub fn get_auth(&self) -> Result<String> {
+        use serde::{Deserialize, Serialize};
+        
+        #[derive(Debug, Clone, Serialize, Deserialize)]
+        struct StoredCredentials {
+            access_token: String,
+            user_email: Option<String>,
+            user_name: Option<String>,
+            stored_at: String,
+        }
+
+        let creds_path = self.get_credentials_path()?;
+        
+        if !creds_path.exists() {
+            return Err(anyhow!("No stored credentials found"));
+        }
+
+        let creds_json = fs::read_to_string(creds_path)?;
+        let creds: StoredCredentials = serde_json::from_str(&creds_json)?;
+
+        Ok(creds.access_token)
+    }
+
+    /// Get path to credentials file
+    pub fn get_credentials_path(&self) -> Result<PathBuf> {
+        let config_dir = dirs::config_dir()
+            .ok_or_else(|| anyhow!("Could not find config directory"))?
+            .join("mothership");
+            
+        Ok(config_dir.join("credentials.json"))
+    }
 } 

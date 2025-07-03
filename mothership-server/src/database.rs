@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chrono::Utc;
 use mothership_common::{
-    GatewayProject, Project, ProjectId, ProjectSettings, Rift, RiftId, User, UserId, UserRole,
+    Project, ProjectId, ProjectSettings, Rift, RiftId, User, UserId, UserRole,
 };
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -86,12 +86,8 @@ impl Database {
         Ok(())
     }
 
-    /// Get all projects a user has access to
-    pub async fn get_user_projects(
-        &self,
-        user_id: UserId,
-        _include_inactive: bool,
-    ) -> Result<Vec<GatewayProject>> {
+    /// Get all projects a user has access to (simplified version for rift handlers)
+    pub async fn get_user_projects(&self, user_id: UserId) -> Result<Vec<Project>> {
         // Get projects where user is a member
         let projects = sqlx::query!(
             r#"
@@ -106,31 +102,68 @@ impl Database {
         .fetch_all(&self.pool)
         .await?;
 
-        let mut gateway_projects = Vec::new();
+        let mut result = Vec::new();
 
         for project_row in projects {
-            let project = Project {
+            // Get project members for each project
+            let members = sqlx::query!(
+                "SELECT user_id FROM project_members WHERE project_id = $1",
+                project_row.id
+            )
+            .fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .map(|member_row| member_row.user_id)
+            .collect();
+
+            result.push(Project {
                 id: project_row.id,
                 name: project_row.name,
                 description: project_row.description.unwrap_or_default(),
-                members: vec![user_id], // Simplified for now
+                members,
                 created_at: project_row.created_at,
                 settings: ProjectSettings::default(),
-            };
-
-            // For now, return empty rifts - we'll implement this next
-            gateway_projects.push(GatewayProject {
-                project,
-                active_rifts: vec![],
-                your_rifts: vec![],
-                last_activity: None,
             });
         }
 
-        Ok(gateway_projects)
+        Ok(result)
     }
 
+    /// Get all rifts for a project
+    pub async fn get_project_rifts(&self, project_id: ProjectId) -> Result<Vec<Rift>> {
+        let rifts = sqlx::query!(
+            r#"
+            SELECT r.id, r.project_id, r.name, r.parent_rift_id, r.created_at, r.is_active,
+                   ARRAY_AGG(rc.user_id) as collaborators
+            FROM rifts r
+            LEFT JOIN rift_collaborators rc ON r.id = rc.rift_id
+            WHERE r.project_id = $1
+            GROUP BY r.id, r.project_id, r.name, r.parent_rift_id, r.created_at, r.is_active
+            ORDER BY r.created_at ASC
+            "#,
+            project_id
+        )
+        .fetch_all(&self.pool)
+        .await?;
 
+        let mut result = Vec::new();
+        for row in rifts {
+            let collaborators = row.collaborators.unwrap_or_default();
+            
+            result.push(Rift {
+                id: row.id,
+                project_id: row.project_id,
+                name: row.name,
+                parent_rift: row.parent_rift_id,
+                collaborators,
+                created_at: row.created_at,
+                last_checkpoint: None, // TODO: Get from checkpoints
+                is_active: row.is_active,
+            });
+        }
+
+        Ok(result)
+    }
 
     /// Get a specific project
     pub async fn get_project(&self, project_id: ProjectId) -> Result<Option<Project>> {

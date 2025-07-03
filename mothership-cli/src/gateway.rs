@@ -20,35 +20,58 @@ enum LocalStatus {
     NotLocal,
 }
 
-/// Check if a project exists locally and return status information
+/// Check if a project exists locally by scanning for .mothership metadata
 fn check_project_local_status(project_name: &str) -> (LocalStatus, String) {
-    let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    // Search common project locations and scan for .mothership directories
+    let search_paths = vec![
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        PathBuf::from(std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string())).join("mothership"),
+        PathBuf::from(std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string())),
+        PathBuf::from("C:\\Users\\craft\\Mothership"), // Common dev location
+    ];
     
-    // Check if a directory with the project name exists in current directory
-    let project_dir = current_dir.join(project_name);
-    
-    if project_dir.exists() && project_dir.is_dir() {
-        // Check if it has .mothership directory (indicating it's a proper gateway)
-        let mothership_dir = project_dir.join(".mothership");
-        if mothership_dir.exists() && mothership_dir.is_dir() {
-            return (LocalStatus::Local, format!("(local at {})", project_dir.display()));
-        } else {
-            // Directory exists but no .mothership - might be a regular directory with same name
-            return (LocalStatus::NotLocal, "(directory exists but not initialized)".to_string());
-        }
-    }
-    
-    // Also check if current directory itself is this project
-    if let Some(current_name) = current_dir.file_name().and_then(|n| n.to_str()) {
-        if current_name == project_name {
-            let mothership_dir = current_dir.join(".mothership");
-            if mothership_dir.exists() && mothership_dir.is_dir() {
-                return (LocalStatus::Local, "(current directory)".to_string());
-            }
+    for base_path in search_paths {
+        if let Ok(found_path) = find_project_by_metadata(&base_path, project_name) {
+            return (LocalStatus::Local, format!("(local at {})", found_path.display()));
         }
     }
     
     (LocalStatus::NotLocal, "(not local)".to_string())
+}
+
+/// Recursively search for a project by scanning .mothership metadata files
+fn find_project_by_metadata(search_dir: &PathBuf, target_project_name: &str) -> Result<PathBuf> {
+    if !search_dir.exists() {
+        return Err(anyhow!("Search directory does not exist"));
+    }
+    
+    // Use walkdir to recursively search for .mothership directories
+    for entry in walkdir::WalkDir::new(search_dir)
+        .max_depth(3) // Limit depth to avoid performance issues
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        let path = entry.path();
+        
+        // Look for .mothership directories
+        if path.is_dir() && path.file_name() == Some(std::ffi::OsStr::new(".mothership")) {
+            let project_dir = path.parent().unwrap();
+            let metadata_file = path.join("project.json");
+            
+            if metadata_file.exists() {
+                // Try to read and parse the metadata
+                if let Ok(metadata_content) = std::fs::read_to_string(&metadata_file) {
+                    if let Ok(metadata) = serde_json::from_str::<ProjectMetadata>(&metadata_content) {
+                        if metadata.project_name == target_project_name {
+                            return Ok(project_dir.to_path_buf());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    Err(anyhow!("Project not found in search directory"))
 }
 
 pub async fn handle_gateway(config_manager: &ConfigManager, include_inactive: bool) -> Result<()> {
