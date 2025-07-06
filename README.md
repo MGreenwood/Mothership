@@ -1,6 +1,6 @@
 ﻿# Mothership: Zero-Friction Collaborative Development
 
-Check it out live at: https://mothership.dev
+Check it out live at: https://mothershipproject.dev
 
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen)]() [![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)]() [![License](https://img.shields.io/badge/license-Proprietary-red.svg)](LICENSE)
 
