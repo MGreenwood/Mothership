@@ -1,6 +1,6 @@
 ﻿# Mothership: Zero-Friction Collaborative Development
 
-> **Revolutionary version control with Google Docs-level real-time collaboration - OPERATIONAL NOW**
+Check it out live at: mothership.dev
 
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen)]() [![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)]() [![License](https://img.shields.io/badge/license-Proprietary-red.svg)](LICENSE)
 
