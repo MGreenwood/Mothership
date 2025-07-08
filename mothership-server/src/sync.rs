@@ -436,6 +436,11 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
             let _ = state.broadcaster.send((channel, response));
         }
 
+        SyncMessage::Heartbeat => {
+            // Heartbeat messages are just for connection keepalive - no action needed
+            debug!("🏓 Received heartbeat from client");
+        }
+
         _ => {
             warn!("⚠️  Unhandled sync message type");
         }

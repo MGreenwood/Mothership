@@ -272,7 +272,7 @@ pub async fn handle_delete(
     let client = get_http_client(&config);
 
     // First, get the project by name to verify it exists
-    let project_url = format!("{}/projects/by-name/{}", active_server.url, project_name);
+    let project_url = format!("{}/projects/name/{}", active_server.url, urlencoding::encode(&project_name));
     let response = client.get(&project_url).send().await?;
 
     if !response.status().is_success() {
@@ -535,7 +535,7 @@ async fn upload_initial_files(
     };
     
     let client = get_http_client(config);
-    let upload_url = format!("{}/projects/{}/upload-initial", server_url, project.id);
+    let upload_url = format!("{}/projects/{}/files", server_url, project.id);
     let response = client
         .post(&upload_url)
         .json(&upload_request)

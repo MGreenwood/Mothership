@@ -426,7 +426,7 @@ async fn get_available_versions() -> Result<Vec<VersionInfo>> {
     
     // Fallback to current version if no binaries found
     Ok(vec![VersionInfo {
-        version: "0.1.0".to_string(),
+        version: "0.0.41".to_string(),
         platforms: vec![
             "x86_64-unknown-linux-gnu".to_string(),
             "aarch64-unknown-linux-gnu".to_string(),

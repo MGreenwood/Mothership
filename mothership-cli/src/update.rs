@@ -119,14 +119,7 @@ pub async fn handle_update(args: UpdateArgs) -> Result<()> {
     if args.force || update_available || version_specified {
         println!("{}", format!("⬇️  Updating to version {}...", target_version).yellow());
         
-        // Show changes if updating to latest
-        if target_version == latest_version && !latest_info.changes.is_empty() {
-            println!("\n📝 What's new:");
-            for change in &latest_info.changes {
-                println!("  • {}", change);
-            }
-            println!();
-        }
+
         
         download_and_install_update(&server_url, &target_version, &platform).await?;
         

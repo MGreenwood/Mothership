@@ -21,18 +21,86 @@ fn get_server_url(config_manager: &ConfigManager) -> Result<String> {
 }
 
 pub async fn handle_status(config_manager: &ConfigManager) -> Result<()> {
+    use reqwest::StatusCode;
+    use std::fs;
+
     // Check if authenticated
     if !config_manager.is_authenticated()? {
         print_info("Not authenticated. Run 'mothership auth' to get started.");
         return Ok(());
     }
 
-    print_info("Sync status functionality not yet implemented");
-    println!("{}", "In a full implementation, this would show:".dimmed());
-    println!("{}", "  • Current project and rift".dimmed());
-    println!("{}", "  • Files pending sync".dimmed());
-    println!("{}", "  • Recent checkpoints".dimmed());
-    println!("{}", "  • Connected collaborators".dimmed());
+    // 1. Show current project and rift
+    let project_metadata = crate::sync::find_current_project()
+        .map(|(project_id, project_name)| (project_id, project_name))
+        .ok();
+    let local_metadata: Option<crate::sync::ProjectMetadata> = fs::read_to_string(".mothership/project.json")
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok());
+    if let Some((project_id, ref project_name)) = project_metadata {
+        println!("\n{} {}", "Project:".bold(), project_name.blue().bold());
+        println!("{} {}", "ID:".bold(), project_id.to_string().dimmed());
+        
+        // Show rift info if available (from local metadata)
+        if let Some(meta) = local_metadata {
+            println!("{} {}", "Server:".bold(), meta.mothership_url.dimmed());
+        }
+    } else {
+        println!("\n{} {}", "Project:".bold(), "Not in a project directory".red());
+        println!("{}", "Run 'mothership beam <project>' to enter a project".dimmed());
+    }
+
+    // 2. Query daemon for status
+    let daemon_status = reqwest::get("http://127.0.0.1:7525/status").await;
+    match daemon_status {
+        Ok(resp) if resp.status() == StatusCode::OK => {
+            let json: serde_json::Value = resp.json().await.unwrap_or_default();
+            if let Some(data) = json.get("data") {
+                println!("\n{}", "Daemon Status:".bold());
+                println!("  {} {}", "Running:".dimmed(), data.get("is_running").unwrap_or(&serde_json::Value::Null));
+                println!("  {} {}", "Projects Tracked:".dimmed(), data.get("projects_tracked").unwrap_or(&serde_json::Value::Null));
+                println!("  {} {}", "Files Syncing:".dimmed(), data.get("files_syncing").unwrap_or(&serde_json::Value::Null));
+                println!("  {} {}", "Last Sync:".dimmed(), data.get("last_sync").unwrap_or(&serde_json::Value::Null));
+                println!("  {} {}", "Server Connected:".dimmed(), data.get("server_connected").unwrap_or(&serde_json::Value::Null));
+            }
+        }
+        _ => {
+            println!("\n{}", "Daemon not running or status unavailable.".yellow());
+        }
+    }
+
+    // 3. Show recent checkpoints (last 3)
+    if let Some((project_id, project_name)) = project_metadata {
+        let config = config_manager.load_config()?;
+        let server_url = get_server_url(config_manager)?;
+        let client = get_http_client(&config);
+        let history_url = format!("{}/projects/{}/history?limit=3", server_url, project_id);
+        let response = client.get(&history_url).send().await;
+        if let Ok(resp) = response {
+            if resp.status().is_success() {
+                let checkpoints: ApiResponse<Vec<Checkpoint>> = resp.json().await.unwrap_or(ApiResponse { 
+                    success: false, 
+                    data: None, 
+                    error: Some("Failed to parse response".to_string()),
+                    message: Some("Failed to parse response".to_string()),
+                });
+                if let Some(checkpoints) = checkpoints.data {
+                    println!("\n{}", "Recent Checkpoints:".bold());
+                    for checkpoint in checkpoints.iter() {
+                        let age = crate::sync::format_time_ago(checkpoint.timestamp);
+                        let message = checkpoint.message.as_deref().unwrap_or("(no message)");
+                        let auto_marker = if checkpoint.auto_generated { " [auto]" } else { "" };
+                        println!("  {} {} {}{}", checkpoint.id.to_string()[..8].yellow(), message.white(), age.dimmed(), auto_marker.dimmed());
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. Show connected collaborators (if available)
+    // Placeholder: This would require a new API endpoint or WebSocket presence tracking
+    println!("\n{}", "Connected Collaborators:".bold());
+    println!("  {}", "(Feature coming soon: will show live users in this rift)".dimmed());
 
     Ok(())
 }

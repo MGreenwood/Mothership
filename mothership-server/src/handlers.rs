@@ -84,7 +84,7 @@ pub async fn handle_beam(
     // Falls back to server config for local development
     let websocket_url = if let Ok(base_url) = std::env::var("WEBSOCKET_BASE_URL") {
         // Production: use environment variable (e.g., "wss://api.mothershipproject.dev")
-        format!("{}/sync/{}", base_url.trim_end_matches('/'), rift.id)
+        format!("{}/ws/{}", base_url.trim_end_matches('/'), rift.id)
     } else {
         // Development: use server config
         let protocol = if state.config.server.host == "127.0.0.1" || state.config.server.host == "localhost" {
@@ -99,7 +99,7 @@ pub async fn handle_beam(
             &state.config.server.host
         };
         
-        format!("{}://{}:{}/sync/{}", protocol, host, state.config.server.port, rift.id)
+        format!("{}://{}:{}/ws/{}", protocol, host, state.config.server.port, rift.id)
     };
 
     // For now, always require initial sync

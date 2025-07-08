@@ -212,7 +212,7 @@ fn create_api_router(state: AppState) -> Router {
         .route("/projects/:id", delete(delete_project))
         
         // Gateway routes
-        .route("/gateway", get(gateway))
+        .route("/gateway", post(gateway))
         .route("/gateway/create", post(create_gateway))
         
         // WebSocket route
@@ -294,7 +294,7 @@ fn create_combined_router(state: AppState) -> Router {
         .route("/projects/:id", delete(delete_project))
         
         // Gateway routes
-        .route("/gateway", get(gateway))
+        .route("/gateway", post(gateway))
         .route("/gateway/create", post(create_gateway))
         
         // WebSocket route

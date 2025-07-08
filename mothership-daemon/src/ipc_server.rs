@@ -11,11 +11,12 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
-use tracing::{info};
+use tracing::{info, error};
 use uuid::Uuid;
 
 use crate::daemon::{DaemonStatus, TrackedProject};
 use crate::file_watcher::FileChangeEvent;
+use mothership_common::protocol::SyncMessage;
 
 /// IPC server for communication between CLI/GUI and daemon
 pub struct IpcServer {
@@ -27,6 +28,12 @@ pub struct IpcServer {
     file_change_sender: mpsc::UnboundedSender<FileChangeEvent>,
     /// Active file watchers (CRITICAL: Must be kept alive!)
     file_watchers: Arc<RwLock<HashMap<Uuid, crate::file_watcher::FileWatcher>>>,
+    /// Maps project ID to WebSocket listener task handles
+    websocket_listeners: Arc<RwLock<HashMap<Uuid, tokio::task::JoinHandle<()>>>>,
+    /// Maps project ID to outgoing message channels (for sending to WebSocket)
+    outgoing_channels: Arc<RwLock<HashMap<Uuid, mpsc::UnboundedSender<SyncMessage>>>>,
+    /// Maps project ID to server write flags (prevents file watcher loops)
+    server_write_flags: Arc<RwLock<HashMap<Uuid, bool>>>,
 }
 
 /// Request to add a project for tracking
@@ -77,12 +84,18 @@ impl IpcServer {
         status: Arc<RwLock<DaemonStatus>>,
         tracked_projects: Arc<RwLock<HashMap<Uuid, TrackedProject>>>,
         file_change_sender: mpsc::UnboundedSender<FileChangeEvent>,
+        websocket_listeners: Arc<RwLock<HashMap<Uuid, tokio::task::JoinHandle<()>>>>,
+        outgoing_channels: Arc<RwLock<HashMap<Uuid, mpsc::UnboundedSender<SyncMessage>>>>,
+        server_write_flags: Arc<RwLock<HashMap<Uuid, bool>>>,
     ) -> Result<Self> {
         Ok(Self {
             status,
             tracked_projects,
             file_change_sender,
             file_watchers: Arc::new(RwLock::new(HashMap::new())),
+            websocket_listeners,
+            outgoing_channels,
+            server_write_flags,
         })
     }
 
@@ -192,7 +205,39 @@ async fn add_project(
     
     info!("🔍 File watcher started and stored for project '{}'", req.project_name);
 
-    info!("✅ Project '{}' added for tracking with active file watcher", req.project_name);
+    // CRITICAL FIX: Start WebSocket listener for real-time sync
+    let websocket_handle = {
+        let project_id = req.project_id;
+        let tracked_projects = server.tracked_projects.clone();
+        let status = server.status.clone();
+        let websocket_listeners = server.websocket_listeners.clone();
+        let outgoing_channels = server.outgoing_channels.clone();
+        let server_write_flags = server.server_write_flags.clone();
+        
+        tokio::spawn(async move {
+            info!("🔄 Starting WebSocket listener for project {}", project_id);
+            if let Err(e) = crate::daemon::MothershipDaemon::start_websocket_listener(
+                project_id,
+                tracked_projects,
+                status,
+                websocket_listeners,
+                outgoing_channels,
+                server_write_flags,
+            ).await {
+                error!("Failed to start WebSocket listener for project {}: {}", project_id, e);
+            }
+        })
+    };
+    
+    // Store the WebSocket listener handle
+    {
+        let mut listeners = server.websocket_listeners.write().await;
+        listeners.insert(req.project_id, websocket_handle);
+    }
+    
+    info!("🔄 WebSocket listener started for project '{}'", req.project_name);
+
+    info!("✅ Project '{}' added for tracking with active file watcher and WebSocket sync", req.project_name);
     Ok(Json(ApiResponse::success(format!(
         "Project '{}' successfully added for tracking",
         req.project_name
@@ -226,6 +271,15 @@ async fn remove_project(
         let mut watchers = server.file_watchers.write().await;
         if watchers.remove(&project_id).is_some() {
             info!("🔍 Stopped file watcher for project '{}'", project_name);
+        }
+    }
+
+    // CRITICAL: Remove WebSocket listener to stop sync
+    {
+        let mut listeners = server.websocket_listeners.write().await;
+        if let Some(handle) = listeners.remove(&project_id) {
+            handle.abort();
+            info!("🔄 Stopped WebSocket listener for project '{}'", project_name);
         }
     }
 

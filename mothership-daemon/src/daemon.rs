@@ -68,6 +68,9 @@ pub struct MothershipDaemon {
     outgoing_channels: Arc<RwLock<HashMap<Uuid, mpsc::UnboundedSender<SyncMessage>>>>,
     
     transaction_manager: Arc<Mutex<TransactionManager>>,
+    
+    /// Maps project ID to server write flags (prevents file watcher loops)
+    server_write_flags: Arc<RwLock<HashMap<Uuid, bool>>>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -102,12 +105,18 @@ impl MothershipDaemon {
         // Initialize components
         let status = Arc::new(RwLock::new(DaemonStatus::default()));
         let tracked_projects = Arc::new(RwLock::new(HashMap::new()));
+        let websocket_listeners = Arc::new(RwLock::new(HashMap::new()));
+        let outgoing_channels = Arc::new(RwLock::new(HashMap::new()));
+        let server_write_flags = Arc::new(RwLock::new(HashMap::new()));
         
         // Create IPC server with access to daemon methods
         let ipc_server = IpcServer::new(
             status.clone(),
             tracked_projects.clone(),
             file_change_sender.clone(),
+            websocket_listeners.clone(),
+            outgoing_channels.clone(),
+            server_write_flags.clone(),
         ).await?;
         
         // Initialize system tray (Windows only)
@@ -124,9 +133,10 @@ impl MothershipDaemon {
             file_change_receiver,
             file_change_sender,
             status,
-            websocket_listeners: Arc::new(RwLock::new(HashMap::new())),
-            outgoing_channels: Arc::new(RwLock::new(HashMap::new())),
+            websocket_listeners,
+            outgoing_channels,
             transaction_manager: Arc::new(Mutex::new(TransactionManager::new(Uuid::new_v4()))),
+            server_write_flags,
         })
     }
     
@@ -174,7 +184,7 @@ impl MothershipDaemon {
         info!("⏳ Waiting for projects to be registered via CLI/GUI...");
         
         while let Some(event) = file_change_receiver.recv().await {
-            if let Err(e) = Self::handle_file_change_static(event, &self.tracked_projects, &self.status, &self.outgoing_channels).await {
+            if let Err(e) = Self::handle_file_change_static(event, &self.tracked_projects, &self.status, &self.outgoing_channels, &self.server_write_flags).await {
                 error!("Error handling file change: {}", e);
             }
         }
@@ -221,7 +231,18 @@ impl MothershipDaemon {
         tracked_projects: &Arc<RwLock<HashMap<Uuid, TrackedProject>>>,
         status: &Arc<RwLock<DaemonStatus>>,
         outgoing_channels: &Arc<RwLock<HashMap<Uuid, mpsc::UnboundedSender<SyncMessage>>>>,
+        server_write_flags: &Arc<RwLock<HashMap<Uuid, bool>>>,
     ) -> Result<()> {
+        // Check if server is currently writing files (prevents infinite loops)
+        {
+            let flags = server_write_flags.read().await;
+            if flags.get(&event.project_id).copied().unwrap_or(false) {
+                debug!("🔄 Skipping file change event during server write: {} in project {}", 
+                    event.file_path.display(), event.project_id);
+                return Ok(());
+            }
+        }
+        
         // Get project info for better logging
         let project_name = {
             let projects = tracked_projects.read().await;
@@ -262,7 +283,7 @@ impl MothershipDaemon {
 
     /// Handle a file change event
     async fn handle_file_change(&self, event: FileChangeEvent) -> Result<()> {
-        Self::handle_file_change_static(event, &self.tracked_projects, &self.status, &self.outgoing_channels).await
+        Self::handle_file_change_static(event, &self.tracked_projects, &self.status, &self.outgoing_channels, &self.server_write_flags).await
     }
     
     /// Send file change via persistent WebSocket connection
@@ -395,6 +416,7 @@ impl MothershipDaemon {
             self.status.clone(),
             self.websocket_listeners.clone(),
             self.outgoing_channels.clone(),
+            self.server_write_flags.clone(),
         ).await {
             error!("Failed to start persistent WebSocket for project '{}': {}", project_name, e);
             // Don't fail the entire operation if WebSocket fails
@@ -496,13 +518,14 @@ impl MothershipDaemon {
         }
     }
     
-    /// Start persistent bidirectional WebSocket connection for a project
-    async fn start_websocket_listener(
+    /// Start a persistent WebSocket listener for a project
+    pub async fn start_websocket_listener(
         project_id: Uuid,
         tracked_projects: Arc<RwLock<HashMap<Uuid, TrackedProject>>>,
         status: Arc<RwLock<DaemonStatus>>,
         websocket_listeners: Arc<RwLock<HashMap<Uuid, tokio::task::JoinHandle<()>>>>,
         outgoing_channels: Arc<RwLock<HashMap<Uuid, mpsc::UnboundedSender<SyncMessage>>>>,
+        server_write_flags: Arc<RwLock<HashMap<Uuid, bool>>>,
     ) -> Result<()> {
         // Get project information
         let (project_path, rift_id) = {
@@ -543,12 +566,12 @@ impl MothershipDaemon {
         // Construct WebSocket URL
         let ws_url = if server_url.starts_with("https://") {
             let ws_base = server_url.replace("https://", "wss://");
-            format!("{}/sync/{}?token={}", ws_base, rift_id, urlencoding::encode(&auth_token))
+            format!("{}/ws/{}?token={}", ws_base, rift_id, urlencoding::encode(&auth_token))
         } else if server_url.starts_with("http://") {
             let ws_base = server_url.replace("http://", "ws://");
-            format!("{}/sync/{}?token={}", ws_base, rift_id, urlencoding::encode(&auth_token))
+            format!("{}/ws/{}?token={}", ws_base, rift_id, urlencoding::encode(&auth_token))
         } else {
-            format!("wss://{}/sync/{}?token={}", server_url, rift_id, urlencoding::encode(&auth_token))
+            format!("wss://{}/ws/{}?token={}", server_url, rift_id, urlencoding::encode(&auth_token))
         };
         
         info!("🔄 Starting persistent WebSocket connection for project {} (rift: {})", project_id, rift_id);
@@ -556,7 +579,6 @@ impl MothershipDaemon {
         
         // Create channel for outgoing messages
         let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded_channel::<SyncMessage>();
-        let outgoing_tx_clone = outgoing_tx.clone();
         {
             let mut channels = outgoing_channels.write().await;
             channels.insert(project_id, outgoing_tx);
@@ -637,7 +659,7 @@ impl MothershipDaemon {
                                             debug!("📥 Received WebSocket message: {} chars", text.len());
                                             
                                             // Handle incoming sync message
-                                            if let Err(e) = Self::handle_websocket_sync_message(&text, &project_path).await {
+                                            if let Err(e) = Self::handle_websocket_sync_message(&text, &project_path, &server_write_flags, project_id).await {
                                                 error!("Failed to handle incoming sync message: {}", e);
                                             }
                                         }
@@ -971,13 +993,24 @@ impl MothershipDaemon {
     }
 
     /// Handle WebSocket sync message (simplified version for static context)
-    async fn handle_websocket_sync_message(text: &str, project_path: &PathBuf) -> Result<()> {
+    async fn handle_websocket_sync_message(
+        text: &str, 
+        project_path: &PathBuf,
+        server_write_flags: &Arc<RwLock<HashMap<Uuid, bool>>>,
+        project_id: Uuid,
+    ) -> Result<()> {
         let sync_message: SyncMessage = serde_json::from_str(text)
             .map_err(|e| anyhow::anyhow!("Failed to parse sync message: {}", e))?;
         
         match sync_message {
             SyncMessage::FileChanged { path, content, .. } => {
                 info!("📥 Received file change from collaborator: {} ({} bytes)", path.display(), content.len());
+                
+                // Set server write flag to prevent file watcher loops
+                {
+                    let mut flags = server_write_flags.write().await;
+                    flags.insert(project_id, true);
+                }
                 
                 // Write the file to disk
                 let file_path = project_path.join(&path);
@@ -990,11 +1023,25 @@ impl MothershipDaemon {
                 // Write file content
                 tokio::fs::write(&file_path, &content).await?;
                 info!("💾 Applied file change from collaborator: {}", path.display());
+                
+                // Clear server write flag
+                {
+                    let mut flags = server_write_flags.write().await;
+                    flags.remove(&project_id);
+                }
+                
                 Ok(())
             }
             SyncMessage::RiftDiffUpdate { diff_changes, .. } => {
                 info!("📥 Received {} diff updates from collaborator", diff_changes.len());
                 
+                // Set server write flag to prevent file watcher loops
+                {
+                    let mut flags = server_write_flags.write().await;
+                    flags.insert(project_id, true);
+                }
+                
+                // Apply all diffs
                 for change in diff_changes {
                     let file_path = project_path.join(&change.path);
                     
@@ -1024,10 +1071,23 @@ impl MothershipDaemon {
                         }
                     }
                 }
+                
+                // Clear server write flag
+                {
+                    let mut flags = server_write_flags.write().await;
+                    flags.remove(&project_id);
+                }
+                
                 Ok(())
             }
             SyncMessage::RiftJoined { current_files, .. } => {
                 info!("📥 Received initial rift state with {} files", current_files.len());
+                
+                // Set server write flag to prevent file watcher loops
+                {
+                    let mut flags = server_write_flags.write().await;
+                    flags.insert(project_id, true);
+                }
                 
                 // Write all current files (initial sync)
                 for (path, content) in current_files {
@@ -1042,6 +1102,13 @@ impl MothershipDaemon {
                     tokio::fs::write(&file_path, &content).await?;
                     info!("💾 Wrote initial file: {}", path.display());
                 }
+                
+                // Clear server write flag
+                {
+                    let mut flags = server_write_flags.write().await;
+                    flags.remove(&project_id);
+                }
+                
                 Ok(())
             }
             SyncMessage::Heartbeat => {

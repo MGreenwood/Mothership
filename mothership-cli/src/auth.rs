@@ -1,6 +1,6 @@
 use anyhow::Result;
 use colored::*;
-use mothership_common::auth::{AuthRequest, AuthResponse, TokenRequest, TokenResponse, OAuthRequest, OAuthResponse, OAuthProvider, OAuthSource};
+use mothership_common::auth::{AuthRequest, AuthResponse, TokenRequest, OAuthRequest, OAuthResponse, OAuthProvider, OAuthSource};
 use mothership_common::protocol::ApiResponse;
 use serde::{Deserialize, Serialize};
 use std::fs;

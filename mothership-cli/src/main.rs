@@ -287,13 +287,19 @@ async fn main() -> Result<()> {
 
             println!("{}", format!("🚀 Initializing {}...", project_name).cyan().bold());
             
-            // Create the gateway/project
-            if let Ok(_project) = gateway::handle_gateway_create(&config_manager, project_name.clone(), current_dir).await {
-                // Automatically beam into the newly created project
-                println!("\n{}", "🎯 Automatically beaming into your new project...".cyan().bold());
-                if let Err(e) = beam::handle_beam(&config_manager, project_name, None, None, false).await {
-                    print_api_error(&format!("Failed to beam into project: {}", e));
-                    print_info("You can manually beam into your project later.");
+            // Create the gateway/project (CRITICAL FIX: Properly handle errors)
+            match gateway::handle_gateway_create(&config_manager, project_name.clone(), current_dir).await {
+                Ok(_project) => {
+                    // Automatically beam into the newly created project
+                    println!("\n{}", "🎯 Automatically beaming into your new project...".cyan().bold());
+                    if let Err(e) = beam::handle_beam(&config_manager, project_name, None, None, false).await {
+                        print_api_error(&format!("Failed to beam into project: {}", e));
+                        print_info("You can manually beam into your project later.");
+                    }
+                }
+                Err(e) => {
+                    print_api_error(&format!("Failed to initialize project: {}", e));
+                    return Err(e);
                 }
             }
         }

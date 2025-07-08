@@ -24,6 +24,7 @@ services:
       - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}
     volumes:
       - ./storage:/app/storage
+      - ./cli-binaries:/app/cli-binaries
     depends_on:
       db:
         condition: service_healthy
