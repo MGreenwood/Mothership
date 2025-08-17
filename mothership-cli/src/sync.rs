@@ -123,7 +123,8 @@ pub async fn handle_checkpoint(config_manager: &ConfigManager, message: Option<S
     let client = get_http_client(&config);
 
     // Create checkpoint via API
-    let checkpoint_url = format!("{}/projects/{}/checkpoint", server_url, project_id);
+    // Server expects the plural 'checkpoints' path and a timestamp in the JSON body
+    let checkpoint_url = format!("{}/projects/{}/checkpoints", server_url, project_id);
     let response = client
         .post(&checkpoint_url)
         .json(&serde_json::json!({
