@@ -1,0 +1,52 @@
+name: Prepare SQLx metadata
+
+on:
+  push:
+    branches: [ master ]
+  workflow_dispatch:
+
+jobs:
+  prepare:
+    name: Prepare SQLx metadata
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: ms
+          POSTGRES_PASSWORD: ms_pass
+          POSTGRES_DB: mothership_test
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          override: true
+
+      - name: Install sqlx-cli
+        run: cargo install sqlx-cli --no-default-features --features postgres,migrate
+
+      - name: Wait for Postgres
+        run: |
+          until pg_isready -h localhost -p 5433; do sleep 1; done
+
+      - name: Run migrations and prepare sqlx metadata
+        env:
+          DATABASE_URL: postgresql://ms:ms_pass@localhost:5433/mothership_test
+        run: |
+          cargo sqlx migrate run --database-url "$DATABASE_URL"
+          cargo sqlx prepare --workspace --database-url "$DATABASE_URL"
+
+      - name: Upload sqlx metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: sqlx-metadata
+          path: .sqlx
