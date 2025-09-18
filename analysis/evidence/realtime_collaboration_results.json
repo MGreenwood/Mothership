@@ -1,0 +1,112 @@
+{
+  "total_tests": 6,
+  "passed_tests": 0,
+  "failed_tests": 6,
+  "success_rate": 0.0,
+  "average_latency_ms": 0,
+  "millisecond_sync_achieved": false,
+  "test_results": [
+    {
+      "test_name": "websocket_connection",
+      "passed": false,
+      "description": "WebSocket connection failed",
+      "details": {
+        "error": "BaseEventLoop.create_connection() got an unexpected keyword argument 'timeout'",
+        "server_url": "ws://localhost:8080/ws"
+      },
+      "latency_count": 0
+    },
+    {
+      "test_name": "multiple_connections",
+      "passed": false,
+      "description": "Multiple connections test: 0/5 successful",
+      "details": {
+        "attempted_connections": 5,
+        "successful_connections": 0,
+        "success_rate": 0.0,
+        "connection_details": [
+          {
+            "client_id": 0,
+            "success": false,
+            "error": "BaseEventLoop.create_connection() got an unexpected keyword argument 'timeout'"
+          },
+          {
+            "client_id": 1,
+            "success": false,
+            "error": "BaseEventLoop.create_connection() got an unexpected keyword argument 'timeout'"
+          },
+          {
+            "client_id": 2,
+            "success": false,
+            "error": "BaseEventLoop.create_connection() got an unexpected keyword argument 'timeout'"
+          },
+          {
+            "client_id": 3,
+            "success": false,
+            "error": "BaseEventLoop.create_connection() got an unexpected keyword argument 'timeout'"
+          },
+          {
+            "client_id": 4,
+            "success": false,
+            "error": "BaseEventLoop.create_connection() got an unexpected keyword argument 'timeout'"
+          }
+        ]
+      },
+      "latency_count": 0
+    },
+    {
+      "test_name": "message_latency",
+      "passed": false,
+      "description": "Message latency test failed",
+      "details": {
+        "error": "BaseEventLoop.create_connection() got an unexpected keyword argument 'timeout'"
+      },
+      "latency_count": 0
+    },
+    {
+      "test_name": "simultaneous_editing",
+      "passed": false,
+      "description": "Simultaneous editing test: 0/3 successful",
+      "details": {
+        "attempted_edits": 3,
+        "successful_edits": 0,
+        "edit_results": [
+          {
+            "client_id": 0,
+            "success": false,
+            "error": "BaseEventLoop.create_connection() got an unexpected keyword argument 'timeout'"
+          },
+          {
+            "client_id": 1,
+            "success": false,
+            "error": "BaseEventLoop.create_connection() got an unexpected keyword argument 'timeout'"
+          },
+          {
+            "client_id": 2,
+            "success": false,
+            "error": "BaseEventLoop.create_connection() got an unexpected keyword argument 'timeout'"
+          }
+        ]
+      },
+      "latency_count": 0
+    },
+    {
+      "test_name": "conflict_resolution",
+      "passed": false,
+      "description": "Conflict resolution test failed",
+      "details": {
+        "error": "BaseEventLoop.create_connection() got an unexpected keyword argument 'timeout'"
+      },
+      "latency_count": 0
+    },
+    {
+      "test_name": "connection_stability",
+      "passed": false,
+      "description": "Connection stability test failed",
+      "details": {
+        "error": "BaseEventLoop.create_connection() got an unexpected keyword argument 'timeout'"
+      },
+      "latency_count": 0
+    }
+  ]
+}

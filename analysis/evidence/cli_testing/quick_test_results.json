@@ -1,0 +1,192 @@
+{
+  "--help": {
+    "status": "WORKING",
+    "result": {
+      "command": "target/debug/mothership.exe --help",
+      "success": true,
+      "returncode": 0,
+      "stdout": "Mothership - Frictionless Version Control\n\nUsage: mothership.exe <COMMAND>\n\nCommands:\n  auth        Authenticate this machine with Mothership\n  gateway     Gateway operations (list, create projects)\n  init        Initialize a new project in current directory\n  beam        Beam into a project for development\n  status      Status of current Mothership environment\n  checkpoint  Create a checkpoint (commit changes)\n  sync        Sync with remote Mothership\n  history     View project history and checkpoints\n  restore     Restore to a specific checkpoint\n  delete      Delete a gateway project\n  connect     Connect to a Mothership server\n  server      Disconnect from the current Mothership server (switch to local-only mode)\n  daemon      Daemon management operations\n  logout      Logout (clear stored credentials)\n  update      Update the CLI to the latest version\n  rift        Rift management operations\n  help        Print this message or the help of the given subcommand(s)\n\nOptions:\n  -h, --help     Print help\n  -V, --version  Print version\n",
+      "stderr": ""
+    }
+  },
+  "--version": {
+    "status": "UNKNOWN",
+    "result": {
+      "command": "target/debug/mothership.exe --version",
+      "success": true,
+      "returncode": 0,
+      "stdout": "mothership 0.0.51\n",
+      "stderr": ""
+    }
+  },
+  "auth --help": {
+    "status": "WORKING",
+    "result": {
+      "command": "target/debug/mothership.exe auth --help",
+      "success": true,
+      "returncode": 0,
+      "stdout": "Authenticate this machine with Mothership\n\nUsage: mothership.exe auth [COMMAND]\n\nCommands:\n  google  Login with Google OAuth\n  github  Login with GitHub OAuth\n  help    Print this message or the help of the given subcommand(s)\n\nOptions:\n  -h, --help  Print help\n",
+      "stderr": ""
+    }
+  },
+  "gateway --help": {
+    "status": "WORKING",
+    "result": {
+      "command": "target/debug/mothership.exe gateway --help",
+      "success": true,
+      "returncode": 0,
+      "stdout": "Gateway operations (list, create projects)\n\nUsage: mothership.exe gateway <COMMAND>\n\nCommands:\n  list        List available projects (default)\n  create      Create a new gateway project\n  disconnect  Disconnect from a project (stop background tracking)\n  help        Print this message or the help of the given subcommand(s)\n\nOptions:\n  -h, --help  Print help\n",
+      "stderr": ""
+    }
+  },
+  "gateway list": {
+    "status": "UNKNOWN",
+    "result": {
+      "command": "target/debug/mothership.exe gateway list",
+      "success": true,
+      "returncode": 0,
+      "stdout": "",
+      "stderr": "\ud83d\udd12 Authentication Error: Not authenticated locally. Please run 'mothership auth' first.\n\n\ud83d\udca1 To fix this: Run 'mothership auth' to authenticate\n    This will open your browser and guide you through the login process\n"
+    }
+  },
+  "init --help": {
+    "status": "WORKING",
+    "result": {
+      "command": "target/debug/mothership.exe init --help",
+      "success": true,
+      "returncode": 0,
+      "stdout": "Initialize a new project in current directory\n\nUsage: mothership.exe init [NAME]\n\nArguments:\n  [NAME]  Project name (optional, defaults to directory name)\n\nOptions:\n  -h, --help  Print help\n",
+      "stderr": ""
+    }
+  },
+  "beam --help": {
+    "status": "WORKING",
+    "result": {
+      "command": "target/debug/mothership.exe beam --help",
+      "success": true,
+      "returncode": 0,
+      "stdout": "Beam into a project for development\n\nUsage: mothership.exe beam [OPTIONS] [PROJECT]\n\nArguments:\n  [PROJECT]  Project name or ID to beam into (optional if in project directory) [default: ]\n\nOptions:\n      --rift <RIFT>            Optional rift ID to join\n      --local-dir <LOCAL_DIR>  Local directory to use (required for new projects)\n  -h, --help                   Print help\n",
+      "stderr": ""
+    }
+  },
+  "status": {
+    "status": "UNKNOWN",
+    "result": {
+      "command": "target/debug/mothership.exe status",
+      "success": true,
+      "returncode": 0,
+      "stdout": "",
+      "stderr": "\ud83d\udd12 Authentication Error: Not authenticated locally. Please run 'mothership auth' first.\n\n\ud83d\udca1 To fix this: Run 'mothership auth' to authenticate\n    This will open your browser and guide you through the login process\n"
+    }
+  },
+  "rift --help": {
+    "status": "WORKING",
+    "result": {
+      "command": "target/debug/mothership.exe rift --help",
+      "success": true,
+      "returncode": 0,
+      "stdout": "Rift management operations\n\nUsage: mothership.exe rift <COMMAND>\n\nCommands:\n  list    List all rifts in the current project\n  new     Create a new rift\n  switch  Switch to a different rift\n  status  Show current rift status\n  diff    Compare rifts (flexible arguments)\n  help    Print this message or the help of the given subcommand(s)\n\nOptions:\n  -h, --help  Print help\n",
+      "stderr": ""
+    }
+  },
+  "rift list": {
+    "status": "FAILED",
+    "result": {
+      "command": "target/debug/mothership.exe rift list",
+      "success": true,
+      "returncode": 1,
+      "stdout": "",
+      "stderr": "Error: No active server connection. Please run 'mothership connect <server-url>' first.\n"
+    }
+  },
+  "daemon --help": {
+    "status": "WORKING",
+    "result": {
+      "command": "target/debug/mothership.exe daemon --help",
+      "success": true,
+      "returncode": 0,
+      "stdout": "Daemon management operations\n\nUsage: mothership.exe daemon <COMMAND>\n\nCommands:\n  status   Show daemon status and tracked projects\n  stop     Stop the background daemon\n  restart  Restart the background daemon\n  help     Print this message or the help of the given subcommand(s)\n\nOptions:\n  -h, --help  Print help\n",
+      "stderr": ""
+    }
+  },
+  "daemon status": {
+    "status": "UNKNOWN",
+    "result": {
+      "command": "target/debug/mothership.exe daemon status",
+      "success": true,
+      "returncode": 0,
+      "stdout": "\ud83e\udd16 Checking daemon status...\n\u2705 Mothership daemon is running\n\u2139\ufe0f Daemon Status:\n{\"status\":\"success\",\"data\":{\"is_running\":true,\"projects_tracked\":0,\"files_syncing\":0,\"last_sync\":null,\"server_connected\":false},\"error\":null}\n\u2139\ufe0f Tracked Projects:\n{\"status\":\"success\",\"data\":[],\"error\":null}\n",
+      "stderr": ""
+    }
+  },
+  "checkpoint --help": {
+    "status": "WORKING",
+    "result": {
+      "command": "target/debug/mothership.exe checkpoint --help",
+      "success": true,
+      "returncode": 0,
+      "stdout": "Create a checkpoint (commit changes)\n\nUsage: mothership.exe checkpoint <MESSAGE>\n\nArguments:\n  <MESSAGE>  Checkpoint message\n\nOptions:\n  -h, --help  Print help\n",
+      "stderr": ""
+    }
+  },
+  "sync": {
+    "status": "UNKNOWN",
+    "result": {
+      "command": "target/debug/mothership.exe sync",
+      "success": true,
+      "returncode": 0,
+      "stdout": "\ud83d\udce6 Syncing with remote Mothership...\n",
+      "stderr": ""
+    }
+  },
+  "history": {
+    "status": "UNKNOWN",
+    "result": {
+      "command": "target/debug/mothership.exe history",
+      "success": true,
+      "returncode": 0,
+      "stdout": "",
+      "stderr": "\ud83d\udd12 Authentication Error: Not authenticated locally. Please run 'mothership auth' first.\n\n\ud83d\udca1 To fix this: Run 'mothership auth' to authenticate\n    This will open your browser and guide you through the login process\n"
+    }
+  },
+  "server --help": {
+    "status": "WORKING",
+    "result": {
+      "command": "target/debug/mothership.exe server --help",
+      "success": true,
+      "returncode": 0,
+      "stdout": "Disconnect from the current Mothership server (switch to local-only mode)\n\nUsage: mothership.exe server <COMMAND>\n\nCommands:\n  status      Show current server connection status\n  disconnect  Disconnect from current server (switch to local-only mode)\n  list        List all configured servers\n  help        Print this message or the help of the given subcommand(s)\n\nOptions:\n  -h, --help  Print help\n",
+      "stderr": ""
+    }
+  },
+  "server status": {
+    "status": "UNKNOWN",
+    "result": {
+      "command": "target/debug/mothership.exe server status",
+      "success": true,
+      "returncode": 0,
+      "stdout": "\ud83d\udce1 Checking server connection status...\n\u2139\ufe0f Not connected to any server\n\u2139\ufe0f Operating in local-only mode\n\u2139\ufe0f Use 'mothership connect <server-url>' to connect to a server\n",
+      "stderr": ""
+    }
+  },
+  "connect --help": {
+    "status": "WORKING",
+    "result": {
+      "command": "target/debug/mothership.exe connect --help",
+      "success": true,
+      "returncode": 0,
+      "stdout": "Connect to a Mothership server\n\nUsage: mothership.exe connect <SERVER_URL>\n\nArguments:\n  <SERVER_URL>  Server URL (e.g., https://mothership.company.com)\n\nOptions:\n  -h, --help  Print help\n",
+      "stderr": ""
+    }
+  },
+  "update --help": {
+    "status": "WORKING",
+    "result": {
+      "command": "target/debug/mothership.exe update --help",
+      "success": true,
+      "returncode": 0,
+      "stdout": "Update the CLI to the latest version\n\nUsage: mothership.exe update [OPTIONS]\n\nOptions:\n      --check-only         Check for updates without installing\n      --force              Force update even if current version seems newer\n      --list-versions      Show available versions\n      --version <VERSION>  Update to specific version\n  -h, --help               Print help\n",
+      "stderr": ""
+    }
+  }
+}

@@ -1,0 +1,109 @@
+{
+  "summary": {
+    "total_tests": 14,
+    "passed": 9,
+    "failed": 5,
+    "success_rate": 64.28571428571429
+  },
+  "test_results": [
+    {
+      "test": "Server Availability",
+      "success": true,
+      "details": "Server responding on http://localhost:8080",
+      "evidence": "HTTP 200: {\"success\":true,\"data\":\"Mothership is operational\",\"error\":null,\"message\":null}",
+      "timestamp": 1755301801.603955
+    },
+    {
+      "test": "OAuth Initiation - Google",
+      "success": false,
+      "details": "Expected redirect, got status 404",
+      "evidence": "Response: ",
+      "timestamp": 1755301801.6204603
+    },
+    {
+      "test": "OAuth Initiation - Github",
+      "success": false,
+      "details": "Expected redirect, got status 404",
+      "evidence": "Response: ",
+      "timestamp": 1755301801.6231065
+    },
+    {
+      "test": "OAuth Callback Handling",
+      "success": false,
+      "details": "Unexpected response to invalid callback: 404",
+      "evidence": "Response: ",
+      "timestamp": 1755301801.9535975
+    },
+    {
+      "test": "Protected Resource - /api/projects",
+      "success": true,
+      "details": "Endpoint /api/projects not found (expected for some endpoints)",
+      "evidence": "HTTP 404: ",
+      "timestamp": 1755301801.9579933
+    },
+    {
+      "test": "Protected Resource - /api/user/profile",
+      "success": true,
+      "details": "Endpoint /api/user/profile not found (expected for some endpoints)",
+      "evidence": "HTTP 404: ",
+      "timestamp": 1755301801.9614925
+    },
+    {
+      "test": "Protected Resource - /api/admin/users",
+      "success": true,
+      "details": "Endpoint /api/admin/users not found (expected for some endpoints)",
+      "evidence": "HTTP 404: ",
+      "timestamp": 1755301801.9646373
+    },
+    {
+      "test": "Protected Resource - /dashboard",
+      "success": true,
+      "details": "Endpoint /dashboard not found (expected for some endpoints)",
+      "evidence": "HTTP 404: ",
+      "timestamp": 1755301801.9674468
+    },
+    {
+      "test": "JWT Token Validation",
+      "success": false,
+      "details": "Accepts invalid JWT token (HTTP 404)",
+      "evidence": "Response: ",
+      "timestamp": 1755301801.9706419
+    },
+    {
+      "test": "Session Management",
+      "success": false,
+      "details": "No session management detected",
+      "evidence": "Response headers: {'content-type': 'text/html; charset=utf-8', 'content-length': '4987', 'date': 'Fri, 15 Aug 2025 23:50:01 GMT'}",
+      "timestamp": 1755301801.973639
+    },
+    {
+      "test": "User Creation Endpoint",
+      "success": true,
+      "details": "User creation endpoint not found (expected)",
+      "evidence": "HTTP 404: ",
+      "timestamp": 1755301801.9771688
+    },
+    {
+      "test": "Role-Based Access - /api/admin/users",
+      "success": true,
+      "details": "Admin endpoint /api/admin/users not found (expected)",
+      "evidence": "HTTP 404: ",
+      "timestamp": 1755301801.9942696
+    },
+    {
+      "test": "Role-Based Access - /api/admin/projects",
+      "success": true,
+      "details": "Admin endpoint /api/admin/projects not found (expected)",
+      "evidence": "HTTP 404: ",
+      "timestamp": 1755301801.997486
+    },
+    {
+      "test": "Role-Based Access - /api/admin/system",
+      "success": true,
+      "details": "Admin endpoint /api/admin/system not found (expected)",
+      "evidence": "HTTP 404: ",
+      "timestamp": 1755301802.000485
+    }
+  ],
+  "timestamp": 1755301802.0022216
+}

@@ -1,0 +1,17 @@
+{
+  "project_path": "C:\\Users\\craft\\Mothership",
+  "rust_files_analyzed": 72,
+  "total_issues": 269,
+  "issues_by_type": {
+    "missing_auth_feature": 223,
+    "missing_database_feature": 6,
+    "poor_error_handling": 6,
+    "todo_comment": 31,
+    "missing_websocket_feature": 3
+  },
+  "issues_by_severity": {
+    "medium": 266,
+    "high": 3
+  },
+  "compilation_status": "timeout"
+}

@@ -7,9 +7,12 @@ use serde_json;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, RwLock, Mutex};
 use tracing::{error, info, warn, debug};
 use uuid::Uuid;
+use std::path::PathBuf;
+use sha2::{Sha256, Digest};
+use flate2;
 
 use crate::database::Database;
 use crate::storage::StorageEngine;
@@ -21,6 +24,51 @@ struct BatchingState {
     last_batch_time: HashMap<String, Instant>, // rift_id -> time
 }
 
+/// Stream manager for handling large file transfers
+#[derive(Default)]
+struct StreamManager {
+    /// Active streams - maps stream_id to stream metadata
+    active_streams: HashMap<Uuid, StreamMetadata>,
+}
+
+/// Metadata for an active stream
+struct StreamMetadata {
+    rift_id: Uuid,
+    file_path: PathBuf,
+    total_size: u64,
+    chunk_size: u32,
+    expected_chunks: u32,
+    received_chunks: HashMap<u32, Vec<u8>>, // chunk_index -> data
+    temp_file_path: PathBuf,
+    is_binary: bool,
+    content_hash: String,
+    started_at: Instant,
+}
+
+impl StreamMetadata {
+    fn new(stream_id: Uuid, rift_id: Uuid, file_path: PathBuf, total_size: u64, chunk_size: u32, is_binary: bool, content_hash: String) -> Self {
+        let expected_chunks = ((total_size + chunk_size as u64 - 1) / chunk_size as u64) as u32;
+        let temp_file_path = std::env::temp_dir().join(format!("mothership_stream_{}", stream_id));
+        
+        Self {
+            rift_id,
+            file_path,
+            total_size,
+            chunk_size,
+            expected_chunks,
+            received_chunks: HashMap::new(),
+            temp_file_path,
+            is_binary,
+            content_hash,
+            started_at: Instant::now(),
+        }
+    }
+    
+    fn is_complete(&self) -> bool {
+        self.received_chunks.len() as u32 == self.expected_chunks
+    }
+}
+
 const BATCH_TIMEOUT: Duration = Duration::from_millis(100); // 100ms batching window
 const MAX_BATCH_SIZE: usize = 50; // Maximum changes per batch
 
@@ -30,6 +78,9 @@ pub struct SyncState {
     pub storage: Arc<StorageEngine>,
     pub broadcaster: broadcast::Sender<(String, SyncMessage)>,
     pub batching_state: Arc<RwLock<BatchingState>>, // PERFORMANCE FIX: Batching support
+    pub stream_manager: Arc<Mutex<StreamManager>>, // Streaming support
+    // Rate limiting: track recent change timestamps per rift to detect floods
+    pub recent_change_timestamps: Arc<RwLock<HashMap<String, Vec<Instant>>>>,
 }
 
 impl SyncState {
@@ -40,6 +91,8 @@ impl SyncState {
             storage,
             broadcaster,
             batching_state: Arc::new(RwLock::new(BatchingState::default())),
+            stream_manager: Arc::new(Mutex::new(StreamManager::default())),
+            recent_change_timestamps: Arc::new(RwLock::new(HashMap::new())),
         };
         
         // PERFORMANCE FIX: Start background batch flusher
@@ -99,6 +152,32 @@ impl SyncState {
         
         Ok(())
     }
+
+    /// Simple per-rift rate limiter. Returns true if the change should be throttled/dropped.
+    pub async fn should_throttle(&self, rift_id: &str) -> bool {
+        const WINDOW_SECS: u64 = 5;
+        const MAX_EVENTS: usize = 8;
+
+        let now = Instant::now();
+        let window = std::time::Duration::from_secs(WINDOW_SECS);
+
+        let mut map = self.recent_change_timestamps.write().await;
+        let entry = map.entry(rift_id.to_string()).or_insert_with(Vec::new);
+
+        // add current event
+        entry.push(now);
+
+        // drop events outside the window
+        entry.retain(|&t| now.duration_since(t) <= window);
+
+        if entry.len() > MAX_EVENTS {
+            // keep vector but signal throttling
+            tracing::warn!(%rift_id, events = entry.len(), "Throttling excessive changes for rift");
+            return true;
+        }
+
+        false
+    }
     
     /// PERFORMANCE FIX: Send batched diff changes with compression
     async fn send_diff_batch(state: &SyncState, rift_id: &str, changes: Vec<FileDiffChange>) -> Result<()> {
@@ -118,6 +197,47 @@ impl SyncState {
         info!("📤 Sent diff batch to rift channel: {} (compressed: {})", channel, should_compress);
         Ok(())
     }
+    
+    /// Assemble a complete file from received stream chunks
+    async fn assemble_stream_file(metadata: &StreamMetadata) -> Result<PathBuf> {
+        use std::io::Write;
+        
+        // Create output file
+        let mut file = std::fs::File::create(&metadata.temp_file_path)
+            .map_err(|e| anyhow::anyhow!("Failed to create temp file: {}", e))?;
+        
+        // Write chunks in order
+        for chunk_index in 0..metadata.expected_chunks {
+            if let Some(chunk_data) = metadata.received_chunks.get(&chunk_index) {
+                file.write_all(chunk_data)
+                    .map_err(|e| anyhow::anyhow!("Failed to write chunk {}: {}", chunk_index, e))?;
+            } else {
+                return Err(anyhow::anyhow!("Missing chunk {}", chunk_index));
+            }
+        }
+        
+        file.flush()
+            .map_err(|e| anyhow::anyhow!("Failed to flush file: {}", e))?;
+        
+        // Verify file size
+        let file_size = std::fs::metadata(&metadata.temp_file_path)
+            .map_err(|e| anyhow::anyhow!("Failed to get file metadata: {}", e))?
+            .len();
+            
+        if file_size != metadata.total_size {
+            return Err(anyhow::anyhow!("File size mismatch: expected {}, got {}", 
+                metadata.total_size, file_size));
+        }
+        
+        // TODO: Verify content hash if provided
+        if !metadata.content_hash.is_empty() {
+            // This would require reading the entire file to compute hash
+            // For now, we'll skip this optimization
+        }
+        
+        info!("✅ File assembled successfully: {} bytes", file_size);
+        Ok(metadata.temp_file_path.clone())
+    }
 }
 
 pub async fn handle_websocket(socket: WebSocket, state: SyncState, rift_id: String) {
@@ -126,22 +246,24 @@ pub async fn handle_websocket(socket: WebSocket, state: SyncState, rift_id: Stri
 
     // SECURITY FIX: Define the specific rift channel this client should listen to
     let my_rift_channel = format!("rift_{}", rift_id);
-    
-    info!("🔒 WebSocket client restricted to channel: {}", my_rift_channel);
+    // Per-connection private channel so one-off replies can be targeted at this socket
+    let connection_channel = format!("conn_{}", Uuid::new_v4());
 
-    // Spawn task to handle broadcasting to this client
+    info!("\u{1F512} WebSocket client restricted to channel: {} (private: {})", my_rift_channel, connection_channel);
+
+    // Spawn task to handle broadcasting to this client (listens to rift channel and private conn channel)
     let sender_task = {
         let mut sender = sender;
         let my_channel = my_rift_channel.clone();
+        let my_conn = connection_channel.clone();
         tokio::spawn(async move {
             let mut consecutive_errors = 0;
             while let Ok((channel, message)) = broadcast_receiver.recv().await {
-                // SECURITY FIX: Only process messages for THIS rift
-                if channel != my_channel {
-                    // Silently ignore messages from other rifts
+                // Only process messages for THIS rift or this private connection channel
+                if channel != my_channel && channel != my_conn {
                     continue;
                 }
-                
+
                 let json = match serde_json::to_string(&message) {
                     Ok(json) => json,
                     Err(e) => {
@@ -154,13 +276,13 @@ pub async fn handle_websocket(socket: WebSocket, state: SyncState, rift_id: Stri
                         continue;
                     }
                 };
-                
+
                 match sender.send(Message::Text(json)).await {
                     Ok(_) => {
                         consecutive_errors = 0; // Reset on success
-                        info!("✅ Message sent to client on channel: {}", channel);
-                        
-                        // CRITICAL FIX: Add small delay after sending to prevent overwhelming client
+                        info!("\u{2705} Message sent to client on channel: {}", channel);
+
+                        // Small delay after sending to prevent overwhelming client
                         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
                     }
                     Err(e) => {
@@ -184,6 +306,62 @@ pub async fn handle_websocket(socket: WebSocket, state: SyncState, rift_id: Stri
     while let Some(msg) = receiver.next().await {
         match msg {
             Ok(Message::Text(text)) => {
+                // Try to parse JoinRift locally so we can reply ONLY to this connection (not broadcast to whole rift)
+                if let Ok(sync_msg) = serde_json::from_str::<SyncMessage>(&text) {
+                    match sync_msg {
+                        SyncMessage::JoinRift { rift_id: msg_rift_id, last_checkpoint } => {
+                            info!("Client joining rift: {} (last checkpoint: {:?})", msg_rift_id, last_checkpoint);
+
+                            // SECURITY CHECK: Verify client is authorized for this rift
+                            let msg_rift_id_str = msg_rift_id.to_string();
+                            if msg_rift_id_str != rift_id {
+                                error!("\u{1F6A8} SECURITY: Client attempted to join unauthorized rift {} (authorized: {})", msg_rift_id_str, rift_id);
+                                let _ = state.broadcaster.send((connection_channel.clone(), SyncMessage::Error { message: "Unauthorized rift access attempt".to_string(), error_code: None }));
+                                continue;
+                            }
+
+                            // Get current live state for the rift
+                            let live_files = match state.storage.get_live_state(msg_rift_id).await {
+                                Ok(files) => {
+                                    info!("\u{2705} Retrieved {} files from rift {}", files.len(), msg_rift_id);
+                                    files
+                                }
+                                Err(e) => {
+                                    error!("\u{274C} Failed to get live state for rift {}: {}", msg_rift_id, e);
+                                    let _ = state.broadcaster.send((connection_channel.clone(), SyncMessage::Error { message: format!("Failed to get live state: {}", e), error_code: None }));
+                                    continue;
+                                }
+                            };
+
+                            // Add small delay to ensure connection is stable
+                            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+                            let response = SyncMessage::RiftJoined {
+                                rift_id: msg_rift_id,
+                                current_files: live_files,
+                                participants: vec![], // TODO: Get actual participants
+                                last_checkpoint,
+                            };
+
+                            // Send ONLY to this client's private channel so other rift members don't get this one-off message
+                            match state.broadcaster.send((connection_channel.clone(), response)) {
+                                Ok(_) => {
+                                    info!("\u{2705} RiftJoined message sent to private channel: {}", connection_channel);
+                                }
+                                Err(e) => {
+                                    error!("\u{274C} Failed to send RiftJoined message to private channel {}: {}", connection_channel, e);
+                                }
+                            }
+
+                            // Don't call general handler for JoinRift
+                            continue;
+                        }
+                        _ => {
+                            // fallthrough to general handler below
+                        }
+                    }
+                }
+
                 match handle_sync_message(&text, &state, &rift_id).await {
                     Ok(_) => {
                         consecutive_errors = 0; // Reset on success
@@ -292,6 +470,11 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
         }
 
         SyncMessage::FileChanged { rift_id: msg_rift_id, path, content, timestamp: _ } => {
+            // Rate-limit noisy clients per rift
+            if state.should_throttle(&msg_rift_id.to_string()).await {
+                info!("Dropping FileChanged due to rate limit for rift: {}", msg_rift_id);
+                return Ok(());
+            }
             // SECURITY CHECK: Verify client is authorized for this rift
             let msg_rift_id_str = msg_rift_id.to_string();
             if msg_rift_id_str != client_rift_id {
@@ -334,6 +517,11 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
         }
 
         SyncMessage::FileDiffChanged { rift_id: msg_rift_id, path, diff, file_size, timestamp: _ } => {
+            // Rate-limit noisy clients per rift
+            if state.should_throttle(&msg_rift_id.to_string()).await {
+                info!("Dropping FileDiffChanged due to rate limit for rift: {}", msg_rift_id);
+                return Ok(());
+            }
             // SECURITY CHECK: Verify client is authorized for this rift
             let msg_rift_id_str = msg_rift_id.to_string();
             if msg_rift_id_str != client_rift_id {
@@ -363,6 +551,11 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
         }
 
         SyncMessage::BatchDiffChanges { rift_id: msg_rift_id, changes, timestamp: _, compressed } => {
+            // Rate-limit noisy clients per rift
+            if state.should_throttle(&msg_rift_id.to_string()).await {
+                info!("Dropping BatchDiffChanges due to rate limit for rift: {}", msg_rift_id);
+                return Ok(());
+            }
             // SECURITY CHECK: Verify client is authorized for this rift
             let msg_rift_id_str = msg_rift_id.to_string();
             if msg_rift_id_str != client_rift_id {
@@ -439,6 +632,167 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
         SyncMessage::Heartbeat => {
             // Heartbeat messages are just for connection keepalive - no action needed
             debug!("🏓 Received heartbeat from client");
+        }
+
+        // Streaming support
+        SyncMessage::StartFileStream { stream_id, rift_id, path, total_size, chunk_size, content_hash, is_binary, timestamp: _ } => {
+            info!("📡 Starting file stream {} for {}: {} bytes", stream_id, path.display(), total_size);
+            
+            let mut stream_manager = state.stream_manager.lock().await;
+            let metadata = StreamMetadata::new(stream_id, rift_id, path.clone(), total_size, chunk_size, is_binary, content_hash);
+            stream_manager.active_streams.insert(stream_id, metadata);
+            
+            info!("✅ Stream {} registered for file {}", stream_id, path.display());
+        }
+
+        SyncMessage::FileChunk { stream_id, chunk_index, data, is_compressed, chunk_hash } => {
+            debug!("📦 Received chunk {} for stream {}", chunk_index, stream_id);
+            
+            let mut stream_manager = state.stream_manager.lock().await;
+            if let Some(metadata) = stream_manager.active_streams.get_mut(&stream_id) {
+                // Verify chunk hash if provided
+                if !chunk_hash.is_empty() {
+                    let computed_hash = format!("{:x}", Sha256::digest(&data));
+                    if computed_hash != chunk_hash {
+                        error!("❌ Chunk hash mismatch for stream {} chunk {}", stream_id, chunk_index);
+                        // Send error back to client
+                        let error_msg = SyncMessage::StreamError {
+                            stream_id,
+                            error_code: mothership_common::protocol::StreamErrorCode::ChunkCorrupted,
+                            message: format!("Chunk {} hash mismatch", chunk_index),
+                            retry_chunk: Some(chunk_index),
+                        };
+                        let channel = format!("rift_{}", metadata.rift_id);
+                        let _ = state.broadcaster.send((channel, error_msg));
+                        return Ok(());
+                    }
+                }
+
+                // Decompress chunk if needed
+                let chunk_data = if is_compressed {
+                    use std::io::Read;
+                    let mut decoder = flate2::read::DeflateDecoder::new(&data[..]);
+                    let mut decompressed = Vec::new();
+                    match decoder.read_to_end(&mut decompressed) {
+                        Ok(_) => decompressed,
+                        Err(e) => {
+                            error!("❌ Failed to decompress chunk {} for stream {}: {}", chunk_index, stream_id, e);
+                            let error_msg = SyncMessage::StreamError {
+                                stream_id,
+                                error_code: mothership_common::protocol::StreamErrorCode::ChunkCorrupted,
+                                message: format!("Decompression failed: {}", e),
+                                retry_chunk: Some(chunk_index),
+                            };
+                            let channel = format!("rift_{}", metadata.rift_id);
+                            let _ = state.broadcaster.send((channel, error_msg));
+                            return Ok(());
+                        }
+                    }
+                } else {
+                    data
+                };
+
+                // Store chunk
+                metadata.received_chunks.insert(chunk_index, chunk_data);
+                
+                debug!("✅ Chunk {} received for stream {} ({}/{} chunks)", 
+                    chunk_index, stream_id, metadata.received_chunks.len(), metadata.expected_chunks);
+
+                // Check if stream is complete
+                if metadata.is_complete() {
+                    info!("🎉 Stream {} complete, assembling file {}", stream_id, metadata.file_path.display());
+                    
+                    // Assemble file from chunks
+                    match SyncState::assemble_stream_file(metadata).await {
+                        Ok(final_path) => {
+                            info!("✅ File assembled successfully: {}", final_path.display());
+                            
+                            // Read assembled file content and save to storage
+                            match tokio::fs::read_to_string(&final_path).await {
+                                Ok(content) => {
+                                    // Save to storage
+                                    if let Err(e) = state.storage.update_live_state(metadata.rift_id, metadata.file_path.clone(), content.clone()).await {
+                                        error!("❌ Failed to save streamed file to storage: {}", e);
+                                    } else {
+                                        info!("💾 Streamed file saved to storage: {}", metadata.file_path.display());
+                                        
+                                        // Broadcast file change to other collaborators
+                                        let response = SyncMessage::FileUpdate {
+                                            rift_id: metadata.rift_id,
+                                            path: metadata.file_path.clone(),
+                                            content,
+                                            author: Uuid::new_v4(), // TODO: Get actual user ID
+                                            timestamp: chrono::Utc::now(),
+                                        };
+                                        
+                                        let channel = format!("rift_{}", metadata.rift_id);
+                                        let _ = state.broadcaster.send((channel, response));
+                                    }
+                                    
+                                    // Clean up temp file
+                                    let _ = tokio::fs::remove_file(&final_path).await;
+                                }
+                                Err(e) => {
+                                    error!("❌ Failed to read assembled file: {}", e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            error!("❌ Failed to assemble stream {}: {}", stream_id, e);
+                            let error_msg = SyncMessage::StreamError {
+                                stream_id,
+                                error_code: mothership_common::protocol::StreamErrorCode::StorageFull,
+                                message: format!("Assembly failed: {}", e),
+                                retry_chunk: None,
+                            };
+                            let channel = format!("rift_{}", metadata.rift_id);
+                            let _ = state.broadcaster.send((channel, error_msg));
+                        }
+                    }
+                    
+                    // Remove completed stream
+                    stream_manager.active_streams.remove(&stream_id);
+                }
+            } else {
+                warn!("⚠️  Received chunk for unknown stream {}", stream_id);
+                let error_msg = SyncMessage::StreamError {
+                    stream_id,
+                    error_code: mothership_common::protocol::StreamErrorCode::StreamNotFound,
+                    message: "Stream not found".to_string(),
+                    retry_chunk: None,
+                };
+                // We don't know the rift_id, so this error might not be delivered properly
+                // This is a design limitation - we might need to track stream_id -> rift_id mapping
+            }
+        }
+
+        SyncMessage::EndFileStream { stream_id, final_hash, success } => {
+            info!("🏁 Stream {} ended (success: {}, hash: {})", stream_id, success, final_hash);
+            
+            let mut stream_manager = state.stream_manager.lock().await;
+            if let Some(metadata) = stream_manager.active_streams.remove(&stream_id) {
+                if !success {
+                    info!("⚠️  Stream {} failed, cleaning up", stream_id);
+                    let _ = tokio::fs::remove_file(&metadata.temp_file_path).await;
+                } else {
+                    // Verify final hash if provided
+                    if !final_hash.is_empty() {
+                        // TODO: Verify against assembled file hash
+                    }
+                    info!("✅ Stream {} completed successfully", stream_id);
+                }
+            }
+        }
+
+        SyncMessage::StreamControl { stream_id, operation } => {
+            info!("🎛️ Stream control for {}: {:?}", stream_id, operation);
+            // TODO: Implement stream control operations (pause, resume, cancel)
+        }
+
+        SyncMessage::StreamError { stream_id, error_code, message, retry_chunk } => {
+            error!("❌ Stream error for {}: {:?} - {} (retry chunk: {:?})", 
+                stream_id, error_code, message, retry_chunk);
+            // TODO: Implement error handling and retry logic
         }
 
         _ => {

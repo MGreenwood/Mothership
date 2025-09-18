@@ -1,0 +1,115 @@
+{
+  "total_tests": 10,
+  "passed_tests": 1,
+  "failed_tests": 9,
+  "test_results": [
+    {
+      "test_name": "websocket_connection",
+      "passed": true,
+      "description": "WebSocket connection successful",
+      "details": {
+        "endpoint": "ws://localhost:8080/ws",
+        "connection_time": "< 5s"
+      }
+    },
+    {
+      "test_name": "realtime_sync",
+      "passed": false,
+      "description": "Real-time sync test not implemented - requires running server",
+      "details": {
+        "status": "requires_server",
+        "test_type": "integration"
+      }
+    },
+    {
+      "test_name": "conflict_resolution",
+      "passed": false,
+      "description": "Conflict resolution test not implemented - requires running server",
+      "details": {
+        "status": "requires_server",
+        "test_type": "integration"
+      }
+    },
+    {
+      "test_name": "daemon_startup",
+      "passed": false,
+      "description": "Daemon binary not found",
+      "details": {
+        "error": "Binary not compiled",
+        "expected_path": "..\\..\\mothership-daemon\\target\\debug\\mothership-daemon"
+      }
+    },
+    {
+      "test_name": "file_watching",
+      "passed": false,
+      "description": "File watching test requires daemon integration",
+      "details": {
+        "status": "requires_daemon_running",
+        "test_type": "integration"
+      }
+    },
+    {
+      "test_name": "oauth_endpoints",
+      "passed": false,
+      "description": "OAuth endpoints test: 0/3 accessible",
+      "details": {
+        "/auth/google": {
+          "status_code": null,
+          "accessible": false,
+          "error": "Connection refused"
+        },
+        "/auth/github": {
+          "status_code": null,
+          "accessible": false,
+          "error": "Connection refused"
+        },
+        "/auth/callback": {
+          "status_code": null,
+          "accessible": false,
+          "error": "Connection refused"
+        }
+      }
+    },
+    {
+      "test_name": "jwt_handling",
+      "passed": false,
+      "description": "JWT handling test requires authentication server",
+      "details": {
+        "status": "requires_server",
+        "test_type": "integration"
+      }
+    },
+    {
+      "test_name": "database_connection",
+      "passed": false,
+      "description": "Database connection failed",
+      "details": {
+        "error": "connection to server at \"localhost\" (::1), port 5432 failed: Connection refused (0x0000274D/10061)\n\tIs the server running on that host and accepting TCP/IP connections?\nconnection to server at \"localhost\" (127.0.0.1), port 5432 failed: Connection refused (0x0000274D/10061)\n\tIs the server running on that host and accepting TCP/IP connections?\n",
+        "connection_params": {
+          "host": "localhost",
+          "port": 5432,
+          "database": "mothership",
+          "user": "postgres",
+          "password": "password"
+        }
+      }
+    },
+    {
+      "test_name": "cli_binary",
+      "passed": false,
+      "description": "CLI binary not found",
+      "details": {
+        "error": "Binary not compiled",
+        "expected_path": "..\\..\\mothership-cli\\target\\debug\\mothership-cli"
+      }
+    },
+    {
+      "test_name": "cli_help",
+      "passed": false,
+      "description": "CLI binary not found for help test",
+      "details": {
+        "error": "Binary not compiled"
+      }
+    }
+  ]
+}

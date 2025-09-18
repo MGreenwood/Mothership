@@ -1,0 +1,118 @@
+{
+  "test_runs": [
+    {
+      "run_number": 1,
+      "start_time": "2025-08-15T19:22:04.687970",
+      "execution_time": 0.9777688980102539,
+      "exit_code": 1,
+      "stdout": "\n==== Checking prerequisites ====\n[+] All prerequisites found\n\n==== Testing server connection ====\n[-] Server is not running at https://api.mothershipproject.dev\n",
+      "stderr": "",
+      "test_steps": [
+        "Checking prerequisites",
+        "Testing server connection"
+      ],
+      "passed_tests": [
+        "All prerequisites found"
+      ],
+      "failed_tests": [
+        "Server is not running at https://api.mothershipproject.dev"
+      ],
+      "features_tested": []
+    },
+    {
+      "run_number": 2,
+      "start_time": "2025-08-15T19:22:07.597934",
+      "execution_time": 0.9081969261169434,
+      "exit_code": 1,
+      "stdout": "\n==== Checking prerequisites ====\n[+] All prerequisites found\n\n==== Testing server connection ====\n[-] Server is not running at https://api.mothershipproject.dev\n",
+      "stderr": "",
+      "test_steps": [
+        "Checking prerequisites",
+        "Testing server connection"
+      ],
+      "passed_tests": [
+        "All prerequisites found"
+      ],
+      "failed_tests": [
+        "Server is not running at https://api.mothershipproject.dev"
+      ],
+      "features_tested": []
+    },
+    {
+      "run_number": 3,
+      "start_time": "2025-08-15T19:22:10.522736",
+      "execution_time": 0.9236011505126953,
+      "exit_code": 1,
+      "stdout": "\n==== Checking prerequisites ====\n[+] All prerequisites found\n\n==== Testing server connection ====\n[-] Server is not running at https://api.mothershipproject.dev\n",
+      "stderr": "",
+      "test_steps": [
+        "Checking prerequisites",
+        "Testing server connection"
+      ],
+      "passed_tests": [
+        "All prerequisites found"
+      ],
+      "failed_tests": [
+        "Server is not running at https://api.mothershipproject.dev"
+      ],
+      "features_tested": []
+    }
+  ],
+  "reliability_analysis": {
+    "total_runs": 3,
+    "successful_runs": 0,
+    "failed_runs": 3,
+    "success_rate": 0.0,
+    "execution_time_stats": {
+      "min": 0.9081969261169434,
+      "max": 0.9777688980102539,
+      "mean": 0.9365223248799642,
+      "stdev": 0.0365415158217735
+    },
+    "passed_tests_stats": {
+      "min": 1,
+      "max": 1,
+      "mean": 1,
+      "consistent": true
+    },
+    "failed_tests_stats": {
+      "min": 1,
+      "max": 1,
+      "mean": 1,
+      "consistent": true
+    }
+  },
+  "consistency_analysis": {
+    "test_consistency": {
+      "All prerequisites found": {
+        "pass_count": 3,
+        "fail_count": 0,
+        "total_appearances": 3,
+        "consistency_rate": 100.0,
+        "is_flaky": false
+      },
+      "Server is not running at https://api.mothershipproject.dev": {
+        "pass_count": 0,
+        "fail_count": 3,
+        "total_appearances": 3,
+        "consistency_rate": 100.0,
+        "is_flaky": false
+      }
+    },
+    "flaky_tests": [],
+    "total_unique_tests": 2,
+    "flaky_test_count": 0,
+    "flaky_test_percentage": 0.0
+  },
+  "summary": {
+    "overall_reliability": "LOW",
+    "test_consistency": "HIGH",
+    "execution_stability": "STABLE",
+    "key_findings": [
+      "Tests failed in 100.0% of runs"
+    ],
+    "recommendations": [
+      "Improve test reliability before using for automated testing"
+    ]
+  }
+}

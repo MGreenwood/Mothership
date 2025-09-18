@@ -1,0 +1,124 @@
+{
+  "daemon_integration": {
+    "daemon_status": {
+      "command": "target/debug/mothership.exe daemon status",
+      "success": true,
+      "returncode": 0,
+      "stdout": "\ud83e\udd16 Checking daemon status...\n\u2705 Mothership daemon is running\n\u2139\ufe0f Daemon Status:\n{\"status\":\"success\",\"data\":{\"is_running\":true,\"projects_tracked\":0,\"files_syncing\":0,\"last_sync\":null,\"server_connected\":false},\"error\":null}\n\u2139\ufe0f Tracked Projects:\n{\"status\":\"success\",\"data\":[],\"error\":null}\n",
+      "stderr": ""
+    },
+    "daemon_http_check": {
+      "running": true,
+      "port": 7525,
+      "status_code": 200,
+      "response": "{\"status\":\"ok\",\"service\":\"mothership-daemon\",\"daemon_status\":{\"is_running\":true,\"projects_tracked\":0,\"files_syncing\":0,\"last_sync\":null,\"server_connected\":false}}"
+    },
+    "daemon_api_status": {
+      "success": true,
+      "status_code": 200,
+      "response": {
+        "status": "success",
+        "data": {
+          "is_running": true,
+          "projects_tracked": 0,
+          "files_syncing": 0,
+          "last_sync": null,
+          "server_connected": false
+        },
+        "error": null
+      }
+    },
+    "daemon_api_projects": {
+      "success": true,
+      "status_code": 200,
+      "response": {
+        "status": "success",
+        "data": [],
+        "error": null
+      }
+    }
+  },
+  "server_connection": {
+    "server_status": {
+      "command": "target/debug/mothership.exe server status",
+      "success": true,
+      "returncode": 0,
+      "stdout": "\ud83d\udce1 Checking server connection status...\n\u2705 Connected to: Mothership Server (http://localhost:7523)\n\u2139\ufe0f Connected since: 2025-08-15 22:47:42 UTC\n\u2139\ufe0f Authentication: oauth\n\u2139\ufe0f Server version: 0.1.0\n\u2139\ufe0f Features: project_sync, checkpoints, beam, file_storage, websocket_sync, chat, file_uploads, cli_distribution\n\u2139\ufe0f Testing connection...\n\u2705 \u2705 Server is reachable\n",
+      "stderr": ""
+    },
+    "server_list": {
+      "command": "target/debug/mothership.exe server list",
+      "success": true,
+      "returncode": 0,
+      "stdout": "\ud83d\udccb Listing configured servers...\n\n\ud83c\udf10 Configured Servers\n\n\u26aa Mothership Server (https://api.mothershipproject.dev:443)\n   Connected: 2025-07-01 01:21:22\n   Auth: oauth\n   Version: 0.1.0\n\n\u26aa Mothership Server (https://api.mothershipproject.dev)\n   Connected: 2025-06-30 23:58:16\n   Auth: oauth\n   Version: 0.1.0\n\n\ud83d\udfe2 Mothership Server (http://localhost:7523)\n   Connected: 2025-08-15 22:47:42\n   Auth: oauth\n   Version: 0.1.0\n   \ud83d\udfe2 Currently active\n\nUse 'mothership connect <server-url>' to switch servers\nUse 'mothership server disconnect' to switch to local-only mode\n",
+      "stderr": ""
+    },
+    "server_check_7523": {
+      "running": true,
+      "port": 7523,
+      "status_code": 200,
+      "response": "{\"success\":true,\"data\":\"Mothership is operational\",\"error\":null,\"message\":null}"
+    },
+    "connect_invalid_server": {
+      "command": "target/debug/mothership.exe connect http://invalid-server.test",
+      "success": true,
+      "returncode": 0,
+      "stdout": "\ud83d\udd17 Connecting to http://invalid-server.test...\n\u2139\ufe0f Discovering Mothership server at http://invalid-server.test...\n\u2139\ufe0f Trying http://invalid-server.test...\n\u2139\ufe0f Trying https://invalid-server.test:7523...\n\u2139\ufe0f Trying http://invalid-server.test:7523...\n\u2139\ufe0f Trying https://invalid-server.test:443...\n\u2139\ufe0f Trying https://invalid-server.test:80...\n\u2139\ufe0f Trying https://invalid-server.test:8080...\n\u2139\ufe0f Trying http://invalid-server.test:443...\n\u2139\ufe0f Trying http://invalid-server.test:80...\n\u2139\ufe0f Trying http://invalid-server.test:8080...\n\u2139\ufe0f Make sure the server URL is correct and the server is running\n\u2139\ufe0f \ud83d\udca1 Try specifying the full URL: https://your-server.com:7523\n",
+      "stderr": "\u274c Error: Failed to connect to server: No Mothership server found at invalid-server.test (tried ports: 7523, 443, 80, 8080)\n"
+    }
+  },
+  "authentication_flow": {
+    "auth_help": {
+      "command": "target/debug/mothership.exe auth --help",
+      "success": true,
+      "returncode": 0,
+      "stdout": "Authenticate this machine with Mothership\n\nUsage: mothership.exe auth [COMMAND]\n\nCommands:\n  google  Login with Google OAuth\n  github  Login with GitHub OAuth\n  help    Print this message or the help of the given subcommand(s)\n\nOptions:\n  -h, --help  Print help\n",
+      "stderr": ""
+    },
+    "logout": {
+      "command": "target/debug/mothership.exe logout",
+      "success": true,
+      "returncode": 0,
+      "stdout": "\ud83d\udd13 Logging out...\n\ud83d\uddd1\ufe0f  Clearing stored credentials...\n\u2705 Logged out successfully!\n   All stored credentials have been removed\n   Use 'mothership auth' to sign in again\n",
+      "stderr": ""
+    },
+    "auth_required_gateway_list": {
+      "command": "target/debug/mothership.exe gateway list",
+      "success": true,
+      "returncode": 0,
+      "stdout": "",
+      "stderr": "\ud83d\udd12 Authentication Error: Not authenticated locally. Please run 'mothership auth' first.\n\n\ud83d\udca1 To fix this: Run 'mothership auth' to authenticate\n    This will open your browser and guide you through the login process\n"
+    },
+    "auth_required_status": {
+      "command": "target/debug/mothership.exe status",
+      "success": true,
+      "returncode": 0,
+      "stdout": "",
+      "stderr": "\ud83d\udd12 Authentication Error: Not authenticated locally. Please run 'mothership auth' first.\n\n\ud83d\udca1 To fix this: Run 'mothership auth' to authenticate\n    This will open your browser and guide you through the login process\n"
+    },
+    "auth_required_history": {
+      "command": "target/debug/mothership.exe history",
+      "success": true,
+      "returncode": 0,
+      "stdout": "",
+      "stderr": "\ud83d\udd12 Authentication Error: Not authenticated locally. Please run 'mothership auth' first.\n\n\ud83d\udca1 To fix this: Run 'mothership auth' to authenticate\n    This will open your browser and guide you through the login process\n"
+    }
+  },
+  "project_operations": {
+    "init_help": {
+      "command": "target/debug/mothership.exe init --help",
+      "success": false,
+      "error": "[WinError 2] The system cannot find the file specified"
+    },
+    "beam_help": {
+      "command": "target/debug/mothership.exe beam --help",
+      "success": false,
+      "error": "[WinError 2] The system cannot find the file specified"
+    },
+    "rift_help": {
+      "command": "target/debug/mothership.exe rift --help",
+      "success": false,
+      "error": "[WinError 2] The system cannot find the file specified"
+    }
+  }
+}

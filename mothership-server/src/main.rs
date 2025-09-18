@@ -80,7 +80,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialize logging
     tracing_subscriber::fmt()
-        .with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string()))
+        .with_env_filter(tracing_subscriber::EnvFilter::new(
+            std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string())
+        ))
         .init();
 
     // Load server configuration
@@ -100,6 +102,34 @@ async fn main() -> anyhow::Result<()> {
     info!("🗄️ Connecting to database...");
     let db = Database::new(&database_url).await?;
     info!("✅ Database connected");
+
+    // Ensure database schema exists with retry/backoff (idempotent)
+    {
+        let mut attempts = 0u8;
+        let max_attempts = 5u8;
+        let mut schema_ok = false;
+        while attempts < max_attempts {
+            attempts += 1;
+            match db.ensure_schema().await {
+                Ok(_) => {
+                    info!("✅ Database schema ensured");
+                    schema_ok = true;
+                    break;
+                }
+                Err(e) => {
+                    warn!("Failed to ensure database schema (attempt {}/{}): {}", attempts, max_attempts, e);
+                    // exponential backoff
+                    let backoff_ms = 500u64.saturating_pow(attempts as u32);
+                    tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                }
+            }
+        }
+
+        if !schema_ok {
+            error!("FATAL: Unable to ensure database schema after {} attempts", max_attempts);
+            return Err(anyhow::anyhow!("Failed to ensure database schema"));
+        }
+    }
 
     // Initialize storage engine
     let storage_root = std::env::var("STORAGE_ROOT")
@@ -188,7 +218,6 @@ fn create_api_router(state: AppState) -> Router {
         .route("/health", get(health_check))
         // Server capabilities (always available)
         .route("/capabilities", get(server_capabilities))
-        
         // Authentication routes
         .route("/auth/check", get(auth_check))
         .route("/auth/oauth/test", get(oauth_test))
@@ -196,10 +225,8 @@ fn create_api_router(state: AppState) -> Router {
         .route("/auth/oauth/callback/google", get(oauth_callback_google))
         .route("/auth/oauth/callback/github", get(oauth_callback_github))
         .route("/auth/finalize", get(web_ui::auth_finalize))
-        
         // Admin routes
         .route("/admin/create", post(create_admin_user))
-        
         // Project routes
         .route("/projects", get(list_projects))
         .route("/projects/:id", get(get_project))
@@ -210,17 +237,13 @@ fn create_api_router(state: AppState) -> Router {
         .route("/projects/:id/history", get(get_project_history))
         .route("/projects/:id/checkpoints/:checkpoint_id/restore", post(restore_checkpoint))
         .route("/projects/:id", delete(delete_project))
-        
         // Gateway routes
         .route("/gateway", post(gateway))
         .route("/gateway/create", post(create_gateway))
-        
         // WebSocket route
         .route("/ws/:rift_id", get(websocket_handler))
-        
         // CLI distribution routes
         .merge(crate::cli_distribution::routes())
-        
         // Add CORS middleware to allow requests from web UI
         .layer(
             CorsLayer::new()
@@ -239,26 +262,16 @@ fn create_api_router(state: AppState) -> Router {
                 ])
                 .allow_credentials(true)
         )
-        
+        // Place the max-upload-size endpoint at the end of the chain
+        .route("/max-upload-size", get(max_upload_size))
         .with_state(state)
 }
 
-/// Create Web UI-only router for dual port mode
-fn create_web_router(state: AppState) -> Router {
-    Router::new()
-        // Health check for web server
-        .route("/health", get(health_check))
-        
-        // OAuth routes (needed for web UI)
-        .route("/auth/oauth/test", get(oauth_test))
-        .route("/auth/oauth/start", post(oauth_start))
-        .route("/auth/oauth/callback/google", get(oauth_callback_google))
-        .route("/auth/oauth/callback/github", get(oauth_callback_github))
-        
-        // Web UI routes
-        .merge(crate::web_ui::routes())
-        
-        .with_state(state)
+// Returns the max allowed upload size in bytes for a single file (for CLI and GUI clients)
+async fn max_upload_size() -> Json<ApiResponse<u64>> {
+    // For now, hardcode to 5 MB. Make configurable if needed.
+    let max_size_bytes = 5 * 1024 * 1024;
+    Json(ApiResponse::success(max_size_bytes))
 }
 
 /// Create combined router for single port mode (legacy compatibility)
@@ -309,17 +322,25 @@ fn create_combined_router(state: AppState) -> Router {
         .with_state(state)
 }
 
-/// Create the application router (deprecated - use create_combined_router)
-fn create_router(state: AppState) -> Router {
-    create_combined_router(state)
+/// Create Web UI-only router for dual port mode
+fn create_web_router(state: AppState) -> Router {
+    Router::new()
+        // Health check for web server
+        .route("/health", get(health_check))
+        // OAuth routes (needed for web UI)
+        .route("/auth/oauth/test", get(oauth_test))
+        .route("/auth/oauth/start", post(oauth_start))
+        .route("/auth/oauth/callback/google", get(oauth_callback_google))
+        .route("/auth/oauth/callback/github", get(oauth_callback_github))
+        // Web UI routes
+        .merge(crate::web_ui::routes())
+        .with_state(state)
 }
-
 /// Health check endpoint
 async fn health_check() -> Json<ApiResponse<String>> {
     Json(ApiResponse::success("Mothership is operational".to_string()))
 }
-
-/// Server capabilities for discovery and client configuration
+/// Server capabilities struct for /capabilities endpoint
 #[derive(serde::Serialize)]
 struct ServerCapabilities {
     auth_methods: Vec<String>,
@@ -637,7 +658,8 @@ async fn oauth_callback_handler(
                             
                             // Redirect browser to user's server with the code
                             let finalize_url = format!("{}/auth/finalize?code={}", 
-                                std::env::var("OAUTH_BASE_URL")
+                                std::env::var("WEB_UI_BASE_URL")
+                                    .or_else(|_| std::env::var("OAUTH_BASE_URL"))
                                     .or_else(|_| std::env::var("MOTHERSHIP_SERVER_URL"))
                                     .unwrap_or_else(|_| "http://localhost:7523".to_string()),
                                 temp_code
@@ -1619,36 +1641,71 @@ async fn upload_initial_files(
     Path(project_id): Path<ProjectId>,
     Json(req): Json<UploadInitialFilesRequest>,
 ) -> Result<Json<ApiResponse<String>>, StatusCode> {
+    info!("🔄 Upload initial files request received for project: {}", project_id);
+    
     // Extract user ID from JWT token (same pattern as other endpoints)
     let auth_header = headers.get("authorization")
         .and_then(|v| v.to_str().ok())
-        .ok_or(StatusCode::UNAUTHORIZED)?;
+        .ok_or_else(|| {
+            error!("❌ Missing or invalid authorization header");
+            StatusCode::UNAUTHORIZED
+        })?;
 
     if !auth_header.starts_with("Bearer ") {
+        error!("❌ Authorization header does not start with 'Bearer '");
         return Err(StatusCode::UNAUTHORIZED);
     }
 
     let token = auth_header.trim_start_matches("Bearer ");
     let claims = match state.auth.verify_token(token) {
-        Ok(claims) => claims,
-        Err(_) => return Err(StatusCode::UNAUTHORIZED),
+        Ok(claims) => {
+            info!("✅ Token verified for user: {}", claims.username);
+            claims
+        }
+        Err(e) => {
+            error!("❌ Token verification failed: {}", e);
+            return Err(StatusCode::UNAUTHORIZED);
+        }
     };
     
     let user_id = uuid::Uuid::parse_str(&claims.sub)
-        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+        .map_err(|e| {
+            error!("❌ Failed to parse user ID from token: {}", e);
+            StatusCode::UNAUTHORIZED
+        })?;
 
-    info!("Upload initial files request for project: {} by user: {}", project_id, user_id);
+    info!("✅ Upload initial files request for project: {} by user: {} ({})", project_id, user_id, claims.username);
 
     // Verify project exists and user has access
     let project = match state.db.get_project(project_id).await {
-        Ok(Some(project)) => project,
-        Ok(None) => return Err(StatusCode::NOT_FOUND),
-        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+        Ok(Some(project)) => {
+            info!("✅ Found project: {} ({})", project.name, project.id);
+            project
+        }
+        Ok(None) => {
+            error!("❌ Project not found: {}", project_id);
+            return Err(StatusCode::NOT_FOUND);
+        }
+        Err(e) => {
+            error!("❌ Database error getting project {}: {}", project_id, e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
     };
 
-    if !state.db.user_has_project_access(user_id, project_id).await.unwrap_or(false) {
+    let has_access = match state.db.user_has_project_access(user_id, project_id).await {
+        Ok(has_access) => has_access,
+        Err(e) => {
+            error!("❌ Database error checking project access: {}", e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    if !has_access {
+        error!("❌ User {} does not have access to project {}", user_id, project_id);
         return Err(StatusCode::FORBIDDEN);
     }
+
+    info!("✅ User {} has access to project {}", user_id, project_id);
 
     // Get or create the main rift for this project
     let rift = match state.db.get_user_rift(project_id, user_id).await {

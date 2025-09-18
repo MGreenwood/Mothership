@@ -252,6 +252,49 @@ pub enum SyncMessage {
         new_rift_id: Uuid,
         conflict_rift_name: String,
     },
+
+    // STREAMING: Large file support via chunked transfer
+    /// Initiate streaming transfer of a large file
+    StartFileStream {
+        stream_id: Uuid,
+        rift_id: RiftId,
+        path: PathBuf,
+        total_size: u64,
+        chunk_size: u32,
+        content_hash: String,
+        is_binary: bool,
+        timestamp: DateTime<Utc>,
+    },
+    
+    /// Send a chunk of file data during streaming
+    FileChunk {
+        stream_id: Uuid,
+        chunk_index: u32,
+        data: Vec<u8>,
+        is_compressed: bool,
+        chunk_hash: String,
+    },
+    
+    /// Complete streaming transfer
+    EndFileStream {
+        stream_id: Uuid,
+        final_hash: String,
+        success: bool,
+    },
+    
+    /// Control streaming operations
+    StreamControl {
+        stream_id: Uuid,
+        operation: StreamOperation,
+    },
+    
+    /// Report streaming errors
+    StreamError {
+        stream_id: Uuid,
+        error_code: StreamErrorCode,
+        message: String,
+        retry_chunk: Option<u32>,
+    },
 }
 
 /// PERFORMANCE FIX: Diff-based file change for minimal network usage
@@ -438,6 +481,54 @@ pub enum CRDTOperationType {
     CreateDirectory { name: String },
     DeleteDirectory { name: String },
     RenameEntry { old_name: String, new_name: String },
+}
+
+/// STREAMING: Stream control operations
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum StreamOperation {
+    Pause,
+    Resume,
+    Cancel,
+    RequestMissingChunk { chunk_index: u32 },
+}
+
+/// STREAMING: Error codes for streaming operations
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum StreamErrorCode {
+    ChunkCorrupted,
+    OutOfSequence,
+    StorageFull,
+    NetworkTimeout,
+    UnauthorizedStream,
+    StreamNotFound,
+    HashMismatch,
+    StreamLimitExceeded,
+}
+
+/// STREAMING: Stream state information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamInfo {
+    pub stream_id: Uuid,
+    pub rift_id: RiftId,
+    pub path: PathBuf,
+    pub total_size: u64,
+    pub chunk_size: u32,
+    pub total_chunks: u32,
+    pub chunks_received: u32,
+    pub status: StreamStatus,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// STREAMING: Stream status tracking
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum StreamStatus {
+    Initializing,
+    Streaming,
+    Paused,
+    Completed,
+    Failed,
+    Cancelled,
 }
 
 /// Represents the type of conflict detected by the server

@@ -492,62 +492,98 @@ async fn upload_initial_files(
     dir: &PathBuf,
     server_url: &str,
 ) -> Result<()> {
+    let client = get_http_client(config);
+    // Query the server for max upload size
+    let max_size_url = format!("{}/max-upload-size", server_url);
+    let max_size_resp = client.get(&max_size_url).send().await?;
+    if !max_size_resp.status().is_success() {
+        let error_text = max_size_resp.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+        return Err(anyhow!("Failed to get max upload size: {}", error_text));
+    }
+    let max_size_json: ApiResponse<u64> = max_size_resp.json().await?;
+    let max_size = max_size_json.data.unwrap_or(5 * 1024 * 1024); // fallback to 5MB
+
     let mut files = HashMap::new();
     let mut file_count = 0;
-    
+    let mut skipped_files = Vec::new();
     // Scan directory for files (excluding .mothership and common ignore patterns)
     for entry in WalkDir::new(dir)
         .follow_links(false)
         .into_iter()
-        .filter_entry(|e| !should_ignore_file(e.path())) 
+        .filter_entry(|e| !should_ignore_file(e.path()))
     {
         let entry = entry?;
         let path = entry.path();
-        
         if path.is_file() {
             if let Ok(relative_path) = path.strip_prefix(dir) {
-                match fs::read_to_string(path) {
-                    Ok(content) => {
-                        files.insert(relative_path.to_path_buf(), content);
-                        file_count += 1;
-                        print_info(&format!("Found: {}", relative_path.display()));
+                match fs::read(path) {
+                    Ok(content_bytes) => {
+                        if content_bytes.len() as u64 > max_size {
+                            skipped_files.push(relative_path.display().to_string());
+                            print_info(&format!("Skipped (too large): {} ({} bytes)", relative_path.display(), content_bytes.len()));
+                            continue;
+                        }
+                        match String::from_utf8(content_bytes) {
+                            Ok(content) => {
+                                files.insert(relative_path.to_path_buf(), content);
+                                file_count += 1;
+                                print_info(&format!("Found: {}", relative_path.display()));
+                            }
+                            Err(_) => {
+                                print_info(&format!("Skipped (binary): {}", relative_path.display()));
+                            }
+                        }
                     }
                     Err(_) => {
-                        // Skip binary files or files we can't read
-                        print_info(&format!("Skipped (binary): {}", relative_path.display()));
+                        print_info(&format!("Skipped (unreadable): {}", relative_path.display()));
                     }
                 }
             }
         }
     }
-    
+
     if files.is_empty() {
         print_info("No text files found to upload");
+        if !skipped_files.is_empty() {
+            print_info(&format!("{} files were skipped for exceeding the max upload size.", skipped_files.len()));
+        }
         return Ok(());
     }
-    
-    print_info(&format!("Uploading {} files to server...", file_count));
-    
-    // Send files to server
-    let upload_request = UploadInitialFilesRequest {
-        project_id: project.id,
-        files,
-    };
-    
-    let client = get_http_client(config);
+
+    print_info(&format!("Uploading {} files to server in batches...", file_count));
+
     let upload_url = format!("{}/projects/{}/files", server_url, project.id);
-    let response = client
-        .post(&upload_url)
-        .json(&upload_request)
-        .send()
-        .await?;
-    
-    if !response.status().is_success() {
-        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
-        return Err(anyhow!("Failed to upload initial files: {}", error_text));
+    let batch_size = 20;
+    let mut uploaded = 0;
+    let total = files.len();
+    let mut batch_num = 1;
+
+    let file_vec: Vec<_> = files.into_iter().collect();
+    for batch in file_vec.chunks(batch_size) {
+        let batch_map: HashMap<_, _> = batch.iter().cloned().collect();
+        let upload_request = UploadInitialFilesRequest {
+            project_id: project.id,
+            files: batch_map,
+        };
+        print_info(&format!("Uploading batch {} ({} files)...", batch_num, batch.len()));
+        let response = client
+            .post(&upload_url)
+            .json(&upload_request)
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            return Err(anyhow!("Failed to upload initial files (batch {}): {}", batch_num, error_text));
+        }
+        uploaded += batch.len();
+        print_success(&format!("Uploaded {}/{} files...", uploaded, total));
+        batch_num += 1;
     }
-    
-    print_success(&format!("Successfully uploaded {} files to server!", file_count));
+
+    print_success(&format!("Successfully uploaded {} files to server!", total));
+    if !skipped_files.is_empty() {
+        print_info(&format!("{} files were skipped for exceeding the max upload size.", skipped_files.len()));
+    }
     Ok(())
 }
 

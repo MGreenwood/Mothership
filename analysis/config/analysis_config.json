@@ -1,0 +1,65 @@
+{
+  "analysis_settings": {
+    "target_directory": "../",
+    "output_directory": "../reports",
+    "evidence_directory": "../evidence",
+    "log_directory": "../logs"
+  },
+  "code_analysis": {
+    "rust_source_patterns": [
+      "**/*.rs",
+      "**/Cargo.toml"
+    ],
+    "exclude_patterns": [
+      "**/target/**",
+      "**/node_modules/**",
+      "**/.git/**"
+    ],
+    "analysis_types": [
+      "syntax_check",
+      "todo_detection",
+      "unimplemented_detection",
+      "error_handling_analysis",
+      "dependency_analysis"
+    ]
+  },
+  "functional_testing": {
+    "test_categories": [
+      "websocket_realtime",
+      "daemon_functionality", 
+      "authentication_flow",
+      "database_operations",
+      "cli_commands"
+    ],
+    "timeout_seconds": 30,
+    "retry_attempts": 3
+  },
+  "integration_testing": {
+    "test_scripts": [
+      "../scripts/integration-test.ps1",
+      "../scripts/integration-test.sh"
+    ],
+    "docker_compose_file": "../docker-compose.yml",
+    "health_check_endpoints": [
+      "http://localhost:8080/health",
+      "http://localhost:3000/health"
+    ]
+  },
+  "evidence_collection": {
+    "confidence_thresholds": {
+      "high": 0.8,
+      "medium": 0.5,
+      "low": 0.2
+    },
+    "required_evidence_types": [
+      "code_analysis",
+      "functional_test"
+    ]
+  },
+  "reporting": {
+    "output_formats": ["markdown", "json", "html"],
+    "include_code_snippets": true,
+    "max_snippet_lines": 20,
+    "generate_executive_summary": true
+  }
+}

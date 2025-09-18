@@ -1073,7 +1073,7 @@ pub async fn auth_finalize(
 ) -> Result<Response, StatusCode> {
     let callback_url = query.get("callback_url")
         .map(|url| url.to_string())
-        .unwrap_or_else(|| "https://app.mothersh.io".to_string());
+        .unwrap_or_else(|| "https://app.mothershipproject.dev".to_string());
 
     let code = query.get("code")
         .ok_or_else(|| {

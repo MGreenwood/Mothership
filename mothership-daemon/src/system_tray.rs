@@ -1,13 +1,13 @@
 use anyhow::Result;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, mpsc};
 use tracing::{error, info, warn};
 use std::collections::HashMap;
 use uuid::Uuid;
 use std::ffi::CString;
 use std::ptr;
 
-use crate::daemon::{DaemonStatus, TrackedProject};
+use crate::daemon::{DaemonStatus, TrackedProject, DaemonCommand};
 
 #[cfg(windows)]
 use {
@@ -27,6 +27,7 @@ use {
 pub struct SystemTray {
     status: Arc<RwLock<DaemonStatus>>,
     tracked_projects: Arc<RwLock<HashMap<Uuid, TrackedProject>>>,
+    command_sender: mpsc::UnboundedSender<DaemonCommand>,
 }
 
 #[cfg(windows)]
@@ -92,10 +93,11 @@ impl SystemTray {
     /// Create a new system tray instance
     pub fn new(
         status: Arc<RwLock<DaemonStatus>>, 
-        tracked_projects: Arc<RwLock<HashMap<Uuid, TrackedProject>>>
+        tracked_projects: Arc<RwLock<HashMap<Uuid, TrackedProject>>>,
+        command_sender: mpsc::UnboundedSender<DaemonCommand>,
     ) -> Result<Self> {
         info!("🖥️ Initializing enhanced system tray...");
-        Ok(Self { status, tracked_projects })
+        Ok(Self { status, tracked_projects, command_sender })
     }
 
     /// Run the system tray (Windows only)
@@ -107,6 +109,7 @@ impl SystemTray {
             // Clone for thread-safe access
             let status = self.status.clone();
             let tracked_projects = self.tracked_projects.clone();
+            let command_sender = self.command_sender.clone();
             
             // Spawn the system tray in a dedicated std::thread
             let tray_handle = std::thread::spawn(move || {
@@ -125,8 +128,12 @@ impl SystemTray {
                     get_dynamic_tooltip(&initial_status)
                 };
                 
+                // Build initial context menu
+                let initial_menu = Self::build_context_menu(&status, &tracked_projects);
+                
                 let mut tray_builder = TrayIconBuilder::new()
-                    .with_tooltip(&initial_tooltip);
+                    .with_tooltip(&initial_tooltip)
+                    .with_menu(Box::new(initial_menu));
                 
                 // Try to use custom icon
                 if let Some(custom_icon) = load_tray_icon() {
@@ -143,9 +150,10 @@ impl SystemTray {
 
                 info!("✅ Enhanced system tray icon created successfully");
 
-                // Track last menu update time to avoid rebuilding too frequently
+                // Track last menu update time and project count to avoid rebuilding too frequently
                 let mut last_menu_update = std::time::Instant::now();
                 let mut last_tooltip_update = std::time::Instant::now();
+                let mut last_project_count = 0;
                 
                 // Run the event loop
                 let result = event_loop.run(move |_event, elwt| {
@@ -157,6 +165,19 @@ impl SystemTray {
                         let new_tooltip = get_dynamic_tooltip(&current_status);
                         let _ = tray_icon.set_tooltip(Some(&new_tooltip));
                         last_tooltip_update = std::time::Instant::now();
+                    }
+
+                    // Update menu only when projects change or after long intervals (1 minute)
+                    let current_project_count = tracked_projects.blocking_read().len();
+                    let should_update_menu = current_project_count != last_project_count 
+                        || last_menu_update.elapsed() > std::time::Duration::from_secs(60);
+                    
+                    if should_update_menu {
+                        let updated_menu = Self::build_context_menu(&status, &tracked_projects);
+                        let _ = tray_icon.set_menu(Some(Box::new(updated_menu)));
+                        last_menu_update = std::time::Instant::now();
+                        last_project_count = current_project_count;
+                        info!("🔄 System tray menu updated (projects: {})", current_project_count);
                     }
 
                     // Handle menu events
@@ -174,8 +195,8 @@ impl SystemTray {
                                     Projects Tracked: {}\n\
                                     Files Syncing: {}\n\
                                     Last Sync: {}",
-                                    if status.is_running { "✅ Yes" } else { "❌ No" },
-                                    if status.server_connected { "🟢 Connected" } else { "🔴 Disconnected" },
+                                    if status.is_running { "Yes" } else { "No" },
+                                    if status.server_connected { "Connected" } else { "Disconnected" },
                                     status.projects_tracked,
                                     status.files_syncing,
                                     status.last_sync
@@ -281,51 +302,67 @@ impl SystemTray {
                             }
                             "force_sync" => {
                                 info!("🔄 Force sync requested from system tray");
-                                // TODO: Implement force sync functionality
-                                let title = CString::new("Force Sync").unwrap();
-                                let message = CString::new("Force sync feature coming soon!\n\nFor now, file changes are automatically detected and synced.").unwrap();
                                 
-                                unsafe {
-                                    winapi::um::winuser::MessageBoxA(
-                                        ptr::null_mut(),
-                                        message.as_ptr(),
-                                        title.as_ptr(),
-                                        winapi::um::winuser::MB_OK | winapi::um::winuser::MB_ICONINFORMATION,
-                                    );
+                                // Send force sync command to daemon
+                                if let Err(e) = command_sender.send(DaemonCommand::ForceSync) {
+                                    error!("Failed to send force sync command: {}", e);
+                                    let title = CString::new("Force Sync Error").unwrap();
+                                    let message = CString::new("Failed to trigger force sync. Please check the daemon logs.").unwrap();
+                                    
+                                    unsafe {
+                                        winapi::um::winuser::MessageBoxA(
+                                            ptr::null_mut(),
+                                            message.as_ptr(),
+                                            title.as_ptr(),
+                                            winapi::um::winuser::MB_OK | winapi::um::winuser::MB_ICONERROR,
+                                        );
+                                    }
+                                } else {
+                                    let title = CString::new("Force Sync").unwrap();
+                                    let message = CString::new("Force sync initiated! All tracked projects are being synced.\n\nCheck the daemon logs for progress details.").unwrap();
+                                    
+                                    unsafe {
+                                        winapi::um::winuser::MessageBoxA(
+                                            ptr::null_mut(),
+                                            message.as_ptr(),
+                                            title.as_ptr(),
+                                            winapi::um::winuser::MB_OK | winapi::um::winuser::MB_ICONINFORMATION,
+                                        );
+                                    }
                                 }
                             }
                             "stop" => {
                                 info!("⏹️ Stop daemon requested from system tray");
-                                // Graceful exit through event loop
+                                // Send stop command to daemon
+                                let _ = command_sender.send(DaemonCommand::Stop);
+                                // Also exit the event loop
                                 elwt.exit();
                             }
                             "restart" => {
                                 info!("🔄 Restart daemon requested from system tray");
-                                // For restart, we'll exit and let the system handle restart
+                                // Send restart command to daemon
+                                let _ = command_sender.send(DaemonCommand::Restart);
+                                // Exit the event loop
                                 elwt.exit();
                             }
                             "exit" => {
                                 info!("❌ Exit daemon requested from system tray");
+                                // Send stop command and exit
+                                let _ = command_sender.send(DaemonCommand::Stop);
                                 elwt.exit();
                             }
                             _ => {}
                         }
                     }
 
-                    // Handle tray icon events (clicks)
+                    // Handle tray icon events (clicks) - but don't rebuild menu on every click
                     while let Ok(event) = TrayIconEvent::receiver().try_recv() {
                         match event {
                             TrayIconEvent::Click { .. } => {
-                                info!("🖱️ Tray icon clicked - rebuilding context menu");
-                                
-                                // Rebuild menu with current project list
-                                if last_menu_update.elapsed() > std::time::Duration::from_millis(500) {
-                                    let tray_menu = Self::build_context_menu(&status, &tracked_projects);
-                                    let _ = tray_icon.set_menu(Some(Box::new(tray_menu)));
-                                    last_menu_update = std::time::Instant::now();
-                                }
+                                info!("🖱️ Tray icon clicked");
+                                // Don't rebuild menu on click - let it display naturally
+                                // Menu is already set and will show on right-click
                             }
-                            // Note: DoubleClick variant doesn't exist in this version of tray-icon
                             _ => {}
                         }
                     }
@@ -369,11 +406,13 @@ impl SystemTray {
         let status_item = MenuItemBuilder::new()
             .text("📊 Show Status")
             .id("status".into())
+            .enabled(true)
             .build();
         
         let projects_item = MenuItemBuilder::new()
             .text("📁 Show Projects")
             .id("projects".into())
+            .enabled(true)
             .build();
         
         let _ = tray_menu.append(&status_item);
@@ -388,6 +427,7 @@ impl SystemTray {
                 let project_item = MenuItemBuilder::new()
                     .text(&format!("📁 {}", project.project_name))
                     .id(format!("open_project_{}", project.project_id).into())
+                    .enabled(true)
                     .build();
                 let _ = projects_submenu.append(&project_item);
             }
@@ -402,11 +442,13 @@ impl SystemTray {
         let force_sync_item = MenuItemBuilder::new()
             .text("🔄 Force Sync All")
             .id("force_sync".into())
+            .enabled(true)
             .build();
         
         let logs_item = MenuItemBuilder::new()
             .text("📜 Open Logs")
             .id("open_logs".into())
+            .enabled(true)
             .build();
         
         let _ = tray_menu.append(&force_sync_item);
@@ -417,18 +459,21 @@ impl SystemTray {
         
         // Control section
         let stop_item = MenuItemBuilder::new()
-            .text("⏹️ Stop Daemon")
+            .text("⏹️ Stop Tracking")
             .id("stop".into())
+            .enabled(true)
             .build();
         
         let restart_item = MenuItemBuilder::new()
             .text("🔄 Restart Daemon")
             .id("restart".into())
+            .enabled(true)
             .build();
         
         let exit_item = MenuItemBuilder::new()
             .text("❌ Exit")
             .id("exit".into())
+            .enabled(true)
             .build();
         
         let _ = tray_menu.append(&stop_item);

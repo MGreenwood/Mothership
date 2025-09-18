@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::fs;
 
 // Tokio imports
 use tokio::sync::{mpsc, RwLock, Mutex};
@@ -14,6 +15,8 @@ use tokio_tungstenite;
 use anyhow::{Result, anyhow};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
+use sha2::{Sha256, Digest};
+use flate2;
 
 // Internal imports
 use crate::file_watcher::{FileChangeEvent, FileWatcher};
@@ -26,8 +29,17 @@ use mothership_common::{
     FileDiff,
     ConflictRiftInfo,
     SyncMessage,
+    streaming::{StreamConfig, StreamProgress},
     transaction::TransactionManager,
 };
+
+/// Commands that can be sent to the daemon
+#[derive(Debug, Clone)]
+pub enum DaemonCommand {
+    ForceSync,
+    Restart,
+    Stop,
+}
 
 /// Information about a tracked project
 #[derive(Debug, Clone, serde::Serialize)]
@@ -71,6 +83,12 @@ pub struct MothershipDaemon {
     
     /// Maps project ID to server write flags (prevents file watcher loops)
     server_write_flags: Arc<RwLock<HashMap<Uuid, bool>>>,
+    
+    /// Channel for receiving daemon commands from system tray
+    command_receiver: mpsc::UnboundedReceiver<DaemonCommand>,
+    
+    /// Channel for sending daemon commands (cloned to system tray)
+    command_sender: mpsc::UnboundedSender<DaemonCommand>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -101,6 +119,7 @@ impl MothershipDaemon {
         
         // Create communication channels
         let (file_change_sender, file_change_receiver) = mpsc::unbounded_channel();
+        let (command_sender, command_receiver) = mpsc::unbounded_channel();
         
         // Initialize components
         let status = Arc::new(RwLock::new(DaemonStatus::default()));
@@ -121,7 +140,7 @@ impl MothershipDaemon {
         
         // Initialize system tray (Windows only)
         #[cfg(windows)]
-        let system_tray = Some(SystemTray::new(status.clone(), tracked_projects.clone())?);
+        let system_tray = Some(SystemTray::new(status.clone(), tracked_projects.clone(), command_sender.clone())?);
         #[cfg(not(windows))]
         let system_tray = None;
         
@@ -137,6 +156,8 @@ impl MothershipDaemon {
             outgoing_channels,
             transaction_manager: Arc::new(Mutex::new(TransactionManager::new(Uuid::new_v4()))),
             server_write_flags,
+            command_receiver,
+            command_sender,
         })
     }
     
@@ -161,8 +182,16 @@ impl MothershipDaemon {
             })
         };
         
-        // Get file change receiver (moved out of self since IPC server was moved)
+        // Get channels (moved out of self since IPC server was moved)
         let mut file_change_receiver = self.file_change_receiver;
+        let mut command_receiver = self.command_receiver;
+        
+        // Keep references to shared data
+        let tracked_projects = self.tracked_projects.clone();
+        let status = self.status.clone();
+        let outgoing_channels = self.outgoing_channels.clone();
+        let server_write_flags = self.server_write_flags.clone();
+        let websocket_listeners = self.websocket_listeners.clone();
         
         // Start system tray (Windows only)
         #[cfg(windows)]
@@ -178,14 +207,68 @@ impl MothershipDaemon {
         #[cfg(not(windows))]
         let tray_handle: Option<tokio::task::JoinHandle<()>> = None;
         
-        // Main event loop - process file change events
+        // Main event loop - process file change events and daemon commands
         info!("✅ Mothership Daemon is running!");
         info!("🔍 IPC server listening on http://localhost:7525");
         info!("⏳ Waiting for projects to be registered via CLI/GUI...");
         
-        while let Some(event) = file_change_receiver.recv().await {
-            if let Err(e) = Self::handle_file_change_static(event, &self.tracked_projects, &self.status, &self.outgoing_channels, &self.server_write_flags).await {
-                error!("Error handling file change: {}", e);
+        loop {
+            tokio::select! {
+                // Handle file change events
+                file_event = file_change_receiver.recv() => {
+                    match file_event {
+                        Some(event) => {
+                            if let Err(e) = Self::handle_file_change_static(event, &tracked_projects, &status, &outgoing_channels, &server_write_flags).await {
+                                error!("Error handling file change: {}", e);
+                            }
+                        }
+                        None => {
+                            info!("File change channel closed");
+                            break;
+                        }
+                    }
+                }
+                
+                // Handle daemon commands from system tray
+                command = command_receiver.recv() => {
+                    match command {
+                        Some(DaemonCommand::ForceSync) => {
+                            info!("🔄 Processing force sync command from system tray");
+                            match Self::force_sync_all_static(&tracked_projects, &status, &outgoing_channels).await {
+                                Ok(count) => {
+                                    info!("✅ Force sync completed: {} files synced", count);
+                                }
+                                Err(e) => {
+                                    error!("❌ Force sync failed: {}", e);
+                                }
+                            }
+                        }
+                        Some(DaemonCommand::Stop) => {
+                            info!("⏹️ Processing stop tracking command from system tray");
+                            // Stop tracking all projects but keep daemon running
+                            Self::stop_all_tracking_static(&tracked_projects, &websocket_listeners, &outgoing_channels).await;
+                            info!("✅ Stopped tracking all projects - daemon still running");
+                        }
+                        Some(DaemonCommand::Restart) => {
+                            info!("🔄 Processing restart command from system tray");
+                            // Implement self-restart by spawning a new instance
+                            match MothershipDaemon::restart_daemon().await {
+                                Ok(()) => {
+                                    info!("✅ New daemon instance started, shutting down current instance");
+                                    break;
+                                }
+                                Err(e) => {
+                                    error!("❌ Failed to restart daemon: {}", e);
+                                    // Continue running the current instance
+                                }
+                            }
+                        }
+                        None => {
+                            info!("Command channel closed");
+                            break;
+                        }
+                    }
+                }
             }
         }
         
@@ -194,13 +277,13 @@ impl MothershipDaemon {
         
         // Update status
         {
-            let mut status = self.status.write().await;
-            status.is_running = false;
+            let mut status_guard = status.write().await;
+            status_guard.is_running = false;
         }
         
         // Stop all persistent WebSocket connections
         {
-            let mut listeners = self.websocket_listeners.write().await;
+            let mut listeners = websocket_listeners.write().await;
             for (project_id, handle) in listeners.drain() {
                 handle.abort();
                 info!("✅ Stopped persistent WebSocket for project {}", project_id);
@@ -292,6 +375,11 @@ impl MothershipDaemon {
         tracked_projects: &Arc<RwLock<HashMap<Uuid, TrackedProject>>>,
         outgoing_channels: &Arc<RwLock<HashMap<Uuid, mpsc::UnboundedSender<SyncMessage>>>>,
     ) -> Result<()> {
+        // Check if file requires streaming (empty content indicates streaming file)
+        if event.content.is_empty() && event.file_size > 0 {
+            return Self::send_file_via_streaming(event, tracked_projects, outgoing_channels).await;
+        }
+        
         // Get project metadata to determine rift_id
         let rift_id = {
             let projects = tracked_projects.read().await;
@@ -334,6 +422,186 @@ impl MothershipDaemon {
         }
         
         Ok(())
+    }
+    
+    /// Handle large file streaming
+    async fn send_file_via_streaming(
+        event: &FileChangeEvent,
+        tracked_projects: &Arc<RwLock<HashMap<Uuid, TrackedProject>>>,
+        outgoing_channels: &Arc<RwLock<HashMap<Uuid, mpsc::UnboundedSender<SyncMessage>>>>,
+    ) -> Result<()> {
+        // Get project metadata to determine rift_id and construct full file path
+        let (rift_id, full_path) = {
+            let projects = tracked_projects.read().await;
+            let project = projects.get(&event.project_id)
+                .ok_or_else(|| anyhow::anyhow!("Project not found in tracked projects: {}", event.project_id))?;
+            
+            // Load project metadata to get rift_id
+            let metadata_file = project.project_path.join(".mothership").join("project.json");
+            let metadata_content = tokio::fs::read_to_string(&metadata_file).await
+                .map_err(|e| anyhow::anyhow!("Failed to read project metadata: {}", e))?;
+            
+            let metadata: ProjectMetadata = serde_json::from_str(&metadata_content)
+                .map_err(|e| anyhow::anyhow!("Failed to parse project metadata: {}", e))?;
+            
+            let rift_id = if let Some(rift_id_str) = &metadata.rift_id {
+                uuid::Uuid::parse_str(rift_id_str)
+                    .map_err(|e| anyhow::anyhow!("Invalid rift_id in metadata: {}", e))?
+            } else {
+                event.project_id // Fallback to project_id
+            };
+            
+            let full_path = project.project_path.join(&event.file_path);
+            (rift_id, full_path)
+        };
+        
+        info!("📡 Starting file stream for {} ({} bytes)", event.file_path.display(), event.file_size);
+        
+        // Generate unique stream ID
+        let stream_id = uuid::Uuid::new_v4();
+        
+        // Stream configuration - using reasonable defaults
+        let config = StreamConfig {
+            chunk_size: 64 * 1024, // 64KB chunks
+            max_concurrent_streams: 10,
+            streaming_threshold: 10 * 1024 * 1024,
+            compression_threshold: 1024,
+            timeout_seconds: 300, // 5 minutes
+            temp_dir: std::env::temp_dir(),
+            compression_enabled: true,
+            hash_verification: true,
+        };
+        
+        // Send stream start message
+        let start_message = SyncMessage::StartFileStream {
+            stream_id,
+            rift_id,
+            path: event.file_path.clone(),
+            total_size: event.file_size,
+            chunk_size: config.chunk_size,
+            content_hash: String::new(), // Will be calculated during streaming
+            is_binary: !event.file_path.to_string_lossy().ends_with(".txt"), // Simple heuristic
+            timestamp: event.timestamp,
+        };
+        
+        // Send start message
+        {
+            let channels = outgoing_channels.read().await;
+            let sender = channels.get(&event.project_id)
+                .ok_or_else(|| anyhow::anyhow!("No persistent WebSocket connection found for project {}", event.project_id))?;
+            
+            sender.send(start_message)
+                .map_err(|e| anyhow::anyhow!("Failed to send stream start message: {}", e))?;
+        }
+        
+        // Read and stream file in chunks
+        let result = Self::stream_file_chunks(
+            stream_id,
+            &full_path,
+            &config,
+            event.project_id,
+            outgoing_channels
+        ).await;
+        
+        // Send end message
+        let end_message = SyncMessage::EndFileStream {
+            stream_id,
+            final_hash: match result {
+                Ok(ref hash) => hash.clone(),
+                Err(_) => String::new(),
+            },
+            success: result.is_ok(),
+        };
+        
+        {
+            let channels = outgoing_channels.read().await;
+            if let Some(sender) = channels.get(&event.project_id) {
+                sender.send(end_message)
+                    .map_err(|e| anyhow::anyhow!("Failed to send stream end message: {}", e))?;
+            }
+        }
+        
+        match result {
+            Ok(_) => info!("✅ File stream completed for {}", event.file_path.display()),
+            Err(ref e) => error!("❌ File stream failed for {}: {}", event.file_path.display(), e),
+        }
+        
+        result.map(|_| ())
+    }
+    
+    /// Stream file in chunks
+    async fn stream_file_chunks(
+        stream_id: uuid::Uuid,
+        file_path: &std::path::Path,
+        config: &StreamConfig,
+        project_id: uuid::Uuid,
+        outgoing_channels: &Arc<RwLock<HashMap<Uuid, mpsc::UnboundedSender<SyncMessage>>>>,
+    ) -> Result<String> {
+        use std::io::{Read, Seek, SeekFrom};
+        
+        // Open file for reading
+        let mut file = std::fs::File::open(file_path)
+            .map_err(|e| anyhow::anyhow!("Failed to open file for streaming: {}", e))?;
+        
+        let mut hasher = sha2::Sha256::new();
+        let mut chunk_index = 0;
+        let mut buffer = vec![0u8; config.chunk_size as usize];
+        
+        loop {
+            // Read chunk from file
+            let bytes_read = file.read(&mut buffer)
+                .map_err(|e| anyhow::anyhow!("Failed to read chunk from file: {}", e))?;
+            
+            if bytes_read == 0 {
+                break; // End of file
+            }
+            
+            let chunk_data = &buffer[..bytes_read];
+            
+            // Update hash
+            use sha2::Digest;
+            hasher.update(chunk_data);
+            
+            // Compress chunk if enabled
+            let compressed_data = if config.compression_enabled {
+                // Simple compression - use deflate algorithm
+                use std::io::Write;
+                let mut encoder = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+                encoder.write_all(chunk_data).map_err(|e| anyhow::anyhow!("Compression failed: {}", e))?;
+                encoder.finish().map_err(|e| anyhow::anyhow!("Compression finish failed: {}", e))?
+            } else {
+                chunk_data.to_vec()
+            };
+            
+            // Create chunk message
+            let chunk_message = SyncMessage::FileChunk {
+                stream_id,
+                chunk_index,
+                data: compressed_data,
+                is_compressed: config.compression_enabled,
+                chunk_hash: format!("{:x}", sha2::Sha256::digest(chunk_data)), // Calculate chunk hash
+            };
+            
+            // Send chunk
+            {
+                let channels = outgoing_channels.read().await;
+                let sender = channels.get(&project_id)
+                    .ok_or_else(|| anyhow::anyhow!("WebSocket connection lost during streaming"))?;
+                
+                sender.send(chunk_message)
+                    .map_err(|e| anyhow::anyhow!("Failed to send chunk {}: {}", chunk_index, e))?;
+            }
+            
+            debug!("📦 Sent chunk {} ({} bytes, compressed: {})", 
+                chunk_index, bytes_read, config.compression_enabled);
+            
+            chunk_index += 1;
+        }
+        
+        // Calculate final hash
+        use sha2::Digest;
+        let hash = format!("{:x}", hasher.finalize());
+        Ok(hash)
     }
     
     /// Get current daemon status
@@ -485,6 +753,175 @@ impl MothershipDaemon {
     pub async fn is_project_tracked(&self, project_id: Uuid) -> bool {
         let projects = self.tracked_projects.read().await;
         projects.contains_key(&project_id)
+    }
+    
+    /// Force sync all tracked projects
+    pub async fn force_sync_all(&self) -> Result<usize> {
+        Self::force_sync_all_static(&self.tracked_projects, &self.status, &self.outgoing_channels).await
+    }
+    
+    /// Force sync all tracked projects (static version)
+    async fn force_sync_all_static(
+        tracked_projects: &Arc<RwLock<HashMap<Uuid, TrackedProject>>>,
+        status: &Arc<RwLock<DaemonStatus>>,
+        outgoing_channels: &Arc<RwLock<HashMap<Uuid, mpsc::UnboundedSender<SyncMessage>>>>,
+    ) -> Result<usize> {
+        info!("🔄 Force syncing all tracked projects...");
+        
+        let projects = tracked_projects.read().await.clone();
+        let mut sync_count = 0;
+        
+        for (project_id, project) in projects.iter() {
+            info!("🔄 Force syncing project: {} at {}", project.project_name, project.project_path.display());
+            
+            // Update sync status
+            {
+                let mut status_guard = status.write().await;
+                status_guard.files_syncing += 1;
+                status_guard.last_sync = Some(chrono::Utc::now());
+            }
+            
+            match Self::force_sync_project_static(project_id, project, tracked_projects, outgoing_channels).await {
+                Ok(file_count) => {
+                    info!("✅ Successfully synced {} files for project '{}'", file_count, project.project_name);
+                    sync_count += file_count;
+                }
+                Err(e) => {
+                    error!("❌ Failed to sync project '{}': {}", project.project_name, e);
+                }
+            }
+            
+            // Update sync status
+            {
+                let mut status_guard = status.write().await;
+                status_guard.files_syncing = status_guard.files_syncing.saturating_sub(1);
+            }
+        }
+        
+        info!("✅ Force sync completed: {} files synced across {} projects", sync_count, projects.len());
+        Ok(sync_count)
+    }
+    
+    /// Force sync a single project by scanning all its files
+    async fn force_sync_project(&self, project_id: &Uuid, project: &TrackedProject) -> Result<usize> {
+        Self::force_sync_project_static(project_id, project, &self.tracked_projects, &self.outgoing_channels).await
+    }
+    
+    /// Force sync a single project by scanning all its files (static version)
+    async fn force_sync_project_static(
+        project_id: &Uuid, 
+        project: &TrackedProject,
+        tracked_projects: &Arc<RwLock<HashMap<Uuid, TrackedProject>>>,
+        outgoing_channels: &Arc<RwLock<HashMap<Uuid, mpsc::UnboundedSender<SyncMessage>>>>,
+    ) -> Result<usize> {
+        let mut file_count = 0;
+        
+        // Walk through all files in the project directory
+        let mut entries = tokio::fs::read_dir(&project.project_path).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            
+            // Skip hidden directories and files (like .git, .mothership)
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if name.starts_with('.') {
+                    continue;
+                }
+            }
+            
+            if path.is_file() {
+                // Read file content
+                if let Ok(content) = tokio::fs::read_to_string(&path).await {
+                    // Create a synthetic file change event to trigger sync
+                    let relative_path = path.strip_prefix(&project.project_path)
+                        .unwrap_or(&path)
+                        .to_path_buf();
+                    
+                    let event = FileChangeEvent {
+                        project_id: *project_id,
+                        file_path: relative_path,
+                        change_type: crate::file_watcher::FileChangeType::Modified,
+                        content,
+                        file_size: entry.metadata().await.map(|m| m.len()).unwrap_or(0),
+                        timestamp: chrono::Utc::now(),
+                    };
+                    
+                    // Send the change via the existing sync mechanism
+                    if let Err(e) = Self::send_file_change_via_persistent_websocket(&event, tracked_projects, outgoing_channels).await {
+                        warn!("Failed to sync file {}: {}", path.display(), e);
+                    } else {
+                        file_count += 1;
+                    }
+                }
+            } else if path.is_dir() {
+                // Recursively sync subdirectories
+                match Self::force_sync_directory_static(&path, project_id, &project.project_path, tracked_projects, outgoing_channels).await {
+                    Ok(sub_count) => file_count += sub_count,
+                    Err(e) => warn!("Failed to sync directory {}: {}", path.display(), e),
+                }
+            }
+        }
+        
+        Ok(file_count)
+    }
+    
+    /// Recursively force sync a directory
+    async fn force_sync_directory(&self, dir_path: &std::path::Path, project_id: &Uuid, project_root: &std::path::Path) -> Result<usize> {
+        Self::force_sync_directory_static(dir_path, project_id, project_root, &self.tracked_projects, &self.outgoing_channels).await
+    }
+    
+    /// Recursively force sync a directory (static version with boxing to handle recursion)
+    fn force_sync_directory_static<'a>(
+        dir_path: &'a std::path::Path, 
+        project_id: &'a Uuid, 
+        project_root: &'a std::path::Path,
+        tracked_projects: &'a Arc<RwLock<HashMap<Uuid, TrackedProject>>>,
+        outgoing_channels: &'a Arc<RwLock<HashMap<Uuid, mpsc::UnboundedSender<SyncMessage>>>>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<usize>> + Send + 'a>> {
+        Box::pin(async move {
+            let mut file_count = 0;
+            
+            let mut entries = tokio::fs::read_dir(dir_path).await?;
+            while let Some(entry) = entries.next_entry().await? {
+                let path = entry.path();
+                
+                // Skip hidden directories and files
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if name.starts_with('.') {
+                        continue;
+                    }
+                }
+                
+                if path.is_file() {
+                    if let Ok(content) = tokio::fs::read_to_string(&path).await {
+                        let relative_path = path.strip_prefix(project_root)
+                            .unwrap_or(&path)
+                            .to_path_buf();
+                        
+                        let event = FileChangeEvent {
+                            project_id: *project_id,
+                            file_path: relative_path,
+                            change_type: crate::file_watcher::FileChangeType::Modified,
+                            content,
+                            file_size: entry.metadata().await.map(|m| m.len()).unwrap_or(0),
+                            timestamp: chrono::Utc::now(),
+                        };
+                        
+                        if let Err(e) = Self::send_file_change_via_persistent_websocket(&event, tracked_projects, outgoing_channels).await {
+                            warn!("Failed to sync file {}: {}", path.display(), e);
+                        } else {
+                            file_count += 1;
+                        }
+                    }
+                } else if path.is_dir() {
+                    match Self::force_sync_directory_static(&path, project_id, project_root, tracked_projects, outgoing_channels).await {
+                        Ok(sub_count) => file_count += sub_count,
+                        Err(e) => warn!("Failed to sync subdirectory {}: {}", path.display(), e),
+                    }
+                }
+            }
+            
+            Ok(file_count)
+        })
     }
     
     /// Check server connectivity by making a simple HTTP health check
@@ -1164,6 +1601,83 @@ impl MothershipDaemon {
         // This is a placeholder - in a real implementation, this would return
         // the sender for the active WebSocket connection
         None
+    }
+    
+    /// Stop tracking all projects but keep daemon running
+    pub async fn stop_all_tracking_static(
+        tracked_projects: &Arc<RwLock<HashMap<Uuid, TrackedProject>>>,
+        websocket_listeners: &Arc<RwLock<HashMap<Uuid, tokio::task::JoinHandle<()>>>>,
+        outgoing_channels: &Arc<RwLock<HashMap<Uuid, mpsc::UnboundedSender<SyncMessage>>>>,
+    ) {
+        info!("🛑 Stopping all project tracking...");
+        
+        // Clear tracked projects
+        let project_count = {
+            let mut projects = tracked_projects.write().await;
+            let count = projects.len();
+            projects.clear();
+            count
+        };
+        
+        // Stop all WebSocket listeners
+        {
+            let mut listeners = websocket_listeners.write().await;
+            for (project_id, handle) in listeners.drain() {
+                info!("🔌 Stopping WebSocket listener for project {}", project_id);
+                handle.abort();
+            }
+        }
+        
+        // Clear outgoing channels
+        {
+            let mut channels = outgoing_channels.write().await;
+            channels.clear();
+        }
+        
+        info!("✅ Stopped tracking {} projects", project_count);
+    }
+    
+    /// Stop tracking all projects but keep daemon running (instance method)
+    pub async fn stop_all_tracking(&self) {
+        Self::stop_all_tracking_static(&self.tracked_projects, &self.websocket_listeners, &self.outgoing_channels).await;
+    }
+    
+    /// Restart the daemon by spawning a new instance and exiting current one
+    pub async fn restart_daemon() -> Result<()> {
+        info!("🔄 Initiating daemon restart...");
+        
+        // Get current executable path
+        let current_exe = std::env::current_exe()
+            .map_err(|e| anyhow::anyhow!("Failed to get current executable path: {}", e))?;
+        
+        info!("🚀 Starting new daemon instance: {}", current_exe.display());
+        
+        // Spawn new daemon instance
+        let mut command = std::process::Command::new(&current_exe);
+        
+        // Start the new process detached from the current one
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x00000008); // DETACHED_PROCESS flag
+        }
+        
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0); // Create new process group
+        }
+        
+        let child = command
+            .spawn()
+            .map_err(|e| anyhow::anyhow!("Failed to spawn new daemon instance: {}", e))?;
+        
+        info!("✅ New daemon instance started with PID: {}", child.id());
+        
+        // Give the new instance time to start up
+        tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
+        
+        Ok(())
     }
 }
 

@@ -50,6 +50,9 @@ urlencoding = "2.1"
 # Cryptography for content hashing
 sha2 = "0.10"
 
+# Compression for streaming
+flate2 = "1.0"
+
 # Configuration
 toml = "0.8"
 

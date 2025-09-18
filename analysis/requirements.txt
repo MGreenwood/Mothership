@@ -1,0 +1,38 @@
+# Python dependencies for Mothership analysis tools
+
+# Core analysis libraries
+requests>=2.28.0
+websocket-client>=1.4.0
+psycopg2-binary>=2.9.0
+sqlalchemy>=1.4.0
+
+# Code analysis tools
+ast-tools>=0.1.0
+pygments>=2.13.0
+tree-sitter>=0.20.0
+
+# Testing frameworks
+pytest>=7.2.0
+pytest-asyncio>=0.20.0
+pytest-timeout>=2.1.0
+
+# Data processing
+pandas>=1.5.0
+numpy>=1.24.0
+jsonschema>=4.17.0
+
+# Report generation
+jinja2>=3.1.0
+markdown>=3.4.0
+beautifulsoup4>=4.11.0
+
+# Utilities
+python-dotenv>=0.21.0
+click>=8.1.0
+colorama>=0.4.6
+tqdm>=4.64.0
+
+# Development tools
+black>=22.10.0
+flake8>=5.0.0
+mypy>=0.991

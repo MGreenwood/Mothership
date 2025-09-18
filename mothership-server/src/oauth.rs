@@ -29,7 +29,7 @@ impl OAuthService {
 
         // Get OAuth base URL from environment or use default
         let oauth_base_url = std::env::var("OAUTH_BASE_URL")
-            .unwrap_or_else(|_| "https://app.mothersh.io".to_string());
+            .unwrap_or_else(|_| "https://api.mothershipproject.dev".to_string());
 
         // Configure Google OAuth
         let google_client_id = std::env::var("GOOGLE_CLIENT_ID");

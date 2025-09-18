@@ -4,12 +4,17 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
+use std::collections::VecDeque;
 use tokio::sync::mpsc as async_mpsc;
 use tracing::{error, info, warn, debug};
 use uuid::Uuid;
 
-/// Maximum file size to process (1MB limit)
-const MAX_FILE_SIZE: u64 = 1_048_576; // 1MB in bytes
+/// File size threshold for streaming (10MB) - files above this size use streaming
+const STREAMING_THRESHOLD: u64 = 10 * 1024 * 1024; // 10MB in bytes
+
+/// Legacy maximum file size for direct sync (1MB limit)
+/// Files above this but below streaming threshold will be skipped
+const MAX_DIRECT_SYNC_SIZE: u64 = 1_048_576; // 1MB in bytes
 
 /// Minimum debounce interval between file events (100ms)
 const DEBOUNCE_INTERVAL: Duration = Duration::from_millis(100);
@@ -35,12 +40,15 @@ pub enum FileChangeType {
 /// Debouncing state for file events
 struct FileDebouncer {
     last_event_time: HashMap<PathBuf, Instant>,
+    // Flood detection: track recent event times per file
+    recent_events: HashMap<PathBuf, VecDeque<Instant>>,
 }
 
 impl FileDebouncer {
     fn new() -> Self {
         Self {
             last_event_time: HashMap::new(),
+            recent_events: HashMap::new(),
         }
     }
 
@@ -59,6 +67,24 @@ impl FileDebouncer {
         true
     }
 
+    /// Flood detection: returns true if this file is being changed too frequently
+    fn is_flooding(&mut self, path: &PathBuf) -> bool {
+        const WINDOW: Duration = Duration::from_secs(5);
+        const MAX_EVENTS: usize = 8; // e.g. 8 changes in 5 seconds is suspicious
+        let now = Instant::now();
+        let events = self.recent_events.entry(path.clone()).or_insert_with(VecDeque::new);
+        events.push_back(now);
+        // Remove events outside the window
+        while let Some(&front) = events.front() {
+            if now.duration_since(front) > WINDOW {
+                events.pop_front();
+            } else {
+                break;
+            }
+        }
+        events.len() > MAX_EVENTS
+    }
+
     /// Clean up old entries to prevent memory leak
     fn cleanup_old_entries(&mut self) {
         let now = Instant::now();
@@ -66,6 +92,18 @@ impl FileDebouncer {
         
         self.last_event_time.retain(|_, &mut last_time| {
             now.duration_since(last_time) < cutoff
+        });
+
+        // Also clean up recent_events
+        self.recent_events.retain(|_, events| {
+            while let Some(&front) = events.front() {
+                if now.duration_since(front) > cutoff {
+                    events.pop_front();
+                } else {
+                    break;
+                }
+            }
+            !events.is_empty()
         });
     }
 }
@@ -218,8 +256,15 @@ fn handle_file_event(
             continue;
         }
         
+
         // PERFORMANCE FIX: Apply debouncing
         if !debouncer.should_process_event(&relative_path) {
+            continue;
+        }
+
+        // DYNAMIC FLOOD DETECTION: Suppress if file is being changed too frequently
+        if debouncer.is_flooding(&relative_path) {
+            warn!("🚨 Suppressing file event flood for {} (too many changes in short time)", relative_path.display());
             continue;
         }
         
@@ -232,14 +277,33 @@ fn handle_file_event(
             }
         };
         
-        // PERFORMANCE FIX: Skip files larger than 1MB
-        if file_size > MAX_FILE_SIZE {
-            debug!("⚠️ Skipping large file {} ({} bytes > {} bytes limit)", 
-                path.display(), file_size, MAX_FILE_SIZE);
+        // Check file size and determine sync strategy
+        if file_size > STREAMING_THRESHOLD {
+            debug!("📡 File {} ({} bytes) exceeds streaming threshold, will use streaming", 
+                path.display(), file_size);
+            
+            // For now, create event without content - streaming will be handled in daemon
+            let change_event = FileChangeEvent {
+                project_id,
+                file_path: relative_path.clone(),
+                content: String::new(), // Empty content for streaming files
+                file_size,
+                timestamp: chrono::Utc::now(),
+                change_type: convert_event_kind_to_change_type(event.kind),
+            };
+            
+            // Send event to be handled by streaming logic
+            if let Err(e) = change_sender.send(change_event) {
+                error!("Failed to send file change event: {}", e);
+            }
+            continue;
+        } else if file_size > MAX_DIRECT_SYNC_SIZE {
+            debug!("⚠️ Skipping file {} ({} bytes > {} bytes direct sync limit, < {} bytes streaming threshold)", 
+                path.display(), file_size, MAX_DIRECT_SYNC_SIZE, STREAMING_THRESHOLD);
             continue;
         }
         
-        // Read file content for sync (CRITICAL: Restored for data safety)
+        // Read file content for direct sync (files <= MAX_DIRECT_SYNC_SIZE)
         let content = match std::fs::read_to_string(path) {
             Ok(content) => content,
             Err(e) => {
@@ -273,7 +337,7 @@ fn should_ignore_file(path_str: &str) -> bool {
     // Common patterns to ignore
     let ignore_patterns = [
         "target/", "node_modules/", ".git/", "dist/", "build/", 
-        ".mothership/", ".vscode/", ".idea/", "__pycache__/",
+        ".mothership/", ".vscode/", ".idea/", ".venv/", "__pycache__/",
         ".lock", "~", ".tmp", ".temp", ".log", ".cache",
         ".DS_Store", "Thumbs.db", "desktop.ini",
     ];
@@ -293,4 +357,14 @@ fn should_ignore_file(path_str: &str) -> bool {
     }
     
     false
+}
+
+/// Convert notify EventKind to our FileChangeType
+fn convert_event_kind_to_change_type(kind: EventKind) -> FileChangeType {
+    match kind {
+        EventKind::Create(_) => FileChangeType::Created,
+        EventKind::Modify(_) => FileChangeType::Modified,
+        EventKind::Remove(_) => FileChangeType::Deleted,
+        _ => FileChangeType::Modified, // Default fallback
+    }
 } 

@@ -1,0 +1,88 @@
+{
+  "execution_time": 0.9231922626495361,
+  "start_time": "2025-08-15T19:20:29.569887",
+  "end_time": "2025-08-15T19:20:30.493110",
+  "exit_code": 1,
+  "stdout": "\n==== Checking prerequisites ====\n[+] All prerequisites found\n\n==== Testing server connection ====\n[-] Server is not running at https://api.mothershipproject.dev\n",
+  "stderr": "",
+  "test_steps": [
+    "Checking prerequisites",
+    "Testing server connection"
+  ],
+  "passed_tests": [
+    "All prerequisites found"
+  ],
+  "failed_tests": [
+    "Server is not running at https://api.mothershipproject.dev"
+  ],
+  "features_tested": [],
+  "analysis": {
+    "advertised_features": {
+      "real_time_collaboration": {
+        "name": "Real-time Collaboration",
+        "claims": [
+          "millisecond synchronization",
+          "collaborative editing",
+          "conflict resolution"
+        ],
+        "tested": false
+      },
+      "background_daemon": {
+        "name": "Background Daemon",
+        "claims": [
+          "automatic file watching",
+          "background sync",
+          "daemon lifecycle"
+        ],
+        "tested": false
+      },
+      "oauth_authentication": {
+        "name": "OAuth Authentication",
+        "claims": [
+          "Google/GitHub integration",
+          "JWT tokens",
+          "session persistence"
+        ],
+        "tested": false
+      },
+      "database_persistence": {
+        "name": "Database Persistence",
+        "claims": [
+          "PostgreSQL integration",
+          "data persistence",
+          "CRUD operations"
+        ],
+        "tested": false
+      },
+      "cli_interface": {
+        "name": "CLI Interface",
+        "claims": [
+          "command functionality",
+          "error handling",
+          "server integration"
+        ],
+        "tested": false
+      },
+      "docker_deployment": {
+        "name": "Docker Deployment",
+        "claims": [
+          "containerization",
+          "service orchestration",
+          "health checks"
+        ],
+        "tested": false
+      }
+    },
+    "total_advertised_features": 6,
+    "features_actually_tested": 0,
+    "coverage_percentage": 0.0,
+    "missing_tests": [
+      "Real-time Collaboration",
+      "Background Daemon",
+      "OAuth Authentication",
+      "Database Persistence",
+      "CLI Interface",
+      "Docker Deployment"
+    ]
+  }
+}

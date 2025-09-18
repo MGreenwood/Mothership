@@ -1,0 +1,32 @@
+{
+  "connection": {
+    "success": false,
+    "error": "server rejected WebSocket connection: HTTP 404"
+  },
+  "latency": {
+    "success": false,
+    "error": "Connection failed"
+  },
+  "simultaneous": {
+    "success": false,
+    "successful_connections": 0,
+    "total_attempted": 3,
+    "results": [
+      {
+        "client_id": 0,
+        "success": false,
+        "error": "server rejected WebSocket connection: HTTP 404"
+      },
+      {
+        "client_id": 1,
+        "success": false,
+        "error": "server rejected WebSocket connection: HTTP 404"
+      },
+      {
+        "client_id": 2,
+        "success": false,
+        "error": "server rejected WebSocket connection: HTTP 404"
+      }
+    ]
+  }
+}

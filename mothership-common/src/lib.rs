@@ -7,12 +7,14 @@ pub mod auth;
 pub mod crdt;
 pub mod diff;
 pub mod protocol;
+pub mod streaming;
 pub mod transaction;
 
 pub use auth::*;
 pub use crdt::*;
 pub use diff::*;
 pub use protocol::*;
+pub use streaming::*;
 pub use transaction::{Transaction, TransactionStatus};
 
 // Re-export commonly used types

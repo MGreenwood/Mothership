@@ -22,6 +22,9 @@ pub struct ServerConfig {
     
     /// CLI distribution settings
     pub cli_distribution: CliDistributionSettings,
+    
+    /// File streaming settings
+    pub streaming: StreamingSettings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,17 +113,41 @@ pub struct CollaborationSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CliDistributionSettings {
-    /// Directory containing CLI binaries (relative to server)
+    /// Path to CLI binaries directory
     pub binaries_path: String,
     
-    /// Require authentication for binary downloads
+    /// Whether to require authentication for downloads
     pub require_auth_for_downloads: bool,
     
-    /// Maximum download rate per user (downloads per hour)
-    pub max_downloads_per_hour: u32,
+    /// Maximum downloads per hour per IP
+    pub max_downloads_per_hour: u64,
     
-    /// Enable download statistics/analytics
+    /// Whether to track download statistics
     pub track_downloads: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamingSettings {
+    /// Whether file streaming is enabled
+    pub enabled: bool,
+    
+    /// File size threshold for streaming (in bytes)
+    pub threshold: u64,
+    
+    /// Chunk size for streaming (in bytes)
+    pub chunk_size: usize,
+    
+    /// Maximum concurrent streams
+    pub max_concurrent_streams: usize,
+    
+    /// Stream timeout in seconds
+    pub timeout_seconds: u64,
+    
+    /// Whether to enable compression
+    pub enable_compression: bool,
+    
+    /// Compression level (0-9)
+    pub compression_level: u32,
 }
 
 /// User whitelist loaded from whitelist file
@@ -176,6 +203,15 @@ impl Default for ServerConfig {
                 require_auth_for_downloads: true,
                 max_downloads_per_hour: 100,
                 track_downloads: true,
+            },
+            streaming: StreamingSettings {
+                enabled: true,
+                threshold: 10 * 1024 * 1024, // 10MB
+                chunk_size: 64 * 1024, // 64KB
+                max_concurrent_streams: 10,
+                timeout_seconds: 300, // 5 minutes
+                enable_compression: true,
+                compression_level: 6,
             },
         }
     }
