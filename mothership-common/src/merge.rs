@@ -198,13 +198,11 @@ fn lines_of(content: Option<&str>) -> Vec<&str> {
     }
 }
 
-/// Two ranges overlap if they share a base line. Two insertions at the same
-/// point also overlap. An insertion at the edge of a range does not.
+/// Matches Git: ranges conflict if they share a base line or touch at an edge.
+/// Two insertions at the same point conflict. Edits separated by at least one
+/// untouched base line do not.
 fn ranges_overlap(a: (usize, usize), b: (usize, usize)) -> bool {
-    if a.0 == a.1 && b.0 == b.1 {
-        return a.0 == b.0;
-    }
-    a.0 < b.1 && b.0 < a.1
+    a.0 <= b.1 && b.0 <= a.1
 }
 
 fn diff_lines(base: &[&str], side: &[&str]) -> Vec<Hunk> {
@@ -386,11 +384,18 @@ mod tests {
     }
 
     #[test]
-    fn adjacent_line_edits_do_not_conflict() {
+    fn adjacent_line_edits_conflict_like_git() {
         let base = "1\n2\n3\n4";
         let merged = merge(base, &["1\nX\n3\n4", "1\n2\nY\n4"]);
+        assert_eq!(conflict_count(&merged), 1);
+    }
+
+    #[test]
+    fn edits_separated_by_one_untouched_line_do_not_conflict() {
+        let base = "1\n2\n3\n4\n5";
+        let merged = merge(base, &["X\n2\n3\n4\n5", "1\n2\n3\nY\n5"]);
         assert_eq!(conflict_count(&merged), 0);
-        assert_eq!(clean_text(&merged), "1\nX\nY\n4");
+        assert_eq!(clean_text(&merged), "X\n2\n3\nY\n5");
     }
 
     #[test]
