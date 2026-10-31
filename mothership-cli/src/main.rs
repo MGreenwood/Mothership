@@ -18,6 +18,7 @@ mod connections;
 mod gateway;
 mod sync;
 mod update;
+mod wormhole;
 
 use crate::config::ConfigManager;
 
@@ -119,6 +120,11 @@ enum Commands {
     Rift {
         #[command(subcommand)]
         action: RiftAction,
+    },
+    /// Wormhole operations (live merge previews across rifts)
+    Wormhole {
+        #[command(subcommand)]
+        action: wormhole::WormholeAction,
     },
 }
 
@@ -490,6 +496,9 @@ async fn main() -> Result<()> {
                     }
                 },
             }
+        }
+        Commands::Wormhole { action } => {
+            wormhole::run(action).await?;
         }
     }
 
