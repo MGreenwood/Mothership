@@ -117,3 +117,6 @@ Temporary Items
 .apdisk 
 
 .mothership/
+# Built binaries and release archives (kept on disk, not tracked)
+cli-binaries/
+mothership-common.zip
