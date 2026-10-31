@@ -369,6 +369,11 @@ pub async fn handle_websocket(socket: WebSocket, state: SyncState, rift_id: Stri
                     }
                     Err(e) => {
                         error!("Error handling sync message: {}", e);
+                        // Tell the sender its change was rejected so it can resync
+                        let _ = state.broadcaster.send((connection_channel.clone(), SyncMessage::Error {
+                            message: format!("Change rejected by server: {}", e),
+                            error_code: Some("CHANGE_REJECTED".to_string()),
+                        }));
                         consecutive_errors += 1;
                         if consecutive_errors >= 3 {
                             error!("Too many consecutive message handling errors, closing connection");
