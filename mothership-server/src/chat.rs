@@ -182,9 +182,56 @@ mod tests {
 
     #[test]
     fn length_counts_characters_not_bytes() {
-        // Five multi-byte characters: 15 bytes, but within a 5-character limit
+        // "héllo" is 5 characters but 6 bytes, so it fits a 5-character limit
         assert!(validate_content(&settings(5), "héllo").is_ok());
         assert!(validate_content(&settings(5), "日本語テキスト").is_err());
+    }
+}
+
+/// Needs a Postgres instance: set TEST_DATABASE_URL and run with `cargo test -- --ignored`
+#[cfg(test)]
+mod db_tests {
+    use crate::database::Database;
+    use mothership_common::RiftId;
+    use uuid::Uuid;
+
+    async fn test_db() -> Database {
+        let url = std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL must be set");
+        let db = Database::new(&url).await.expect("connect to test database");
+        db.ensure_schema().await.expect("create schema");
+        db
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn stores_lists_oldest_first_and_prunes_to_newest() {
+        let db = test_db().await;
+        let rift_id: RiftId = Uuid::new_v4();
+        let author = Uuid::new_v4();
+
+        for i in 0..5 {
+            db.insert_chat_message(rift_id, author, "alice", &format!("msg {}", i))
+                .await
+                .unwrap();
+        }
+
+        // Limit returns the newest N, but in chronological order
+        let recent = db.list_chat_messages(rift_id, 3).await.unwrap();
+        let contents: Vec<&str> = recent.iter().map(|m| m.content.as_str()).collect();
+        assert_eq!(contents, vec!["msg 2", "msg 3", "msg 4"]);
+        assert!(recent.iter().all(|m| m.rift_id == rift_id && m.author_username == "alice"));
+
+        // Pruning keeps only the newest two and leaves other rifts alone
+        let other_rift: RiftId = Uuid::new_v4();
+        db.insert_chat_message(other_rift, author, "bob", "elsewhere").await.unwrap();
+        db.prune_chat_messages(rift_id, 2).await.unwrap();
+
+        let kept = db.list_chat_messages(rift_id, 100).await.unwrap();
+        let kept: Vec<&str> = kept.iter().map(|m| m.content.as_str()).collect();
+        assert_eq!(kept, vec!["msg 3", "msg 4"]);
+
+        let other = db.list_chat_messages(other_rift, 100).await.unwrap();
+        assert_eq!(other.len(), 1);
     }
 }
 
