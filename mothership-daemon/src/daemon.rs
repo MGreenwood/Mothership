@@ -29,6 +29,7 @@ use mothership_common::{
     FileDiff,
     ConflictRiftInfo,
     SyncMessage,
+    content_hash,
     streaming::{StreamConfig, StreamProgress},
     transaction::TransactionManager,
 };
@@ -49,6 +50,9 @@ pub struct TrackedProject {
     pub project_path: PathBuf,
     pub added_at: chrono::DateTime<chrono::Utc>,
 }
+
+/// Last-synced content hash per (project ID, relative file path)
+pub type BaseHashes = Arc<RwLock<HashMap<(Uuid, String), String>>>;
 
 /// The main Mothership daemon that coordinates all background services
 pub struct MothershipDaemon {
@@ -83,6 +87,10 @@ pub struct MothershipDaemon {
     
     /// Maps project ID to server write flags (prevents file watcher loops)
     server_write_flags: Arc<RwLock<HashMap<Uuid, bool>>>,
+
+    /// Content hash of each file as last synced with the server, keyed by (project, relative path).
+    /// Sent as `base_hash` so the server can detect edits made against a stale base.
+    base_hashes: BaseHashes,
     
     /// Channel for receiving daemon commands from system tray
     command_receiver: mpsc::UnboundedReceiver<DaemonCommand>,
@@ -128,6 +136,8 @@ impl MothershipDaemon {
         let outgoing_channels = Arc::new(RwLock::new(HashMap::new()));
         let server_write_flags = Arc::new(RwLock::new(HashMap::new()));
         
+        let base_hashes: BaseHashes = Arc::new(RwLock::new(HashMap::new()));
+
         // Create IPC server with access to daemon methods
         let ipc_server = IpcServer::new(
             status.clone(),
@@ -136,6 +146,7 @@ impl MothershipDaemon {
             websocket_listeners.clone(),
             outgoing_channels.clone(),
             server_write_flags.clone(),
+            base_hashes.clone(),
         ).await?;
         
         // Initialize system tray (Windows only)
@@ -156,6 +167,7 @@ impl MothershipDaemon {
             outgoing_channels,
             transaction_manager: Arc::new(Mutex::new(TransactionManager::new(Uuid::new_v4()))),
             server_write_flags,
+            base_hashes,
             command_receiver,
             command_sender,
         })
@@ -191,6 +203,7 @@ impl MothershipDaemon {
         let status = self.status.clone();
         let outgoing_channels = self.outgoing_channels.clone();
         let server_write_flags = self.server_write_flags.clone();
+        let base_hashes = self.base_hashes.clone();
         let websocket_listeners = self.websocket_listeners.clone();
         
         // Start system tray (Windows only)
@@ -218,7 +231,7 @@ impl MothershipDaemon {
                 file_event = file_change_receiver.recv() => {
                     match file_event {
                         Some(event) => {
-                            if let Err(e) = Self::handle_file_change_static(event, &tracked_projects, &status, &outgoing_channels, &server_write_flags).await {
+                            if let Err(e) = Self::handle_file_change_static(event, &tracked_projects, &status, &outgoing_channels, &server_write_flags, &base_hashes).await {
                                 error!("Error handling file change: {}", e);
                             }
                         }
@@ -234,7 +247,7 @@ impl MothershipDaemon {
                     match command {
                         Some(DaemonCommand::ForceSync) => {
                             info!("🔄 Processing force sync command from system tray");
-                            match Self::force_sync_all_static(&tracked_projects, &status, &outgoing_channels).await {
+                            match Self::force_sync_all_static(&tracked_projects, &status, &outgoing_channels, &base_hashes).await {
                                 Ok(count) => {
                                     info!("✅ Force sync completed: {} files synced", count);
                                 }
@@ -315,8 +328,8 @@ impl MothershipDaemon {
         status: &Arc<RwLock<DaemonStatus>>,
         outgoing_channels: &Arc<RwLock<HashMap<Uuid, mpsc::UnboundedSender<SyncMessage>>>>,
         server_write_flags: &Arc<RwLock<HashMap<Uuid, bool>>>,
+        base_hashes: &BaseHashes,
     ) -> Result<()> {
-        // Check if server is currently writing files (prevents infinite loops)
         {
             let flags = server_write_flags.read().await;
             if flags.get(&event.project_id).copied().unwrap_or(false) {
@@ -345,7 +358,7 @@ impl MothershipDaemon {
         }
         
         // PERSISTENT WEBSOCKET: Send file change via persistent connection
-        let sync_result = Self::send_file_change_via_persistent_websocket(&event, tracked_projects, outgoing_channels).await;
+        let sync_result = Self::send_file_change_via_persistent_websocket(&event, tracked_projects, outgoing_channels, base_hashes).await;
         match sync_result {
             Ok(()) => {
                 info!("✅ Successfully queued file change for persistent WebSocket");
@@ -366,7 +379,7 @@ impl MothershipDaemon {
 
     /// Handle a file change event
     async fn handle_file_change(&self, event: FileChangeEvent) -> Result<()> {
-        Self::handle_file_change_static(event, &self.tracked_projects, &self.status, &self.outgoing_channels, &self.server_write_flags).await
+        Self::handle_file_change_static(event, &self.tracked_projects, &self.status, &self.outgoing_channels, &self.server_write_flags, &self.base_hashes).await
     }
     
     /// Send file change via persistent WebSocket connection
@@ -374,6 +387,7 @@ impl MothershipDaemon {
         event: &FileChangeEvent,
         tracked_projects: &Arc<RwLock<HashMap<Uuid, TrackedProject>>>,
         outgoing_channels: &Arc<RwLock<HashMap<Uuid, mpsc::UnboundedSender<SyncMessage>>>>,
+        base_hashes: &BaseHashes,
     ) -> Result<()> {
         // Check if file requires streaming (empty content indicates streaming file)
         if event.content.is_empty() && event.file_size > 0 {
@@ -402,12 +416,17 @@ impl MothershipDaemon {
             }
         };
         
+        // Base is the content this client last synced for the path; the server rejects edits made against a stale base
+        let base_key = (event.project_id, event.file_path.to_string_lossy().to_string());
+        let base_hash = base_hashes.read().await.get(&base_key).cloned();
+
         // Create sync message
         let sync_message = SyncMessage::FileChanged {
             rift_id,
             path: event.file_path.clone(),
             content: event.content.clone(),
             timestamp: event.timestamp,
+            base_hash,
         };
         
         // Send via persistent WebSocket channel
@@ -420,6 +439,9 @@ impl MothershipDaemon {
                 return Err(anyhow::anyhow!("No persistent WebSocket connection found for project {}", event.project_id));
             }
         }
+
+        // The local file now matches what we just sent, so it becomes the new base
+        base_hashes.write().await.insert(base_key, content_hash(&event.content));
         
         Ok(())
     }
@@ -685,6 +707,7 @@ impl MothershipDaemon {
             self.websocket_listeners.clone(),
             self.outgoing_channels.clone(),
             self.server_write_flags.clone(),
+            self.base_hashes.clone(),
         ).await {
             error!("Failed to start persistent WebSocket for project '{}': {}", project_name, e);
             // Don't fail the entire operation if WebSocket fails
@@ -757,7 +780,7 @@ impl MothershipDaemon {
     
     /// Force sync all tracked projects
     pub async fn force_sync_all(&self) -> Result<usize> {
-        Self::force_sync_all_static(&self.tracked_projects, &self.status, &self.outgoing_channels).await
+        Self::force_sync_all_static(&self.tracked_projects, &self.status, &self.outgoing_channels, &self.base_hashes).await
     }
     
     /// Force sync all tracked projects (static version)
@@ -765,6 +788,7 @@ impl MothershipDaemon {
         tracked_projects: &Arc<RwLock<HashMap<Uuid, TrackedProject>>>,
         status: &Arc<RwLock<DaemonStatus>>,
         outgoing_channels: &Arc<RwLock<HashMap<Uuid, mpsc::UnboundedSender<SyncMessage>>>>,
+        base_hashes: &BaseHashes,
     ) -> Result<usize> {
         info!("🔄 Force syncing all tracked projects...");
         
@@ -781,7 +805,7 @@ impl MothershipDaemon {
                 status_guard.last_sync = Some(chrono::Utc::now());
             }
             
-            match Self::force_sync_project_static(project_id, project, tracked_projects, outgoing_channels).await {
+            match Self::force_sync_project_static(project_id, project, tracked_projects, outgoing_channels, base_hashes).await {
                 Ok(file_count) => {
                     info!("✅ Successfully synced {} files for project '{}'", file_count, project.project_name);
                     sync_count += file_count;
@@ -804,7 +828,7 @@ impl MothershipDaemon {
     
     /// Force sync a single project by scanning all its files
     async fn force_sync_project(&self, project_id: &Uuid, project: &TrackedProject) -> Result<usize> {
-        Self::force_sync_project_static(project_id, project, &self.tracked_projects, &self.outgoing_channels).await
+        Self::force_sync_project_static(project_id, project, &self.tracked_projects, &self.outgoing_channels, &self.base_hashes).await
     }
     
     /// Force sync a single project by scanning all its files (static version)
@@ -813,6 +837,7 @@ impl MothershipDaemon {
         project: &TrackedProject,
         tracked_projects: &Arc<RwLock<HashMap<Uuid, TrackedProject>>>,
         outgoing_channels: &Arc<RwLock<HashMap<Uuid, mpsc::UnboundedSender<SyncMessage>>>>,
+        base_hashes: &BaseHashes,
     ) -> Result<usize> {
         let mut file_count = 0;
         
@@ -846,7 +871,7 @@ impl MothershipDaemon {
                     };
                     
                     // Send the change via the existing sync mechanism
-                    if let Err(e) = Self::send_file_change_via_persistent_websocket(&event, tracked_projects, outgoing_channels).await {
+                    if let Err(e) = Self::send_file_change_via_persistent_websocket(&event, tracked_projects, outgoing_channels, base_hashes).await {
                         warn!("Failed to sync file {}: {}", path.display(), e);
                     } else {
                         file_count += 1;
@@ -854,7 +879,7 @@ impl MothershipDaemon {
                 }
             } else if path.is_dir() {
                 // Recursively sync subdirectories
-                match Self::force_sync_directory_static(&path, project_id, &project.project_path, tracked_projects, outgoing_channels).await {
+                match Self::force_sync_directory_static(&path, project_id, &project.project_path, tracked_projects, outgoing_channels, base_hashes).await {
                     Ok(sub_count) => file_count += sub_count,
                     Err(e) => warn!("Failed to sync directory {}: {}", path.display(), e),
                 }
@@ -866,7 +891,7 @@ impl MothershipDaemon {
     
     /// Recursively force sync a directory
     async fn force_sync_directory(&self, dir_path: &std::path::Path, project_id: &Uuid, project_root: &std::path::Path) -> Result<usize> {
-        Self::force_sync_directory_static(dir_path, project_id, project_root, &self.tracked_projects, &self.outgoing_channels).await
+        Self::force_sync_directory_static(dir_path, project_id, project_root, &self.tracked_projects, &self.outgoing_channels, &self.base_hashes).await
     }
     
     /// Recursively force sync a directory (static version with boxing to handle recursion)
@@ -876,6 +901,7 @@ impl MothershipDaemon {
         project_root: &'a std::path::Path,
         tracked_projects: &'a Arc<RwLock<HashMap<Uuid, TrackedProject>>>,
         outgoing_channels: &'a Arc<RwLock<HashMap<Uuid, mpsc::UnboundedSender<SyncMessage>>>>,
+        base_hashes: &'a BaseHashes,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<usize>> + Send + 'a>> {
         Box::pin(async move {
             let mut file_count = 0;
@@ -906,14 +932,14 @@ impl MothershipDaemon {
                             timestamp: chrono::Utc::now(),
                         };
                         
-                        if let Err(e) = Self::send_file_change_via_persistent_websocket(&event, tracked_projects, outgoing_channels).await {
+                        if let Err(e) = Self::send_file_change_via_persistent_websocket(&event, tracked_projects, outgoing_channels, base_hashes).await {
                             warn!("Failed to sync file {}: {}", path.display(), e);
                         } else {
                             file_count += 1;
                         }
                     }
                 } else if path.is_dir() {
-                    match Self::force_sync_directory_static(&path, project_id, project_root, tracked_projects, outgoing_channels).await {
+                    match Self::force_sync_directory_static(&path, project_id, project_root, tracked_projects, outgoing_channels, base_hashes).await {
                         Ok(sub_count) => file_count += sub_count,
                         Err(e) => warn!("Failed to sync subdirectory {}: {}", path.display(), e),
                     }
@@ -963,6 +989,7 @@ impl MothershipDaemon {
         websocket_listeners: Arc<RwLock<HashMap<Uuid, tokio::task::JoinHandle<()>>>>,
         outgoing_channels: Arc<RwLock<HashMap<Uuid, mpsc::UnboundedSender<SyncMessage>>>>,
         server_write_flags: Arc<RwLock<HashMap<Uuid, bool>>>,
+        base_hashes: BaseHashes,
     ) -> Result<()> {
         // Get project information
         let (project_path, rift_id) = {
@@ -1096,7 +1123,7 @@ impl MothershipDaemon {
                                             debug!("📥 Received WebSocket message: {} chars", text.len());
                                             
                                             // Handle incoming sync message
-                                            if let Err(e) = Self::handle_websocket_sync_message(&text, &project_path, &server_write_flags, project_id).await {
+                                            if let Err(e) = Self::handle_websocket_sync_message(&text, &project_path, &server_write_flags, &base_hashes, project_id).await {
                                                 error!("Failed to handle incoming sync message: {}", e);
                                             }
                                         }
@@ -1434,6 +1461,7 @@ impl MothershipDaemon {
         text: &str, 
         project_path: &PathBuf,
         server_write_flags: &Arc<RwLock<HashMap<Uuid, bool>>>,
+        base_hashes: &BaseHashes,
         project_id: Uuid,
     ) -> Result<()> {
         let sync_message: SyncMessage = serde_json::from_str(text)
@@ -1460,6 +1488,7 @@ impl MothershipDaemon {
                 // Write file content
                 tokio::fs::write(&file_path, &content).await?;
                 info!("💾 Applied file change from collaborator: {}", path.display());
+                base_hashes.write().await.insert((project_id, path.to_string_lossy().to_string()), content_hash(&content));
                 
                 // Clear server write flag
                 {
@@ -1500,6 +1529,7 @@ impl MothershipDaemon {
                             
                             // Write updated content
                             tokio::fs::write(&file_path, &new_content).await?;
+                            base_hashes.write().await.insert((project_id, change.path.to_string_lossy().to_string()), content_hash(&new_content));
                             info!("💾 Applied diff to {}: {} -> {} bytes", 
                                 change.path.display(), current_content.len(), new_content.len());
                         }
@@ -1537,6 +1567,7 @@ impl MothershipDaemon {
                     
                     // Write file content
                     tokio::fs::write(&file_path, &content).await?;
+                    base_hashes.write().await.insert((project_id, path.to_string_lossy().to_string()), content_hash(&content));
                     info!("💾 Wrote initial file: {}", path.display());
                 }
                 
@@ -1546,6 +1577,30 @@ impl MothershipDaemon {
                     flags.remove(&project_id);
                 }
                 
+                Ok(())
+            }
+            SyncMessage::ForceSync { path, server_content, .. } => {
+                // Server replaced our base with its version (e.g. after a stale-edit conflict); adopt it
+                info!("🔄 Force syncing {} from server", path.display());
+                {
+                    let mut flags = server_write_flags.write().await;
+                    flags.insert(project_id, true);
+                }
+                let file_path = project_path.join(&path);
+                if let Some(parent) = file_path.parent() {
+                    tokio::fs::create_dir_all(parent).await?;
+                }
+                tokio::fs::write(&file_path, &server_content).await?;
+                base_hashes.write().await.insert((project_id, path.to_string_lossy().to_string()), content_hash(&server_content));
+                {
+                    let mut flags = server_write_flags.write().await;
+                    flags.remove(&project_id);
+                }
+                Ok(())
+            }
+            SyncMessage::ConflictRiftCreated { conflict_rift_name, new_rift_id, .. } => {
+                // The conflict rift is not joined automatically; the user's edit is preserved there
+                info!("⚠️ Edit made against a stale base was saved to conflict rift '{}' ({}); main was kept", conflict_rift_name, new_rift_id);
                 Ok(())
             }
             SyncMessage::Heartbeat => {

@@ -2135,7 +2135,7 @@ async fn websocket_handler(
     
     Ok(ws.on_upgrade(move |socket| async move {
         info!("📡 WebSocket connection established for user: {} on rift: {}", claims.username, rift_id);
-        sync::handle_websocket(socket, state.sync, rift_id.clone()).await;
+        sync::handle_websocket(socket, state.sync, rift_id.clone(), user_id).await;
         info!("📡 WebSocket connection closed for user: {} on rift: {}", claims.username, rift_id);
     }))
 } 

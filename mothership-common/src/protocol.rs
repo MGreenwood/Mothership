@@ -29,6 +29,10 @@ pub enum SyncMessage {
         path: PathBuf,
         content: String,
         timestamp: DateTime<Utc>,
+        /// SHA-256 of the content the client last synced for this path.
+        /// `None` from older clients, which skips the stale-base check.
+        #[serde(default)]
+        base_hash: Option<String>,
     },
     
     /// PERFORMANCE FIX: Client reports file change as diff only
@@ -38,6 +42,9 @@ pub enum SyncMessage {
         diff: FileDiff,
         file_size: u64,
         timestamp: DateTime<Utc>,
+        /// See `FileChanged::base_hash`.
+        #[serde(default)]
+        base_hash: Option<String>,
     },
     
     /// PERFORMANCE FIX: Client reports multiple file changes as diffs (batched)

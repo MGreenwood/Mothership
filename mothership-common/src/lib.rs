@@ -26,6 +26,36 @@ pub type ProjectId = Uuid;
 pub type RiftId = Uuid;
 pub type CheckpointId = Uuid;
 
+/// SHA-256 hex digest used as the sync base hash. Client and server must agree on it.
+pub fn content_hash(content: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(content.as_bytes()))
+}
+
+#[cfg(test)]
+mod content_hash_tests {
+    use super::content_hash;
+
+    #[test]
+    fn same_content_gives_same_hash() {
+        assert_eq!(content_hash("hello\n"), content_hash("hello\n"));
+    }
+
+    #[test]
+    fn trailing_newline_changes_hash() {
+        assert_ne!(content_hash("hello"), content_hash("hello\n"));
+    }
+
+    #[test]
+    fn hash_is_64_hex_chars() {
+        let h = content_hash("abc");
+        assert_eq!(h.len(), 64);
+        assert!(h.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        // Known SHA-256 of "abc"
+        assert_eq!(h, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct User {
     pub id: UserId,

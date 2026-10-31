@@ -34,9 +34,9 @@ pub struct IpcServer {
     outgoing_channels: Arc<RwLock<HashMap<Uuid, mpsc::UnboundedSender<SyncMessage>>>>,
     /// Maps project ID to server write flags (prevents file watcher loops)
     server_write_flags: Arc<RwLock<HashMap<Uuid, bool>>>,
+    /// Maps project ID to last-synced content hashes (see daemon::BaseHashes)
+    base_hashes: crate::daemon::BaseHashes,
 }
-
-/// Request to add a project for tracking
 #[derive(Debug, Deserialize)]
 pub struct AddProjectRequest {
     pub project_id: Uuid,
@@ -87,6 +87,7 @@ impl IpcServer {
         websocket_listeners: Arc<RwLock<HashMap<Uuid, tokio::task::JoinHandle<()>>>>,
         outgoing_channels: Arc<RwLock<HashMap<Uuid, mpsc::UnboundedSender<SyncMessage>>>>,
         server_write_flags: Arc<RwLock<HashMap<Uuid, bool>>>,
+        base_hashes: crate::daemon::BaseHashes,
     ) -> Result<Self> {
         Ok(Self {
             status,
@@ -96,6 +97,7 @@ impl IpcServer {
             websocket_listeners,
             outgoing_channels,
             server_write_flags,
+            base_hashes,
         })
     }
 
@@ -213,6 +215,7 @@ async fn add_project(
         let websocket_listeners = server.websocket_listeners.clone();
         let outgoing_channels = server.outgoing_channels.clone();
         let server_write_flags = server.server_write_flags.clone();
+        let base_hashes = server.base_hashes.clone();
         
         tokio::spawn(async move {
             info!("🔄 Starting WebSocket listener for project {}", project_id);
@@ -223,6 +226,7 @@ async fn add_project(
                 websocket_listeners,
                 outgoing_channels,
                 server_write_flags,
+                base_hashes,
             ).await {
                 error!("Failed to start WebSocket listener for project {}: {}", project_id, e);
             }

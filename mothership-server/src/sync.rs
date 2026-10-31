@@ -241,7 +241,7 @@ impl SyncState {
     }
 }
 
-pub async fn handle_websocket(socket: WebSocket, state: SyncState, rift_id: String) {
+pub async fn handle_websocket(socket: WebSocket, state: SyncState, rift_id: String, user_id: Uuid) {
     let (sender, mut receiver) = socket.split();
     let mut broadcast_receiver = state.broadcaster.subscribe();
 
@@ -363,7 +363,7 @@ pub async fn handle_websocket(socket: WebSocket, state: SyncState, rift_id: Stri
                     }
                 }
 
-                match handle_sync_message(&text, &state, &rift_id).await {
+                match handle_sync_message(&text, &state, &rift_id, user_id, &connection_channel).await {
                     Ok(_) => {
                         consecutive_errors = 0; // Reset on success
                     }
@@ -416,7 +416,77 @@ pub async fn handle_websocket(socket: WebSocket, state: SyncState, rift_id: Stri
     sender_task.abort();
 }
 
-async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &str) -> Result<()> {
+/// True when a client's edit was made against content other than the current main.
+/// Clients that send no base hash get the legacy behavior (no check).
+fn is_stale_base(base_hash: Option<&str>, original_content: &str) -> bool {
+    match base_hash {
+        Some(base) => base != mothership_common::content_hash(original_content),
+        None => false,
+    }
+}
+
+#[cfg(test)]
+mod stale_base_tests {
+    use super::is_stale_base;
+    use mothership_common::content_hash;
+
+    #[test]
+    fn no_base_hash_is_never_stale() {
+        assert!(!is_stale_base(None, "anything"));
+    }
+
+    #[test]
+    fn matching_base_is_not_stale() {
+        let main = "fn main() {}\n";
+        assert!(!is_stale_base(Some(&content_hash(main)), main));
+    }
+
+    #[test]
+    fn mismatched_base_is_stale() {
+        let main = "fn main() {}\n";
+        let old = "fn main() { }\n";
+        assert!(is_stale_base(Some(&content_hash(old)), main));
+    }
+}
+
+/// Stale-base edit: main stays unchanged, the client's version goes into a conflict rift
+/// owned by the editing user, and the client is told to resync main.
+async fn create_conflict_rift_for_stale_edit(
+    state: &SyncState,
+    original_rift_id: Uuid,
+    user_id: Uuid,
+    connection_channel: &str,
+    path: &PathBuf,
+    client_content: String,
+    main_content: String,
+) -> Result<()> {
+    let original_rift = state.db.get_rift(original_rift_id).await?
+        .ok_or_else(|| anyhow::anyhow!("Rift not found: {}", original_rift_id))?;
+    let username = state.db.get_user(user_id).await?
+        .map(|u| u.username)
+        .unwrap_or_else(|| user_id.to_string());
+
+    let conflict_name = format!("conflict-{}-{}", username, path.display());
+    let conflict_rift = state.db
+        .create_rift(original_rift.project_id, user_id, Some(conflict_name.clone()))
+        .await?;
+    state.storage.update_live_state(conflict_rift.id, path.clone(), client_content).await?;
+
+    let _ = state.broadcaster.send((connection_channel.to_string(), SyncMessage::ConflictRiftCreated {
+        original_rift_id,
+        new_rift_id: conflict_rift.id,
+        conflict_rift_name: conflict_name,
+    }));
+    let _ = state.broadcaster.send((connection_channel.to_string(), SyncMessage::ForceSync {
+        path: path.clone(),
+        server_content: main_content,
+        server_timestamp: chrono::Utc::now(),
+    }));
+    info!("Created conflict rift {} for {} (original rift {})", conflict_rift.id, path.display(), original_rift_id);
+    Ok(())
+}
+
+async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &str, user_id: Uuid, connection_channel: &str) -> Result<()> {
     let sync_message: SyncMessage = serde_json::from_str(message)?;
     
     match sync_message {
@@ -475,7 +545,7 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
             }
         }
 
-        SyncMessage::FileChanged { rift_id: msg_rift_id, path, content, timestamp: _ } => {
+        SyncMessage::FileChanged { rift_id: msg_rift_id, path, content, timestamp: _, base_hash } => {
             // Rate-limit noisy clients per rift
             if state.should_throttle(&msg_rift_id.to_string()).await {
                 warn!("High change rate for rift {}; processing FileChanged anyway", msg_rift_id);
@@ -494,6 +564,15 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
                 Ok(content) => content,
                 Err(_) => String::new(), // New file
             };
+
+            // Stale base: the client edited against content that is no longer main.
+            // Keep main as-is and put the client's version in a conflict rift.
+            if is_stale_base(base_hash.as_deref(), &original_content) {
+                warn!("Stale base for {} in rift {}; diverting edit to conflict rift", path.display(), msg_rift_id);
+                return create_conflict_rift_for_stale_edit(
+                    state, msg_rift_id, user_id, connection_channel, &path, content, original_content,
+                ).await;
+            }
             
             // Update live working state
             state.storage.update_live_state(msg_rift_id, path.clone(), content.clone()).await?;
@@ -521,7 +600,7 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
             // }
         }
 
-        SyncMessage::FileDiffChanged { rift_id: msg_rift_id, path, diff, file_size, timestamp: _ } => {
+        SyncMessage::FileDiffChanged { rift_id: msg_rift_id, path, diff, file_size, timestamp: _, base_hash } => {
             // Rate-limit noisy clients per rift
             if state.should_throttle(&msg_rift_id.to_string()).await {
                 warn!("High change rate for rift {}; processing FileDiffChanged anyway", msg_rift_id);
@@ -540,6 +619,11 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
                 Ok(content) => content,
                 Err(_) => String::new(), // New file
             };
+
+            // A diff only applies cleanly to the base it was made against.
+            if is_stale_base(base_hash.as_deref(), &original_content) {
+                return Err(anyhow::anyhow!("Stale base for diff on {}; resync required", path.display()));
+            }
             
             let diff_engine = DiffEngine::new();
             let new_content = diff_engine.apply_diff(&original_content, &diff)?;
