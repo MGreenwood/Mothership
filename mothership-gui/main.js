@@ -838,33 +838,85 @@ async function handleEmailLogin(event) {
     }
 }
 
-async function handleLogout() {
+
+generateQrBtn.addEventListener('click', handleGenerateQr)
+
+let qrApiMode = 'new' // 'new' = /auth/qr/start + /auth/qr/status/:id, 'legacy' = /auth/challenge + /auth/poll/:id
+
+async function startQrChallengeCompat(apiBase) {
+    // Try new endpoint first
     try {
-        await safeInvoke('logout')
-        isAuthenticated = false
-        updateAuthUI()
-        
-        // Clear gateways and files
-        projects = []
-        currentProject = null
-        currentFile = null
-        projectList.innerHTML = '<div class="loading">No gateways loaded</div>'
-        fileExplorer.innerHTML = '<div class="loading">Select a gateway</div>'
-        editor.setValue('// Welcome to Mothership\n// Sign in to access your gateways')
-        currentFileSpan.textContent = 'No file selected'
-        
-    } catch (error) {
-        console.error('Logout failed:', error)
+        const res = await fetch(`${apiBase}/auth/qr/start`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ domain: window.location.hostname, action: 'login' })
+        })
+        if (res.ok) {
+            qrApiMode = 'new'
+            return await res.json()
+        }
+    } catch (_) {}
+    // Fallback to legacy
+    const res2 = await fetch(`${apiBase}/auth/challenge`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ domain: window.location.hostname, action: 'login' })
+    })
+    if (!res2.ok) throw new Error(`Failed to start QR: ${res2.statusText}`)
+    qrApiMode = 'legacy'
+    return await res2.json()
+}
+
+async function handleGenerateQr() {
+    const apiBase = window.MOTHERSHIP_API_BASE_URL || 'http://localhost:7523'
+    qrMessage.innerText = ''
+    qrStatus.innerText = ''
+    qrImage.src = ''
+    try {
+        generateQrBtn.disabled = true
+        generateQrBtn.textContent = 'Generating...'
+
+        const ch = await startQrChallengeCompat(apiBase)
+        const challengeId = ch.challengeId || ch.id || ch.challenge
+
+        // Show QR image (works for both modes if server implements /auth/qr/:id; legacy server supports it)
+        qrImage.src = `${apiBase}/auth/qr/${challengeId}`
+    qrMessage.innerText = 'Scan this code with your GhostID Wallet to login.'
+
+        // Poll status
+        pollQrStatusCompat(apiBase, challengeId)
+    } catch (e) {
+        qrMessage.innerText = `Error: ${e.message}`
+    } finally {
+        generateQrBtn.disabled = false
+        generateQrBtn.textContent = 'Generate QR Code'
     }
 }
 
-// Format file size
-function formatFileSize(bytes) {
-    if (bytes === 0) return '0 B'
-    const k = 1024
-    const sizes = ['B', 'KB', 'MB', 'GB']
-    const i = Math.floor(Math.log(bytes) / Math.log(k))
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i]
+async function pollQrStatusCompat(apiBase, id) {
+    const startTime = Date.now()
+    while (Date.now() - startTime < 120000) {
+        try {
+            const url = qrApiMode === 'new' ? `${apiBase}/auth/qr/status/${id}` : `${apiBase}/auth/poll/${id}`
+            const resp = await fetch(url)
+            if (resp.status === 404) { qrStatus.innerText = 'No such challenge'; return }
+            const data = await resp.json()
+            qrStatus.innerText = JSON.stringify(data, null, 2)
+            const status = data.status || (data.loggedIn ? 'verified' : 'pending')
+            if (status && status !== 'pending') {
+                if (status === 'verified' || data.loggedIn) {
+                    isAuthenticated = true
+                    updateAuthUI()
+                    showAuthMessage('Wallet login successful!', 'success')
+                    await loadProjects()
+                }
+                return
+            }
+        } catch (err) {
+            qrStatus.innerText = `Poll error: ${err.message}`
+            return
+        }
+        await new Promise(r => setTimeout(r, 2000))
+    }
+    qrStatus.innerText = 'Timeout waiting for wallet response'
 }
 
 // Event listeners
@@ -901,65 +953,78 @@ githubLoginBtn.addEventListener('click', () => {
 
 emailLoginForm.addEventListener('submit', handleEmailLogin)
 
-forgotPasswordLink.addEventListener('click', (e) => {
-    e.preventDefault()
-    showAuthMessage('Password recovery is not yet implemented. Please use Google login.', 'error')
+// QR login event handlers
+const qrTabButton = document.querySelector('.auth-tab[data-tab="qr"]')
+const generateQrBtn = document.getElementById('generate-qr-btn')
+const qrImage = document.getElementById('qr-image')
+const qrMessage = document.getElementById('qr-message')
+const qrStatus = document.getElementById('qr-status')
+
+qrTabButton.addEventListener('click', () => {
+  // Clear previous QR state when switching to QR tab
+  qrMessage.innerText = ''
+  qrStatus.innerText = ''
+  qrImage.src = ''
 })
 
-createAccountLink.addEventListener('click', (e) => {
-    e.preventDefault()
-    showAuthMessage('Account creation is not yet implemented. Please use Google login.', 'error')
-})
+generateQrBtn.addEventListener('click', handleGenerateQr)
 
-refreshBtn.addEventListener('click', () => {
-    loadProjects()
-    // Note: File browsing not yet implemented for projects
-})
+async function handleGenerateQr() {
+  const apiBase = window.MOTHERSHIP_API_BASE_URL || 'http://localhost:7523'
+  qrMessage.innerText = ''
+  qrStatus.innerText = ''
+  qrImage.src = ''
+  try {
+    generateQrBtn.disabled = true
+    generateQrBtn.textContent = 'Generating...'
+    // Start QR challenge
+    const res = await fetch(`${apiBase}/auth/qr/start`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ domain: window.location.hostname, action: 'login' })
+    })
+    if (!res.ok) throw new Error(res.statusText)
+    const ch = await res.json()
+    const challengeId = ch.challengeId || ch.id
+    // Display QR code image
+    qrImage.src = `${apiBase}/auth/qr/${challengeId}`
+    qrMessage.innerText = 'Scan this code with your GhostID Wallet to login.'
+    // Poll for status
+    pollQrStatus(challengeId)
+  } catch (e) {
+    qrMessage.innerText = `Error: ${e.message}`
+  } finally {
+    generateQrBtn.disabled = false
+    generateQrBtn.textContent = 'Generate QR Code'
+  }
+}
 
-checkpointBtn.addEventListener('click', async () => {
-    if (!currentFile) {
-        alert('No file is currently open')
-        return
-    }
-    
-    const message = prompt('Checkpoint message (optional):') || 'Auto checkpoint'
-    
+async function pollQrStatus(id) {
+  const apiBase = window.MOTHERSHIP_API_BASE_URL || 'http://localhost:7523'
+  const startTime = Date.now()
+  while (Date.now() - startTime < 120000) {
     try {
-        checkpointBtn.disabled = true
-        checkpointBtn.textContent = 'Creating...'
-        
-        await safeInvoke('create_checkpoint', { message })
-        
-        checkpointBtn.textContent = 'Checkpoint ✓'
-        checkpointBtn.style.background = '#28a745'
-        
-        setTimeout(() => {
-            checkpointBtn.textContent = 'Checkpoint'
-            checkpointBtn.style.background = '#404040'
-        }, 2000)
-        
-    } catch (error) {
-        console.error('Checkpoint failed:', error)
-        alert(`Checkpoint failed: ${error}`)
-    } finally {
-        checkpointBtn.disabled = false
-    }
-})
-
-vimToggle.addEventListener('click', async () => {
-    try {
-        const newVimMode = await safeInvoke('toggle_vim_mode')
-        
-        if (newVimMode) {
-            enableVimMode()
-        } else {
-            disableVimMode()
+      const resp = await fetch(`${apiBase}/auth/qr/status/${id}`)
+      if (resp.status === 404) { qrStatus.innerText = 'No such challenge'; return }
+      const data = await resp.json()
+      qrStatus.innerText = JSON.stringify(data, null, 2)
+      if (data.status && data.status !== 'pending') {
+        if (data.status === 'verified') {
+          isAuthenticated = true
+          updateAuthUI()
+          showAuthMessage('Wallet login successful!', 'success')
+          // Load gateways
+          await loadProjects()
         }
-        
-    } catch (error) {
-        console.error('Failed to toggle vim mode:', error)
+        return
+      }
+    } catch (err) {
+      qrStatus.innerText = `Poll error: ${err.message}`
+      return
     }
-})
+    await new Promise(r => setTimeout(r, 2000))
+  }
+  qrStatus.innerText = 'Timeout waiting for wallet response'
+}
 
 // Gateway creation functions
 function showGatewayModal() {
@@ -1203,6 +1268,29 @@ document.addEventListener('DOMContentLoaded', async () => {
         contextWarning.textContent = '⚠️ Running in browser mode - some features require the Tauri desktop app'
         document.body.appendChild(contextWarning)
     }
+
+    // If user is on /login route, open auth modal on Wallet QR tab and auto-generate QR
+    try {
+        const path = (window.location.pathname || '').toLowerCase()
+        if (path.endsWith('/login') || path === '/login') {
+            // Ensure overlay visible
+            authOverlay.classList.remove('hidden')
+            // Activate QR tab
+            document.querySelectorAll('.auth-tab').forEach(t => t.classList.remove('active'))
+            const qrTab = document.querySelector('.auth-tab[data-tab="qr"]')
+            if (qrTab) qrTab.classList.add('active')
+            // Show QR section
+            document.querySelectorAll('.auth-section').forEach(section => section.classList.remove('active'))
+            const qrSection = document.getElementById('qr-section')
+            if (qrSection) qrSection.classList.add('active')
+            // Generate QR immediately
+            if (typeof handleGenerateQr === 'function') {
+                handleGenerateQr()
+            }
+        }
+    } catch (e) {
+        console.warn('Login route handler error:', e)
+    }
 })
 
 // Handle window resize
@@ -1223,4 +1311,4 @@ window.debugCredentials = async function() {
         console.error('Debug failed:', error)
         return error.toString()
     }
-} 
+}

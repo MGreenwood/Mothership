@@ -9,7 +9,7 @@ $Yellow = [System.ConsoleColor]::Yellow
 # Test project settings
 $TestProject = "test-project-$([DateTimeOffset]::Now.ToUnixTimeSeconds())"
 $TestRift = "feature-test"
-$ServerUrl = "https://api.mothershipproject.dev"  # Production API server
+$ServerUrl = "https://api.mothership.rest"  # Production API server
 
 function Write-Step {
     param([string]$Message)

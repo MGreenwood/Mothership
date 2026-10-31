@@ -41,7 +41,7 @@
     ],
     "docker_compose_file": "../docker-compose.yml",
     "health_check_endpoints": [
-      "http://localhost:8080/health",
+      "http://localhost:8085/health",
       "http://localhost:3000/health"
     ]
   },

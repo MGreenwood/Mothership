@@ -7,7 +7,7 @@
 ## Revised Integration Test Results
 
 ### Authentication Discovery
-- **Server Status:** ✅ ONLINE at `https://api.mothershipproject.dev`
+- **Server Status:** ✅ ONLINE at `https://api.mothership.rest`
 - **Authentication:** ✅ WORKING (JWT Bearer token authentication)
 - **API Access:** ✅ CONFIRMED (successful authenticated requests)
 
@@ -114,23 +114,23 @@ This was **completely incorrect** due to authentication issues.
 ### Successful API Interactions
 ```bash
 # Health Check
-GET https://api.mothershipproject.dev/health
+GET https://api.mothership.rest/health
 → 200 OK
 
 # Authenticated Projects Access
-GET https://api.mothershipproject.dev/projects
+GET https://api.mothership.rest/projects
 Authorization: Bearer [JWT_TOKEN]
 → 200 OK {"success":true,"data":[],"error":null,"message":null}
 
 # Gateway Endpoint Discovery
-POST https://api.mothershipproject.dev/gateway
+POST https://api.mothership.rest/gateway
 Authorization: Bearer [JWT_TOKEN]
 Content-Type: application/json
 → 422 Unprocessable Entity (endpoint exists, needs valid payload)
 ```
 
 ### Server Configuration Evidence
-- **CORS Headers:** `Access-Control-Allow-Origin: https://app.mothershipproject.dev`
+- **CORS Headers:** `Access-Control-Allow-Origin: https://app.mothership.rest`
 - **Credentials Support:** `Access-Control-Allow-Credentials: true`
 - **Professional Setup:** Production-ready server configuration
 

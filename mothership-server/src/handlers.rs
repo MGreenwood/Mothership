@@ -83,7 +83,7 @@ pub async fn handle_beam(
     // Use WEBSOCKET_BASE_URL environment variable for production deployments (e.g., Cloudflare tunnels)
     // Falls back to server config for local development
     let websocket_url = if let Ok(base_url) = std::env::var("WEBSOCKET_BASE_URL") {
-        // Production: use environment variable (e.g., "wss://api.mothershipproject.dev")
+        // Production: use environment variable (e.g., "wss://api.mothership.rest")
         format!("{}/ws/{}", base_url.trim_end_matches('/'), rift.id)
     } else {
         // Development: use server config

@@ -749,6 +749,7 @@ async fn create_rift(name: &str, description: Option<String>) -> Result<uuid::Uu
     // Make API call to create rift
     let client = reqwest::Client::new();
     let url = format!("{}/api/rifts", active_server.url);
+    println!("DEBUG: Creating rift at {}", url);
     
     #[derive(serde::Serialize)]
     struct CreateRiftRequest {

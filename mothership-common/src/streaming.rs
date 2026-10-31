@@ -3,9 +3,7 @@
 //! This module provides the **protocol definitions and data structures** for streaming.
 //! Actual async implementations are in daemon and server crates with tokio support.
 
-use crate::protocol::{StreamInfo, StreamStatus};
-use crate::UserId;
-use chrono::{DateTime, Utc};
+use crate::protocol::StreamStatus;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;

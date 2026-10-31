@@ -806,7 +806,7 @@ fn main() {
             projects: Vec::new(),
         })),
         auth_token: Arc::new(Mutex::new(None)),
-        server_url: "https://api.mothershipproject.dev".to_string(),
+        server_url: "https://api.mothership.rest".to_string(),
         app_handle: None,
     };
 

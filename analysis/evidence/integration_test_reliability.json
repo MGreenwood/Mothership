@@ -5,7 +5,7 @@
       "start_time": "2025-08-15T19:22:04.687970",
       "execution_time": 0.9777688980102539,
       "exit_code": 1,
-      "stdout": "\n==== Checking prerequisites ====\n[+] All prerequisites found\n\n==== Testing server connection ====\n[-] Server is not running at https://api.mothershipproject.dev\n",
+      "stdout": "\n==== Checking prerequisites ====\n[+] All prerequisites found\n\n==== Testing server connection ====\n[-] Server is not running at https://api.mothership.rest\n",
       "stderr": "",
       "test_steps": [
         "Checking prerequisites",
@@ -15,7 +15,7 @@
         "All prerequisites found"
       ],
       "failed_tests": [
-        "Server is not running at https://api.mothershipproject.dev"
+        "Server is not running at https://api.mothership.rest"
       ],
       "features_tested": []
     },
@@ -24,7 +24,7 @@
       "start_time": "2025-08-15T19:22:07.597934",
       "execution_time": 0.9081969261169434,
       "exit_code": 1,
-      "stdout": "\n==== Checking prerequisites ====\n[+] All prerequisites found\n\n==== Testing server connection ====\n[-] Server is not running at https://api.mothershipproject.dev\n",
+      "stdout": "\n==== Checking prerequisites ====\n[+] All prerequisites found\n\n==== Testing server connection ====\n[-] Server is not running at https://api.mothership.rest\n",
       "stderr": "",
       "test_steps": [
         "Checking prerequisites",
@@ -34,7 +34,7 @@
         "All prerequisites found"
       ],
       "failed_tests": [
-        "Server is not running at https://api.mothershipproject.dev"
+        "Server is not running at https://api.mothership.rest"
       ],
       "features_tested": []
     },
@@ -43,7 +43,7 @@
       "start_time": "2025-08-15T19:22:10.522736",
       "execution_time": 0.9236011505126953,
       "exit_code": 1,
-      "stdout": "\n==== Checking prerequisites ====\n[+] All prerequisites found\n\n==== Testing server connection ====\n[-] Server is not running at https://api.mothershipproject.dev\n",
+      "stdout": "\n==== Checking prerequisites ====\n[+] All prerequisites found\n\n==== Testing server connection ====\n[-] Server is not running at https://api.mothership.rest\n",
       "stderr": "",
       "test_steps": [
         "Checking prerequisites",
@@ -53,7 +53,7 @@
         "All prerequisites found"
       ],
       "failed_tests": [
-        "Server is not running at https://api.mothershipproject.dev"
+        "Server is not running at https://api.mothership.rest"
       ],
       "features_tested": []
     }
@@ -91,7 +91,7 @@
         "consistency_rate": 100.0,
         "is_flaky": false
       },
-      "Server is not running at https://api.mothershipproject.dev": {
+      "Server is not running at https://api.mothership.rest": {
         "pass_count": 0,
         "fail_count": 3,
         "total_appearances": 3,

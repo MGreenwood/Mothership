@@ -27,6 +27,7 @@ mod config;
 mod database;
 mod handlers;
 mod oauth;
+mod qr_auth;
 mod sync;
 mod storage;
 mod web_ui;
@@ -97,7 +98,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Set up database connection
     let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/mothership".to_string());
+        .unwrap_or_else(|_| "postgres://postgres:mothership_dev@db:5432/mothership".to_string());
 
     info!("🗄️ Connecting to database...");
     let db = Database::new(&database_url).await?;
@@ -225,6 +226,10 @@ fn create_api_router(state: AppState) -> Router {
         .route("/auth/oauth/callback/google", get(oauth_callback_google))
         .route("/auth/oauth/callback/github", get(oauth_callback_github))
         .route("/auth/finalize", get(web_ui::auth_finalize))
+        // QR Authentication routes  
+        .route("/auth/qr/start", post(qr_auth::start_qr_challenge))
+        .route("/auth/qr/status/:id", get(qr_auth::get_qr_status))
+        .route("/auth/qr/validate", post(qr_auth::validate_qr_auth))
         // Admin routes
         .route("/admin/create", post(create_admin_user))
         // Project routes
@@ -240,6 +245,8 @@ fn create_api_router(state: AppState) -> Router {
         // Gateway routes
         .route("/gateway", post(gateway))
         .route("/gateway/create", post(create_gateway))
+        // Rift routes
+        .route("/api/rifts", get(handlers::list_rifts).post(handlers::create_rift))
         // WebSocket route
         .route("/ws/:rift_id", get(websocket_handler))
         // CLI distribution routes
@@ -247,7 +254,7 @@ fn create_api_router(state: AppState) -> Router {
         // Add CORS middleware to allow requests from web UI
         .layer(
             CorsLayer::new()
-                .allow_origin("https://app.mothershipproject.dev".parse::<HeaderValue>().unwrap())
+                .allow_origin("https://app.mothership.rest".parse::<HeaderValue>().unwrap())
                 .allow_methods([
                     axum::http::Method::GET,
                     axum::http::Method::POST,
@@ -291,6 +298,10 @@ fn create_combined_router(state: AppState) -> Router {
         .route("/auth/finalize", get(web_ui::auth_finalize))
         .route("/auth/success", get(oauth_success_page))
         .route("/auth/error", get(oauth_error_page))
+        // QR Authentication routes  
+        .route("/auth/qr/start", post(qr_auth::start_qr_challenge))
+        .route("/auth/qr/status/:id", get(qr_auth::get_qr_status))
+        .route("/auth/qr/validate", post(qr_auth::validate_qr_auth))
         
         // Admin routes
         .route("/admin/create", post(create_admin_user))
@@ -309,6 +320,7 @@ fn create_combined_router(state: AppState) -> Router {
         // Gateway routes
         .route("/gateway", post(gateway))
         .route("/gateway/create", post(create_gateway))
+
         
         // WebSocket route
         .route("/ws/:rift_id", get(websocket_handler))
@@ -332,6 +344,10 @@ fn create_web_router(state: AppState) -> Router {
         .route("/auth/oauth/start", post(oauth_start))
         .route("/auth/oauth/callback/google", get(oauth_callback_google))
         .route("/auth/oauth/callback/github", get(oauth_callback_github))
+        // QR Authentication routes (needed for web UI)
+        .route("/auth/qr/start", post(qr_auth::start_qr_challenge))
+        .route("/auth/qr/status/:id", get(qr_auth::get_qr_status))
+        .route("/auth/qr/validate", post(qr_auth::validate_qr_auth))
         // Web UI routes
         .merge(crate::web_ui::routes())
         .with_state(state)
@@ -725,7 +741,7 @@ async fn oauth_callback_handler(
                                 // Extract base domain from web_ui_url
                                 if let Ok(url) = url::Url::parse(&web_ui_url) {
                                     if let Some(domain) = url.domain() {
-                                        // Get the base domain (e.g., "mothershipproject.dev" from "app.mothershipproject.dev")
+                                        // Get the base domain (e.g., "mothership.rest" from "app.mothership.rest")
                                         let parts: Vec<&str> = domain.split('.').collect();
                                         if parts.len() >= 2 {
                                             let base_domain = format!(".{}.{}", parts[parts.len() - 2], parts[parts.len() - 1]);
@@ -741,14 +757,15 @@ async fn oauth_callback_handler(
                             info!("Session cookie created - secure: {}, localhost: {}, domain: {:?}", 
                                   is_secure, is_localhost, cookie.domain());
                             
-                            // Redirect to auth success with user data
-                            let success_url = format!("/auth/success?user_id={}&username={}&email={}&token={}",
-                                user.id,
-                                urlencoding::encode(&user.username),
-                                urlencoding::encode(&user.email),
-                                urlencoding::encode(&token)
+                            let web_ui_url = std::env::var("WEB_UI_BASE_URL")
+                                .or_else(|_| std::env::var("OAUTH_BASE_URL"))
+                                .unwrap_or_else(|_| "http://localhost:8085".to_string());
+
+                            let success_url = format!(
+                                "{}/",
+                                web_ui_url.trim_end_matches('/')
                             );
-                            
+
                             Ok((
                                 CookieJar::new().add(cookie),
                                 axum::response::Redirect::to(&success_url)
@@ -2139,3 +2156,5 @@ async fn websocket_handler(
         info!("📡 WebSocket connection closed for user: {} on rift: {}", claims.username, rift_id);
     }))
 } 
+
+

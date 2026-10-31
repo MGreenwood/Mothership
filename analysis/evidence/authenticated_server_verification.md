@@ -17,12 +17,12 @@
 ### Server Accessibility Test Results
 
 #### Health Endpoint
-- **URL:** `https://api.mothershipproject.dev/health`
+- **URL:** `https://api.mothership.rest/health`
 - **Status:** ✅ 200 OK - Server is accessible
 - **Response Time:** < 1 second
 
 #### Authenticated Endpoint Test
-- **URL:** `https://api.mothershipproject.dev/projects`
+- **URL:** `https://api.mothership.rest/projects`
 - **Method:** GET with Bearer token
 - **Status:** ✅ 200 OK - Authentication successful
 - **Response:** `{"success":true,"data":[],"error":null,"message":null}`
@@ -139,7 +139,7 @@ The discovery that the server is functional completely changes the analysis land
 ### Successful API Call
 ```bash
 # Request
-GET https://api.mothershipproject.dev/projects
+GET https://api.mothership.rest/projects
 Authorization: Bearer [JWT_TOKEN]
 
 # Response
@@ -154,7 +154,7 @@ Content-Type: application/json
 ```
 
 ### Server Headers Analysis
-- **CORS Enabled:** `Access-Control-Allow-Origin: https://app.mothershipproject.dev`
+- **CORS Enabled:** `Access-Control-Allow-Origin: https://app.mothership.rest`
 - **Credentials Support:** `Access-Control-Allow-Credentials: true`
 - **Professional Setup:** Proper CORS configuration for web app integration
 

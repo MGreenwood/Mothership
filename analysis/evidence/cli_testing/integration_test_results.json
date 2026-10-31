@@ -50,7 +50,7 @@
       "command": "target/debug/mothership.exe server list",
       "success": true,
       "returncode": 0,
-      "stdout": "\ud83d\udccb Listing configured servers...\n\n\ud83c\udf10 Configured Servers\n\n\u26aa Mothership Server (https://api.mothershipproject.dev:443)\n   Connected: 2025-07-01 01:21:22\n   Auth: oauth\n   Version: 0.1.0\n\n\u26aa Mothership Server (https://api.mothershipproject.dev)\n   Connected: 2025-06-30 23:58:16\n   Auth: oauth\n   Version: 0.1.0\n\n\ud83d\udfe2 Mothership Server (http://localhost:7523)\n   Connected: 2025-08-15 22:47:42\n   Auth: oauth\n   Version: 0.1.0\n   \ud83d\udfe2 Currently active\n\nUse 'mothership connect <server-url>' to switch servers\nUse 'mothership server disconnect' to switch to local-only mode\n",
+      "stdout": "\ud83d\udccb Listing configured servers...\n\n\ud83c\udf10 Configured Servers\n\n\u26aa Mothership Server (https://api.mothership.rest:443)\n   Connected: 2025-07-01 01:21:22\n   Auth: oauth\n   Version: 0.1.0\n\n\u26aa Mothership Server (https://api.mothership.rest)\n   Connected: 2025-06-30 23:58:16\n   Auth: oauth\n   Version: 0.1.0\n\n\ud83d\udfe2 Mothership Server (http://localhost:7523)\n   Connected: 2025-08-15 22:47:42\n   Auth: oauth\n   Version: 0.1.0\n   \ud83d\udfe2 Currently active\n\nUse 'mothership connect <server-url>' to switch servers\nUse 'mothership server disconnect' to switch to local-only mode\n",
       "stderr": ""
     },
     "server_check_7523": {

@@ -56,7 +56,7 @@ The CLI-server integration testing reveals a **fully functional integration** be
 ```
 🌐 Configured Servers
 
-⚪ Mothership Server (https://api.mothershipproject.dev:443)
+⚪ Mothership Server (https://api.mothership.rest:443)
    Connected: 2025-07-01 01:21:22
    Auth: oauth
    Version: 0.1.0

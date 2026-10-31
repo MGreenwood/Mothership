@@ -18,7 +18,7 @@ The integration test analysis reveals critical issues with the Mothership applic
 2. ❌ **Testing server connection** - FAILED
 
 #### Root Cause of Failure
-The integration test attempts to connect to `https://api.mothershipproject.dev`, a production server that does not exist or is not accessible. This causes the test to fail immediately after prerequisite checks.
+The integration test attempts to connect to `https://api.mothership.rest`, a production server that does not exist or is not accessible. This causes the test to fail immediately after prerequisite checks.
 
 #### Test Coverage Analysis
 - **Advertised Features Tested:** 0/6 (0.0%)
@@ -53,7 +53,7 @@ The integration test attempts to connect to `https://api.mothershipproject.dev`,
 The integration test suite fails to test ANY of the advertised features due to infrastructure dependency issues.
 
 ### 2. Production Server Dependency
-The test hardcodes a dependency on `https://api.mothershipproject.dev`, which:
+The test hardcodes a dependency on `https://api.mothership.rest`, which:
 - Does not exist or is not accessible
 - Prevents any local testing
 - Makes the test suite unusable for development or CI/CD

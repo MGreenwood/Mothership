@@ -96,7 +96,7 @@ pub fn get_active_server() -> Result<Option<ServerConnection>> {
 const MOTHERSHIP_DEFAULT_PORT: u16 = 7523;
 
 /// Fallback ports to try if default doesn't work
-const MOTHERSHIP_FALLBACK_PORTS: &[u16] = &[443, 80, 8080];
+const MOTHERSHIP_FALLBACK_PORTS: &[u16] = &[443, 80, 8085];
 
 /// Smart server discovery with automatic port detection
 async fn discover_server_with_ports(server_input: &str) -> Result<(String, ServerCapabilities)> {

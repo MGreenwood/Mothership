@@ -343,7 +343,7 @@ class FunctionalTester:
             # Default connection parameters
             conn_params = {
                 "host": "localhost",
-                "port": 5432,
+                "port": 3333,
                 "database": "mothership",
                 "user": "postgres",
                 "password": "password"

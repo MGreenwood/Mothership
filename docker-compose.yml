@@ -5,7 +5,7 @@ services:
       dockerfile: Dockerfile.server
     ports:
       - "${MOTHERSHIP_PORT:-7523}:7523"  # API port
-      - "${WEB_PORT:-8080}:8080"         # Web UI port
+      - "${WEB_PORT:-8085}:8085"         # Web UI port
     environment:
       # Server settings
       - MOTHERSHIP_PORT=${MOTHERSHIP_PORT}
@@ -16,8 +16,8 @@ services:
       # Database settings
       - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/mothership
       # OAuth configuration
-      - OAUTH_BASE_URL=https://api.mothershipproject.dev
-      - WEB_UI_BASE_URL=https://app.mothershipproject.dev
+      - OAUTH_BASE_URL=https://api.mothership.rest
+      - WEB_UI_BASE_URL=https://app.mothership.rest
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
       - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID}
@@ -55,9 +55,10 @@ services:
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=mothership
+      - POSTGRES_MAX_CONNECTIONS=100
+      - POSTGRES_MAX_CONNECTIONS=100
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "${POSTGRES_PORT:-5433}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./migrations:/docker-entrypoint-initdb.d

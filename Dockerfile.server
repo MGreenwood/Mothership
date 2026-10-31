@@ -22,7 +22,11 @@ RUN mkdir -p /app/content
 COPY icon.png /app/content/icon.png
 COPY robots.txt /app/content/robots.txt
 
-# OAuth success page is served from inline template in Rust code
+# Copy HTML templates
+COPY content/index.html /app/content/index.html
+COPY content/login.html /app/content/login.html
+COPY content/auth-required.html /app/content/auth-required.html
+COPY content/ghostid-auth.html /app/content/ghostid-auth.html
 
-EXPOSE 7523 8080
+EXPOSE 7523 8085
 CMD ["./mothership-server"] 

@@ -1,0 +1,48 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>GhostID Wallet Authentication</title>
+  <style>
+    body { font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; background:#f7fafc; color:#2d3748; }
+    .container { max-width:640px; margin:3rem auto; background:#fff; padding:2rem; border-radius:12px; box-shadow:0 4px 24px rgba(0,0,0,0.08); }
+    .qr { text-align:center; margin:1.5rem 0 }
+    .instructions { margin:1rem 0; }
+    .hint { color:#4a5568; font-size:0.95rem }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>GhostID Wallet Authentication</h1>
+    <p class="hint">Use your GhostID mobile wallet to scan the QR code below and authenticate for downloads.</p>
+    <div class="qr">
+      <img id="qrCode" src="{{QR_URL}}" alt="QR code">
+      <p class="instructions">1) Open the GhostID wallet app on your phone<br>2) Scan the QR code above<br>3) Confirm the authentication request in the wallet</p>
+    </div>
+    <div class="status">
+      <p id="status">Waiting for wallet...</p>
+    </div>
+    <script>
+      async function poll() {
+        const challenge = "{{CHALLENGE_ID}}";
+        try {
+          const res = await fetch(`/auth/ghostid/poll/${challenge}`);
+          const data = await res.json();
+          document.getElementById('status').innerText = JSON.stringify(data);
+          if (data.status && data.status === 'verified') {
+            document.getElementById('status').innerText = 'Verified! Redirecting...';
+            window.location = '/download/authenticated';
+          } else {
+            setTimeout(poll, 2000);
+          }
+        } catch(e) {
+          console.error(e);
+          setTimeout(poll, 3000);
+        }
+      }
+      poll();
+    </script>
+  </div>
+</body>
+</html>

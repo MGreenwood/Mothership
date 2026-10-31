@@ -18,7 +18,7 @@ class AuthenticatedIntegrationTester:
     def __init__(self, workspace_root, jwt_token):
         self.workspace_root = Path(workspace_root)
         self.jwt_token = jwt_token
-        self.server_url = "https://api.mothershipproject.dev"
+        self.server_url = "https://api.mothership.rest"
         self.results = {
             "authentication_verified": False,
             "server_accessible": False,

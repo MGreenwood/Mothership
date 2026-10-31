@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign In - Mothership</title>
+    <link rel="icon" type="image/png" href="/static/icon.png">
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 2rem;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .container {
+            max-width: 500px;
+            background: rgba(255, 255, 255, 0.1);
+            padding: 3rem;
+            border-radius: 20px;
+            backdrop-filter: blur(10px);
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.2);
+            text-align: center;
+        }
+        
+        h1 {
+            font-size: 3rem;
+            margin-bottom: 1rem;
+            font-weight: 300;
+        }
+        
+        .btn {
+            display: inline-block;
+            padding: 1rem 2rem;
+            background: rgba(255, 255, 255, 0.2);
+            color: white;
+            text-decoration: none;
+            border-radius: 10px;
+            transition: all 0.3s ease;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            margin: 0.5rem;
+        }
+        
+        .btn:hover {
+            background: rgba(255, 255, 255, 0.3);
+            transform: translateY(-2px);
+        }
+        
+        .btn-primary {
+            background: rgba(72, 187, 120, 0.8);
+            border-color: #48bb78;
+        }
+        
+        .btn-primary:hover {
+            background: rgba(72, 187, 120, 1);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <img src="/static/icon.png" alt="Mothership" style="height: 60px; width: auto; margin-bottom: 1rem;" />
+        <h1>🔐 {{PAGE_TITLE}}</h1>
+        <p>{{PAGE_MESSAGE}}</p>
+        
+        {{AUTH_CONTENT}}
+        
+        <div style="margin-top: 2rem;">
+            <a href="/" class="btn">&larr; Back to Home</a>
+        </div>
+    </div>
+</body>
+</html>

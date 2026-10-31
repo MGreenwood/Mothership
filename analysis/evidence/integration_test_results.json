@@ -3,7 +3,7 @@
   "start_time": "2025-08-15T19:20:29.569887",
   "end_time": "2025-08-15T19:20:30.493110",
   "exit_code": 1,
-  "stdout": "\n==== Checking prerequisites ====\n[+] All prerequisites found\n\n==== Testing server connection ====\n[-] Server is not running at https://api.mothershipproject.dev\n",
+  "stdout": "\n==== Checking prerequisites ====\n[+] All prerequisites found\n\n==== Testing server connection ====\n[-] Server is not running at https://api.mothership.rest\n",
   "stderr": "",
   "test_steps": [
     "Checking prerequisites",
@@ -13,7 +13,7 @@
     "All prerequisites found"
   ],
   "failed_tests": [
-    "Server is not running at https://api.mothershipproject.dev"
+    "Server is not running at https://api.mothership.rest"
   ],
   "features_tested": [],
   "analysis": {

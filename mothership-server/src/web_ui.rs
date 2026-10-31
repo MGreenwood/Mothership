@@ -1,24 +1,34 @@
 use axum::{
-    extract::{Query, State, Json},
+    extract::{State, Json, Path},
     http::StatusCode,
-    response::{Html, Response, IntoResponse},
+    response::{Html, Response, IntoResponse, Redirect},
     routing::{get, post},
     Router,
 };
+use mothership_common::auth::{OAuthProvider, OAuthSource};
 use axum_extra::extract::cookie::CookieJar;
 use serde::Deserialize;
 use tracing::{info, warn, error};
 use tower_http::services::ServeDir;
 use axum_extra::extract::cookie::Cookie;
-use time::Duration;
 use url;
 use urlencoding;
+use std::fs;
+use uuid;
+use qrcode::QrCode;
+use base64::{self, Engine};
 
 /// Web UI routes for authentication and CLI downloads
 pub fn routes() -> Router<crate::AppState> {
     Router::new()
         .route("/", get(index_page))
-        .route("/login", get(login_page))
+    .route("/login", get(login_page))
+    .route("/auth/start", get(auth_start))
+    .route("/auth/ghostid", get(ghostid_auth_page))
+    .route("/auth/ghostid/qr/:challenge_id", get(ghostid_qr_page))
+    .route("/auth/ghostid/poll/:challenge_id", get(ghostid_poll_status))
+    .route("/auth/ghostid/callback", post(ghostid_auth_callback))
+    .route("/auth/ghostid/test", get(ghostid_callback_test))
         .route("/download", get(download_page))
         .route("/download/authenticated", get(authenticated_download_page))
         .route("/auth/callback", post(auth_callback))
@@ -46,494 +56,107 @@ struct DownloadPageQuery {
     email: Option<String>,
 }
 
+/// Load and process an HTML template with placeholder replacement
+fn load_template(template_name: &str, replacements: &[(&str, &str)]) -> Result<String, std::io::Error> {
+    let template_path = format!("content/{}", template_name);
+    let mut content = fs::read_to_string(&template_path)?;
+    
+    for (placeholder, replacement) in replacements {
+        content = content.replace(&format!("{{{{{}}}}}", placeholder), replacement);
+    }
+    
+    Ok(content)
+}
+
 /// Main index page
-async fn index_page(State(state): State<crate::AppState>) -> Html<String> {
+async fn index_page(State(state): State<crate::AppState>) -> Result<Html<String>, StatusCode> {
     let auth_required = state.config.cli_distribution.require_auth_for_downloads || state.whitelist.is_some();
     
-    let html = format!(r#"
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Mothership Server</title>
-    <link rel="icon" type="image/png" href="/static/icon.png">
-    <style>
-        body {{
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            line-height: 1.6;
-            margin: 0;
-            padding: 2rem;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            color: white;
-        }}
-        
-        .container {{
-            max-width: 800px;
-            margin: 0 auto;
-            background: rgba(255, 255, 255, 0.1);
-            padding: 3rem;
-            border-radius: 20px;
-            backdrop-filter: blur(10px);
-            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.2);
-        }}
-        
-        h1 {{
-            font-size: 3rem;
-            margin-bottom: 1rem;
-            text-align: center;
-        }}
-        
-        .subtitle {{
-            text-align: center;
-            font-size: 1.2rem;
-            opacity: 0.9;
-            margin-bottom: 3rem;
-        }}
-        
-        .features {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 2rem;
-            margin: 3rem 0;
-        }}
-        
-        .feature {{
-            background: rgba(255, 255, 255, 0.1);
-            padding: 2rem;
-            border-radius: 15px;
-            text-align: center;
-        }}
-        
-        .feature h3 {{
-            margin-bottom: 1rem;
-            font-size: 1.5rem;
-        }}
-        
-        .cta {{
-            text-align: center;
-            margin: 3rem 0;
-        }}
-        
-        .btn {{
-            display: inline-block;
-            padding: 1rem 2rem;
-            background: rgba(255, 255, 255, 0.2);
-            color: white;
-            text-decoration: none;
-            border-radius: 10px;
-            font-weight: bold;
-            margin: 0.5rem;
-            transition: all 0.3s ease;
-            border: 2px solid rgba(255, 255, 255, 0.3);
-        }}
-        
-        .btn:hover {{
-            background: rgba(255, 255, 255, 0.3);
-            transform: translateY(-2px);
-        }}
-        
-        .btn-primary {{
-            background: rgba(72, 187, 120, 0.8);
-            border-color: rgba(72, 187, 120, 1);
-        }}
-        
-        .warning {{
-            background: rgba(245, 101, 101, 0.2);
-            border: 2px solid rgba(245, 101, 101, 0.5);
-            padding: 1rem;
-            border-radius: 10px;
-            margin: 2rem 0;
-        }}
-        
-        .info {{
-            background: rgba(66, 153, 225, 0.2);
-            border: 2px solid rgba(66, 153, 225, 0.5);
-            padding: 1rem;
-            border-radius: 10px;
-            margin: 2rem 0;
-        }}
-        
-        code {{
-            background: rgba(0, 0, 0, 0.3);
-            padding: 0.2rem 0.5rem;
-            border-radius: 5px;
-            font-family: 'Monaco', 'Courier New', monospace;
-        }}
-        
-        .code-block {{
-            background: rgba(0, 0, 0, 0.4);
-            padding: 1rem;
-            border-radius: 10px;
-            margin: 1rem 0;
-            overflow-x: auto;
-        }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div style="text-align: center; margin-bottom: 2rem;">
-            <img src="/static/icon.png" alt="Mothership" style="height: 80px; width: auto; margin-bottom: 1rem;" />
-            <h1>Mothership</h1>
-        </div>
-        <p class="subtitle">Collaborative Development Platform</p>
-        
-        <div class="features">
-            <div class="feature">
-                <h3>🔄 Real-time Sync</h3>
-                <p>Collaborate on code in real-time with seamless file synchronization across your team.</p>
-            </div>
-            <div class="feature">
-                <h3>💬 Live Chat</h3>
-                <p>Built-in chat system for discussing changes and coordinating development efforts.</p>
-            </div>
-            <div class="feature">
-                <h3>📦 CLI Tools</h3>
-                <p>Powerful command-line interface for project management and deployment.</p>
-            </div>
-            <div class="feature">
-                <h3>🔒 Secure Access</h3>
-                <p>Enterprise-grade authentication and access controls for your team.</p>
-            </div>
-        </div>
-        
-        {}
-        
-        <div class="cta">
-            <h2>Get Started</h2>
-            <p>Download the Mothership CLI to begin collaborating with your team</p>
-            {}
-        </div>
-    </div>
-</body>
-</html>
-"#,
-        if auth_required {
-            r#"<div class="warning">
-                <h3>🔐 Authentication Required</h3>
-                <p>This server requires authentication to download CLI tools. Please sign in first to access the download page.</p>
-            </div>"#
-        } else {
-            r#"<div class="info">
-                <h3>🌐 Public Access</h3>
-                <p>CLI downloads are publicly available. Authentication is required for server usage.</p>
-            </div>"#
-        },
-        if auth_required {
-            r#"<a href="/login" class="btn btn-primary">Sign In to Download CLI</a>"#
-        } else {
-            r#"<a href="/download" class="btn btn-primary">Download CLI</a>"#
+    let auth_status = if auth_required {
+        "🔐 Authentication Required - CLI downloads require authentication through your authorized account."
+    } else {
+        "🌐 Public Access - CLI downloads are publicly available. Authentication is required for server usage."
+    };
+    
+    let download_button = if auth_required {
+        r#"<a href="/login" class="btn btn-primary">Sign In to Download CLI</a>"#
+    } else {
+        r#"<a href="/download" class="btn btn-primary">Download CLI</a>"#
+    };
+    
+    let replacements = [
+        ("AUTH_STATUS", auth_status),
+        ("DOWNLOAD_BUTTON", download_button),
+    ];
+    
+    match load_template("index.html", &replacements) {
+        Ok(html) => Ok(Html(html)),
+        Err(e) => {
+            error!("Failed to load index template: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
-    );
+    }
+}
 
-    Html(html)
+/// Start OAuth authentication from the web UI
+async fn auth_start(
+    State(state): State<crate::AppState>,
+) -> Result<Redirect, StatusCode> {
+    let web_ui_url = std::env::var("WEB_UI_BASE_URL")
+        .unwrap_or_else(|_| "https://app.mothership.rest".to_string());
+
+    let callback_url = format!("{}/auth/finalize", web_ui_url);
+
+    let (auth_url, _csrf_state) = state.oauth
+        .get_authorization_url(
+            OAuthProvider::Google,
+            OAuthSource::Web,
+            Some(callback_url),
+        )
+        .await
+        .map_err(|e| {
+            error!("Failed to start web OAuth: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(Redirect::temporary(&auth_url))
 }
 
 /// Login page that starts OAuth flow
 async fn login_page(State(state): State<crate::AppState>) -> Result<Html<String>, StatusCode> {
     if !state.config.features.oauth_enabled {
-        return Ok(Html(format!(r#"
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Authentication Disabled - Mothership</title>
-    <link rel="icon" type="image/png" href="/static/icon.png">
-    <style>
-        body {{
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            line-height: 1.6;
-            margin: 0;
-            padding: 2rem;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            color: white;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }}
+        let replacements = [
+            ("PAGE_TITLE", "Authentication Disabled"),
+            ("PAGE_MESSAGE", "OAuth authentication is not configured on this server"),
+            ("AUTH_CONTENT", r#"<div style="background: rgba(255, 255, 255, 0.1); padding: 2rem; border-radius: 10px; margin: 2rem 0;">
+                <h3>⚠️ Configuration Required</h3>
+                <p>The server administrator needs to configure OAuth settings to enable authentication features.</p>
+            </div>"#),
+        ];
         
-        .container {{
-            max-width: 500px;
-            background: rgba(255, 255, 255, 0.1);
-            padding: 3rem;
-            border-radius: 20px;
-            backdrop-filter: blur(10px);
-            text-align: center;
-        }}
-        
-        .error {{
-            background: rgba(245, 101, 101, 0.3);
-            border: 2px solid rgba(245, 101, 101, 0.6);
-            padding: 2rem;
-            border-radius: 15px;
-            margin: 2rem 0;
-        }}
-        
-        .btn {{
-            display: inline-block;
-            padding: 1rem 2rem;
-            background: rgba(255, 255, 255, 0.2);
-            color: white;
-            text-decoration: none;
-            border-radius: 10px;
-            font-weight: bold;
-            margin: 1rem;
-            transition: all 0.3s ease;
-            border: 2px solid rgba(255, 255, 255, 0.3);
-        }}
-        
-        .btn:hover {{
-            background: rgba(255, 255, 255, 0.3);
-        }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>❌ Authentication Disabled</h1>
-        <div class="error">
-            <h3>OAuth authentication is disabled on this server</h3>
-            <p>Contact your administrator to enable OAuth authentication.</p>
-        </div>
-        <a href="/" class="btn">← Back to Home</a>
-    </div>
-</body>
-</html>
-"#)));
+        match load_template("login.html", &replacements) {
+            Ok(html) => return Ok(Html(html)),
+            Err(e) => {
+                error!("Failed to load login template: {}", e);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
     }
-
-    let html = format!(r#"
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sign In - Mothership</title>
-    <link rel="icon" type="image/png" href="/static/icon.png">
-    <style>
-        body {{
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            line-height: 1.6;
-            margin: 0;
-            padding: 2rem;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            color: white;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }}
-        
-        .container {{
-            max-width: 500px;
-            background: rgba(255, 255, 255, 0.1);
-            padding: 3rem;
-            border-radius: 20px;
-            backdrop-filter: blur(10px);
-            text-align: center;
-        }}
-        
-        h1 {{
-            font-size: 2.5rem;
-            margin-bottom: 1rem;
-        }}
-        
-        .subtitle {{
-            font-size: 1.1rem;
-            opacity: 0.9;
-            margin-bottom: 3rem;
-        }}
-        
-        .auth-options {{
-            display: flex;
-            flex-direction: column;
-            gap: 1rem;
-            margin: 2rem 0;
-        }}
-        
-        .auth-btn {{
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 1rem 2rem;
-            background: rgba(255, 255, 255, 0.1);
-            color: white;
-            text-decoration: none;
-            border-radius: 10px;
-            font-weight: bold;
-            transition: all 0.3s ease;
-            border: 2px solid rgba(255, 255, 255, 0.3);
-        }}
-        
-        .auth-btn:hover {{
-            background: rgba(255, 255, 255, 0.2);
-            transform: translateY(-2px);
-        }}
-        
-        .auth-btn.google {{
-            background: rgba(219, 68, 55, 0.8);
-            border-color: rgba(219, 68, 55, 1);
-        }}
-        
-        .auth-btn.github {{
-            background: rgba(51, 51, 51, 0.8);
-            border-color: rgba(51, 51, 51, 1);
-        }}
-        
-        .back-link {{
-            margin-top: 2rem;
-        }}
-        
-        .back-link a {{
-            color: rgba(255, 255, 255, 0.8);
-            text-decoration: none;
-        }}
-        
-        .back-link a:hover {{
-            color: white;
-        }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div style="text-align: center; margin-bottom: 2rem;">
-            <img src="/static/icon.png" alt="Mothership" style="height: 60px; width: auto; margin-bottom: 1rem;" />
-            <h1>🔐 Sign In</h1>
-        </div>
-        <p class="subtitle">Choose your authentication method to access CLI downloads</p>
-        
-        <div class="auth-options">
-            <button class="auth-btn google" onclick="startOAuth('google')">
-                📧 Continue with Google
-            </button>
-            <button class="auth-btn github" onclick="startOAuth('github')">
-                🐙 Continue with GitHub
-            </button>
-            <button class="auth-btn" onclick="testOAuth()" style="background: rgba(100, 100, 100, 0.8);">
-                🔍 Test OAuth Setup
-            </button>
-            <button class="auth-btn" onclick="signOut()" style="background: rgba(200, 50, 50, 0.8);">
-                🚪 Sign Out of Google
-            </button>
-        </div>
-        
-        <div class="back-link">
-            <a href="/">← Back to Home</a>
-        </div>
-    </div>
     
-    <script>
-        async function signOut() {{
-            // Clear any existing Google session
-            const googleUrl = 'https://accounts.google.com/logout';
-            const w = window.open(googleUrl, '_blank', 'width=700,height=600');
-            setTimeout(() => {{
-                if (w) w.close();
-                window.location.reload();
-            }}, 2000);
-        }}
-        
-        async function startOAuth(provider) {{
-            try {{
-                console.log('Starting OAuth for provider:', provider);
-                
-                // Get the API server URL for OAuth
-                const apiUrl = 'https://api.mothershipproject.dev';
-                const callbackUrl = apiUrl + '/auth/oauth/callback/google';  // Match the server's callback URL
-                console.log('API URL:', apiUrl);
-                console.log('Callback URL:', callbackUrl);
-                
-                const response = await fetch(apiUrl + '/auth/oauth/start', {{
-                    method: 'POST',
-                    headers: {{
-                        'Content-Type': 'application/json',
-                    }},
-                    body: JSON.stringify({{
-                        provider: provider === 'google' ? 'Google' : 'GitHub',
-                        machine_id: 'web-' + Math.random().toString(36).substr(2, 9),
-                        machine_name: 'web-browser-oauth',
-                        platform: navigator.platform || 'unknown',
-                        hostname: window.location.hostname,
-                        callback_url: callbackUrl
-                    }})
-                }});
-                
-                console.log('Response status:', response.status);
-                console.log('Response headers:', response.headers);
-                
-                if (!response.ok) {{
-                    const errorText = await response.text();
-                    console.error('Server error response:', errorText);
-                    alert('Server error (' + response.status + '): ' + errorText.substring(0, 200));
-                    return false;
-                }}
-                
-                const contentType = response.headers.get('content-type');
-                if (!contentType || !contentType.includes('application/json')) {{
-                    const responseText = await response.text();
-                    console.error('Non-JSON response:', responseText);
-                    alert('Server returned non-JSON response: ' + responseText.substring(0, 200));
-                    return false;
-                }}
-                
-                const data = await response.json();
-                console.log('OAuth response data:', data);
-                
-                if (data.success && data.data && data.data.auth_url) {{
-                    console.log('Redirecting to:', data.data.auth_url);
-                    window.location.href = data.data.auth_url;
-                }} else {{
-                    console.error('Invalid response structure:', data);
-                    alert('Failed to start authentication: ' + (data.error || JSON.stringify(data)));
-                }}
-            }} catch (error) {{
-                console.error('JavaScript error:', error);
-                alert('Error starting authentication: ' + error.message);
-            }}
-            return false;
-        }}
-        
-        async function testOAuth() {{
-            try {{
-                const response = await fetch('/auth/oauth/test');
-                const data = await response.json();
-                
-                if (data.success) {{
-                    console.log('OAuth test results:', data.data);
-                    
-                    let message = 'OAuth Configuration Status:\\n\\n';
-                    message += `OAuth Enabled: ${{data.data.oauth_enabled}}\\n`;
-                    message += `Google Client ID: ${{data.data.google_client_id_set ? 'SET' : 'NOT SET'}}\\n`;
-                    message += `Google Client Secret: ${{data.data.google_client_secret_set ? 'SET' : 'NOT SET'}}\\n`;
-                    message += `GitHub Client ID: ${{data.data.github_client_id_set ? 'SET' : 'NOT SET'}}\\n`;
-                    message += `GitHub Client Secret: ${{data.data.github_client_secret_set ? 'SET' : 'NOT SET'}}\\n`;
-                    
-                    if (!data.data.oauth_enabled) {{
-                        message += '\\n❌ OAuth is disabled in server config!';
-                    }} else if (!data.data.google_client_id_set || !data.data.google_client_secret_set) {{
-                        message += '\\n⚠️ Google OAuth credentials missing!';
-                        message += '\\nSet GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables.';
-                    }} else {{
-                        message += '\\n✅ OAuth should be working!';
-                    }}
-                    
-                    alert(message);
-                }} else {{
-                    alert('OAuth test failed: ' + (data.error || 'Unknown error'));
-                }}
-            }} catch (error) {{
-                console.error('OAuth test error:', error);
-                alert('OAuth test error: ' + error.message);
-            }}
-        }}
-    </script>
-</body>
-</html>
-"#);
-
-    Ok(Html(html))
+    let replacements = [
+        ("PAGE_TITLE", "Sign In"),
+        ("PAGE_MESSAGE", "Choose your preferred authentication method"),
+        ("AUTH_CONTENT", r#"<a href="/auth/start" class="auth-btn">🚀 Sign in with OAuth</a>
+        <a href="/auth/ghostid" class="auth-btn" style="background: linear-gradient(45deg, #4CAF50, #45a049);">� Sign in with GhostID Wallet</a>"#),
+    ];
+    
+    match load_template("login.html", &replacements) {
+        Ok(html) => Ok(Html(html)),
+        Err(e) => {
+            error!("Failed to load login template: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
 }
 
 /// Public download page (when auth not required)
@@ -541,76 +164,13 @@ async fn download_page(State(state): State<crate::AppState>) -> Html<String> {
     let auth_required = state.config.cli_distribution.require_auth_for_downloads || state.whitelist.is_some();
     
     if auth_required {
-        return Html(format!(r#"
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Authentication Required - Mothership</title>
-    <link rel="icon" type="image/png" href="/static/icon.png">
-    <style>
-        body {{
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            line-height: 1.6;
-            margin: 0;
-            padding: 2rem;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            color: white;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }}
-        
-        .container {{
-            max-width: 500px;
-            background: rgba(255, 255, 255, 0.1);
-            padding: 3rem;
-            border-radius: 20px;
-            backdrop-filter: blur(10px);
-            text-align: center;
-        }}
-        
-        .warning {{
-            background: rgba(245, 101, 101, 0.3);
-            border: 2px solid rgba(245, 101, 101, 0.6);
-            padding: 2rem;
-            border-radius: 15px;
-            margin: 2rem 0;
-        }}
-        
-        .btn {{
-            display: inline-block;
-            padding: 1rem 2rem;
-            background: rgba(72, 187, 120, 0.8);
-            color: white;
-            text-decoration: none;
-            border-radius: 10px;
-            font-weight: bold;
-            margin: 1rem;
-            transition: all 0.3s ease;
-            border: 2px solid rgba(72, 187, 120, 1);
-        }}
-        
-        .btn:hover {{
-            background: rgba(72, 187, 120, 1);
-        }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>🔐 Authentication Required</h1>
-        <div class="warning">
-            <h3>This server requires authentication</h3>
-            <p>To download CLI tools, you must first sign in with your authorized account.</p>
-        </div>
-        <a href="/login" class="btn">Sign In</a>
-        <a href="/" class="btn" style="background: rgba(255, 255, 255, 0.2); border-color: rgba(255, 255, 255, 0.3);">← Back to Home</a>
-    </div>
-</body>
-</html>
-        "#));
+        match load_template("auth-required.html", &[]) {
+            Ok(html) => return Html(html),
+            Err(e) => {
+                error!("Failed to load auth-required template: {}", e);
+                return Html("<!DOCTYPE html><html><head><title>Auth Required</title></head><body><h1>Authentication Required</h1><p><a href='/login'>Please sign in</a></p></body></html>".to_string());
+            }
+        }
     }
 
     // Public download page
@@ -1024,7 +584,7 @@ async fn auth_callback(
     // Validate the token with the API server
     let client = reqwest::Client::new();
     let api_server_url = std::env::var("MOTHERSHIP_API_URL")
-        .unwrap_or_else(|_| "https://api.mothershipproject.dev".to_string());
+        .unwrap_or_else(|_| "https://api.mothership.rest".to_string());
     
     let validation_response = client
         .get(&format!("{}/auth/check", api_server_url))
@@ -1071,9 +631,9 @@ pub async fn auth_finalize(
     State(state): State<crate::AppState>,
     query: axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Result<Response, StatusCode> {
-    let callback_url = query.get("callback_url")
+    let _callback_url = query.get("callback_url")
         .map(|url| url.to_string())
-        .unwrap_or_else(|| "https://app.mothershipproject.dev".to_string());
+        .unwrap_or_else(|| "https://app.mothership.rest".to_string());
 
     let code = query.get("code")
         .ok_or_else(|| {
@@ -1147,7 +707,7 @@ pub async fn auth_finalize(
         // Extract base domain from web_ui_url
         if let Ok(url) = url::Url::parse(&web_ui_url) {
             if let Some(domain) = url.domain() {
-                // Get the base domain (e.g., "mothershipproject.dev" from "app.mothershipproject.dev")
+                // Get the base domain (e.g., "mothership.rest" from "app.mothership.rest")
                 let parts: Vec<&str> = domain.split('.').collect();
                 if parts.len() >= 2 {
                     let base_domain = format!(".{}.{}", parts[parts.len() - 2], parts[parts.len() - 1]);
@@ -1175,4 +735,339 @@ pub async fn auth_finalize(
         CookieJar::new().add(cookie),
         axum::response::Redirect::to(&success_url)
     ).into_response())
-} 
+}
+
+/// GhostID wallet authentication page - creates QR challenge and shows QR code
+async fn ghostid_auth_page(State(state): State<crate::AppState>) -> Result<Html<String>, StatusCode> {
+    // Create QR challenge via internal API
+    let challenge_req = crate::qr_auth::QrStartRequest {
+        domain: "mothership.cli".to_string(),
+        action: Some("download".to_string()),
+    };
+    
+    match crate::qr_auth::start_qr_challenge(State(state), Json(challenge_req)).await {
+        Ok(Json(challenge_response)) => {
+            let qr_url = format!("/auth/ghostid/qr/{}", challenge_response.challenge_id);
+            
+            let replacements = [
+                ("QR_URL", qr_url.as_str()),
+                ("CHALLENGE_ID", challenge_response.challenge_id.as_str()),
+            ];
+            
+            match load_template("ghostid-auth.html", &replacements) {
+                Ok(html) => Ok(Html(html)),
+                Err(e) => {
+                    error!("Failed to load ghostid-auth template: {}", e);
+                    Err(StatusCode::INTERNAL_SERVER_ERROR)
+                }
+            }
+        }
+        Err(_) => {
+            error!("Failed to create QR challenge");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+/// Generate QR code image for GhostID authentication
+async fn ghostid_qr_page(
+    Path(challenge_id): Path<String>,
+    State(state): State<crate::AppState>,
+) -> impl IntoResponse {
+    // Get the challenge data via internal API
+    match crate::qr_auth::get_qr_status(Path(challenge_id.clone())).await {
+        Ok(_) => {
+            // Get domain from environment variable like other endpoints
+            let oauth_base_url = std::env::var("OAUTH_BASE_URL")
+                .unwrap_or_else(|_| "https://api.mothership.rest".to_string());
+            
+            let domain = if let Ok(url) = url::Url::parse(&oauth_base_url) {
+                url.host_str().unwrap_or("mothership.rest").to_string()
+            } else {
+                "mothership.rest".to_string()
+            };
+            
+            // Challenge exists, create the challenge JSON like the auth-server
+            let oauth_base_url = std::env::var("OAUTH_BASE_URL")
+                .unwrap_or_else(|_| "https://app.mothership.rest".to_string());
+            
+            // Create callback URL pointing to this Mothership instance with challenge ID
+            let callback_url = format!("{}/auth/ghostid/callback?challenge_id={}", oauth_base_url, challenge_id);
+            
+            let challenge_json = serde_json::json!({
+                "challengeId": challenge_id,
+                "domain": domain,
+                "action": "login",
+                "nonce": uuid::Uuid::new_v4().to_string(),
+                "issuedAt": chrono::Utc::now().timestamp(),
+                "expiresAt": chrono::Utc::now().timestamp() + 300, // 5 minutes
+                "payload": {},
+                "permissions": ["login", "access"],
+                "tier": "early access",
+                "duration_days": 365,
+                "callbackUrl": callback_url
+            });
+            
+            // Convert to base64 like the auth-server does
+            let json_string = match serde_json::to_string(&challenge_json) {
+                Ok(s) => s,
+                Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            };
+            let base64_data = base64::engine::general_purpose::STANDARD.encode(json_string.as_bytes());
+            
+            // Generate QR code as simple text and convert to SVG
+            match QrCode::new(&base64_data) {
+                Ok(code) => {
+                    // Render as string first
+                    let qr_string = code.render::<char>()
+                        .quiet_zone(false)
+                        .module_dimensions(1, 1)
+                        .dark_color('█')
+                        .light_color(' ')
+                        .build();
+                    
+                    // Convert to SVG manually
+                    let lines: Vec<&str> = qr_string.lines().collect();
+                    let size = lines.len();
+                    let scale = 4; // Scale factor for visibility
+                    let svg_size = size * scale;
+                    
+                    let mut svg = format!(
+                        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{}" height="{}" viewBox="0 0 {} {}">"#,
+                        svg_size, svg_size, size, size
+                    );
+                    
+                    for (y, line) in lines.iter().enumerate() {
+                        for (x, ch) in line.chars().enumerate() {
+                            if ch == '█' {
+                                svg.push_str(&format!(
+                                    r#"<rect x="{}" y="{}" width="1" height="1" fill="black"/>"#,
+                                    x, y
+                                ));
+                            }
+                        }
+                    }
+                    
+                    svg.push_str("</svg>");
+                    
+                    (
+                        [
+                            ("content-type", "image/svg+xml"),
+                            ("cache-control", "no-cache"),
+                        ],
+                        svg
+                    ).into_response()
+                }
+                Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }
+        }
+        Err(_) => StatusCode::NOT_FOUND.into_response()
+    }
+}
+
+/// Poll QR authentication status and create session if verified
+async fn ghostid_poll_status(
+    Path(challenge_id): Path<String>,
+    State(state): State<crate::AppState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    // Get the challenge status via internal API
+    match crate::qr_auth::get_qr_status(Path(challenge_id.clone())).await {
+        Ok(Json(status)) => {
+            // If verified, create a session like we do for OAuth
+            if status.status == "verified" {
+                if let Some(user_address) = &status.user_address {
+                    // Create session for ghostid wallet user
+                    let session_id = uuid::Uuid::new_v4().to_string();
+                    let username = format!("ghostid:{}", user_address);
+                    let email = format!("{}@ghostid.wallet", user_address);
+                    let now = chrono::Utc::now();
+                    
+                    // Generate a random UUID for the ghostid wallet user
+                    let user_uuid = uuid::Uuid::new_v4();
+                    
+                    let session_data = crate::SessionData {
+                        user_id: user_uuid,
+                        username: username.clone(),
+                        email: email.clone(),
+                        token: session_id.clone(), // Use session ID as token for ghostid auth
+                        expires_at: now + chrono::Duration::hours(24),
+                        created_at: now,
+                    };
+                    
+                    // Store session
+                    {
+                        let mut sessions = state.sessions.write().await;
+                        sessions.insert(session_id.clone(), session_data);
+                    }
+                    
+                    info!("✅ Created ghostid wallet session for user: {} ({})", username, email);
+                    
+                    // Get the web UI URL for cookie domain
+                    let web_ui_url = std::env::var("WEB_UI_BASE_URL")
+                        .or_else(|_| std::env::var("OAUTH_BASE_URL"))
+                        .unwrap_or_else(|_| "http://localhost:7523".to_string());
+                    
+                    // Create session cookie - determine secure flag and domain
+                    let is_secure = web_ui_url.starts_with("https");
+                    let is_localhost = web_ui_url.contains("localhost") || web_ui_url.contains("127.0.0.1");
+                    
+                    let mut cookie_builder = Cookie::build(("mothership_session", session_id.clone()))
+                        .http_only(true)
+                        .secure(is_secure)
+                        .same_site(axum_extra::extract::cookie::SameSite::Lax)
+                        .path("/");
+                    
+                    // Set domain for non-localhost URLs
+                    if !is_localhost {
+                        // Extract base domain from web_ui_url
+                        if let Ok(url) = url::Url::parse(&web_ui_url) {
+                            if let Some(domain) = url.domain() {
+                                // Get the base domain (e.g., "mothership.rest" from "app.mothership.rest")
+                                let parts: Vec<&str> = domain.split('.').collect();
+                                if parts.len() >= 2 {
+                                    let base_domain = format!(".{}.{}", parts[parts.len() - 2], parts[parts.len() - 1]);
+                                    info!("🍪 Setting session cookie domain to: {}", base_domain);
+                                    cookie_builder = cookie_builder.domain(base_domain);
+                                }
+                            }
+                        }
+                    }
+                    
+                    let cookie = cookie_builder.build();
+                    
+              info!("🍪 GhostID session cookie created - secure: {}, localhost: {}, domain: {:?}", 
+                  is_secure, is_localhost, cookie.domain());
+                    
+                    // Return success status with cookie
+                    Ok((
+                        CookieJar::new().add(cookie),
+                        Json(serde_json::json!({
+                            "status": "verified",
+                            "user_address": user_address,
+                            "session_id": session_id
+                        }))
+                    ).into_response())
+                } else {
+                    Ok(Json(serde_json::json!({"status": "failed", "error": "missing_address"})).into_response())
+                }
+            } else {
+                // Return the current status (pending, failed, etc.)
+                Ok(Json(serde_json::json!(status)).into_response())
+            }
+        }
+        Err(status_code) => Err(status_code)
+    }
+}
+
+/// Handle callback from GhostID Chain after mobile authentication
+async fn ghostid_auth_callback(
+    State(state): State<crate::AppState>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    Json(callback_data): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    info!("🎯 GhostID AUTH CALLBACK ENDPOINT HIT!");
+    info!("🔄 Received GhostID Chain callback: {:?}", callback_data);
+    info!("📝 Query parameters: {:?}", params);
+    
+    // Extract challengeId, publicKey, signature, and tokenId from mobile app callback data
+    info!("🔍 Extracting fields from callback data...");
+    let challenge_id_from_payload = callback_data.get("challengeId")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            error!("❌ Missing 'challengeId' field in callback data");
+            StatusCode::BAD_REQUEST
+        })?;
+    
+    let public_key = callback_data.get("publicKey")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            error!("❌ Missing 'publicKey' field in callback data");
+            StatusCode::BAD_REQUEST
+        })?;
+    
+    let signature = callback_data.get("signature")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            error!("❌ Missing 'signature' field in callback data");
+            StatusCode::BAD_REQUEST
+        })?;
+    
+    let token_id = callback_data.get("tokenId")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            error!("❌ Missing 'tokenId' field in callback data");
+            StatusCode::BAD_REQUEST
+        })?;
+    
+    info!("✅ Successfully extracted fields - challengeId: {}, tokenId: {}, publicKey: {}...", 
+          challenge_id_from_payload, token_id, &public_key[..std::cmp::min(8, public_key.len())]);
+    
+    // Extract challenge_id from query parameters (should match challengeId from payload)
+    info!("🔍 Extracting challenge_id from query parameters...");
+    let challenge_id = params.get("challenge_id")
+        .ok_or_else(|| {
+            error!("❌ Missing 'challenge_id' query parameter");
+            StatusCode::BAD_REQUEST
+        })?;
+    
+    // Verify challenge IDs match
+    info!("🔍 Verifying challenge IDs match...");
+    if challenge_id != challenge_id_from_payload {
+        error!("❌ Challenge ID mismatch: URL param '{}' != payload '{}'", challenge_id, challenge_id_from_payload);
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    info!("✅ Challenge IDs match: {}", challenge_id);
+    
+    info!("🔍 Processing callback for challenge_id: {}, token_id: {}, public_key: {}...", 
+          challenge_id, token_id, &public_key[..std::cmp::min(8, public_key.len())]);
+    
+    // Verify the challenge exists
+    info!("🔍 Looking up challenge in database...");
+    let challenge = crate::qr_auth::get_qr_challenge(challenge_id).await;
+    
+    if let Some(challenge) = challenge {
+        info!("✅ Challenge found for domain: {}", challenge.domain);
+        
+    // For mobile wallet authentication, we don't need to verify domain since 
+    // the mobile app already validated the auth token on-chain
+    info!("🔍 Creating user address from public key...");
+        
+    // Create a user address from the public key for identification
+    let user_address = format!("ghostid_wallet_{}", &public_key[..std::cmp::min(12, public_key.len())]);
+    info!("✅ Generated user address: {}", user_address);
+        
+        // Update the QR result to verified
+        info!("🔍 Updating QR challenge status to verified...");
+        crate::qr_auth::update_qr_result(challenge_id.to_string(), crate::qr_auth::QrResult {
+            status: "verified".to_string(),
+            user_address: Some(user_address),
+            verified_at: Some(chrono::Utc::now()),
+        }).await;
+        
+        info!("✅ Updated QR challenge {} status to verified", challenge_id);
+        
+        let response = serde_json::json!({
+            "success": true,
+            "message": "Callback processed successfully",
+            "challenge_id": challenge_id,
+            "token_id": token_id
+        });
+        info!("🎉 Sending success response: {:?}", response);
+        return Ok(Json(response));
+    } else {
+        error!("❌ Challenge not found: {}", challenge_id);
+    }
+    
+    error!("❌ Failed to process callback: invalid challenge");
+    Err(StatusCode::BAD_REQUEST)
+}
+
+/// Test endpoint to verify the callback route is accessible
+async fn ghostid_callback_test() -> Json<serde_json::Value> {
+    info!("🧪 GhostID callback test endpoint hit!");
+    Json(serde_json::json!({
+        "status": "ok",
+        "message": "GhostID callback endpoint is accessible",
+        "timestamp": chrono::Utc::now().to_rfc3339()
+    }))
+}

@@ -41,6 +41,7 @@ tracing-subscriber = { workspace = true }
 chrono = { workspace = true }
 dotenvy = { workspace = true }
 time = "0.3"
+lazy_static = "1.4"
 
 # OAuth2 for Google/GitHub
 oauth2 = "4.4"
@@ -57,4 +58,9 @@ flate2 = "1.0"
 toml = "0.8"
 
 # URL handling
-url = "2.5.0" 
+url = "2.5.0"
+
+# QR code generation
+qrcode = "0.14"
+image = "0.24"
+base64 = "0.21" 

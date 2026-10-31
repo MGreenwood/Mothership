@@ -190,7 +190,7 @@ mothership-db-1   postgres:13-alpine   "docker-entrypoint.sâ€¦"   db        
       "headers": {
         "content-type": "application/json",
         "vary": "origin, access-control-request-method, access-control-request-headers",
-        "access-control-allow-origin": "https://app.mothershipproject.dev",
+        "access-control-allow-origin": "https://app.mothership.rest",
         "access-control-allow-credentials": "true",
         "content-length": "79",
         "date": "Fri, 15 Aug 2025 23:16:45 GMT"
@@ -204,7 +204,7 @@ mothership-db-1   postgres:13-alpine   "docker-entrypoint.sâ€¦"   db        
       "response_body": "",
       "headers": {
         "vary": "origin, access-control-request-method, access-control-request-headers",
-        "access-control-allow-origin": "https://app.mothershipproject.dev",
+        "access-control-allow-origin": "https://app.mothership.rest",
         "access-control-allow-credentials": "true",
         "content-length": "0",
         "date": "Fri, 15 Aug 2025 23:16:45 GMT"

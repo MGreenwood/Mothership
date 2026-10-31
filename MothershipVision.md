@@ -2,7 +2,7 @@
 
 ## Vision Statement
 
-Mothership is an experimental version control system that eliminates the complexity and fear associated with traditional version control while adding collaborative features that Git never had. Developers should never lose work, never need to manually commit changes, and should be able to collaborate in real-time within isolated development spaces - with conversations and context preserved as part of the project's living history.
+Mothership is an experimental version control system that eliminates the complexity and fear associated with traditional version control while adding collaborative features that others never had. Developers should never lose work, never need to manually commit changes, and should be able to collaborate in real-time within isolated development spaces - with conversations and context preserved as part of the project's living history.
 
 ## Core Philosophy
 

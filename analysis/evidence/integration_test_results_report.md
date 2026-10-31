@@ -22,7 +22,7 @@
 
 ## Failed Tests
 
-❌ Server is not running at https://api.mothershipproject.dev
+❌ Server is not running at https://api.mothership.rest
 
 ## Test Coverage Analysis
 
@@ -73,7 +73,7 @@
 [+] All prerequisites found
 
 ==== Testing server connection ====
-[-] Server is not running at https://api.mothershipproject.dev
+[-] Server is not running at https://api.mothership.rest
 
 ```
 

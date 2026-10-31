@@ -262,7 +262,7 @@ class ServiceConfigVerifier:
         try:
             # Get database connection details from environment
             db_host = "localhost"
-            db_port = 5432
+            db_port = 5433
             db_name = "mothership"
             db_user = "postgres"
             db_password = "mothership_dev"  # From .env file

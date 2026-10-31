@@ -24,7 +24,7 @@ function Start-Postgres {
         docker rm -f $name | Out-Null
     }
     Write-Host "Starting Postgres container $name on port $HostPort..."
-    docker run -d --name $name -e POSTGRES_USER=$DbUser -e POSTGRES_PASSWORD=$DbPass -e POSTGRES_DB=$DbName -p ${HostPort}:5432 postgres:15 | Out-Null
+    docker run -d --name $name -e POSTGRES_USER=$DbUser -e POSTGRES_PASSWORD=$DbPass -e POSTGRES_DB=$DbName -p ${HostPort}:5433 postgres:15 | Out-Null
 
     Write-Host "Waiting for Postgres to become ready..."
     while ($true) {

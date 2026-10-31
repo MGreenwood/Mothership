@@ -191,7 +191,7 @@ class DockerDeploymentTester:
         services_to_test = [
             {"name": "mothership-api", "url": "http://localhost:7523", "expected_status": [200, 404, 401]},
             {"name": "mothership-web", "url": "http://localhost:8080", "expected_status": [200, 404]},
-            {"name": "postgres", "host": "localhost", "port": 5432}
+            {"name": "postgres", "host": "localhost", "port": 5433}
         ]
         
         for service in services_to_test:

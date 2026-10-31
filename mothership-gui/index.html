@@ -682,6 +682,7 @@
             <div class="auth-tabs">
                 <div class="auth-tab active" data-tab="oauth">Quick Sign In</div>
                 <div class="auth-tab" data-tab="email">Email & Password</div>
+                <div class="auth-tab" data-tab="qr">Wallet QR</div>
             </div>
 
             <div class="auth-content">
@@ -732,6 +733,16 @@
                         <span style="margin: 0 8px; color: #666;">•</span>
                         <a href="#" id="create-account">Create an account</a>
                     </div>
+                </div>
+
+                <!-- Wallet QR Section -->
+                <div class="auth-section" id="qr-section">
+                    <div id="qr-message" class="auth-info"></div>
+                    <div id="qr-container" style="text-align:center; margin-bottom:16px;">
+                        <img id="qr-image" src="" alt="Wallet Login QR" style="max-width:100%; height:auto;" />
+                    </div>
+                    <button id="generate-qr-btn" class="auth-btn-primary">Generate QR Code</button>
+                    <pre id="qr-status" style="margin-top:16px; font-size:13px; color:#ccc;"></pre>
                 </div>
             </div>
         </div>
@@ -791,4 +802,4 @@
 
     <script type="module" src="/main.js"></script>
 </body>
-</html> 
+</html>
