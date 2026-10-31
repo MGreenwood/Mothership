@@ -43,11 +43,12 @@ struct StreamMetadata {
     temp_file_path: PathBuf,
     is_binary: bool,
     content_hash: String,
+    base_hash: Option<String>,
     started_at: Instant,
 }
 
 impl StreamMetadata {
-    fn new(stream_id: Uuid, rift_id: Uuid, file_path: PathBuf, total_size: u64, chunk_size: u32, is_binary: bool, content_hash: String) -> Self {
+    fn new(stream_id: Uuid, rift_id: Uuid, file_path: PathBuf, total_size: u64, chunk_size: u32, is_binary: bool, content_hash: String, base_hash: Option<String>) -> Self {
         let expected_chunks = ((total_size + chunk_size as u64 - 1) / chunk_size as u64) as u32;
         let temp_file_path = std::env::temp_dir().join(format!("mothership_stream_{}", stream_id));
         
@@ -61,6 +62,7 @@ impl StreamMetadata {
             temp_file_path,
             is_binary,
             content_hash,
+            base_hash,
             started_at: Instant::now(),
         }
     }
@@ -633,9 +635,17 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
                 Err(_) => String::new(), // New file
             };
 
-            // A diff only applies cleanly to the base it was made against.
+            // A diff only applies cleanly to the base it was made against. On a stale base,
+            // the server cannot rebuild the client's content from the diff, so it tells the
+            // editing client to adopt main instead of applying the diff.
             if is_stale_base(base_hash.as_deref(), &original_content) {
-                return Err(anyhow::anyhow!("Stale base for diff on {}; resync required", path.display()));
+                warn!("Stale base for diff on {} in rift {}; forcing client resync", path.display(), msg_rift_id);
+                let _ = state.broadcaster.send((connection_channel.to_string(), SyncMessage::ForceSync {
+                    path: path.clone(),
+                    server_content: original_content,
+                    server_timestamp: chrono::Utc::now(),
+                }));
+                return Ok(());
             }
             
             let diff_engine = DiffEngine::new();
@@ -688,7 +698,7 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
             let response = SyncMessage::RiftDiffUpdate {
                 rift_id: msg_rift_id,
                 diff_changes: changes_for_response,
-                author: Uuid::new_v4(), // TODO: Get actual user ID
+                author: user_id,
                 timestamp: chrono::Utc::now(),
                 compressed,
             };
@@ -712,7 +722,7 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
             // Create actual checkpoint using storage engine
             let checkpoint = state.storage.create_checkpoint(
                 msg_rift_id,
-                Uuid::new_v4(), // TODO: Get actual user ID from session
+                user_id,
                 message.clone(),
                 false, // Manual checkpoint
             ).await?;
@@ -735,11 +745,11 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
         }
 
         // Streaming support
-        SyncMessage::StartFileStream { stream_id, rift_id, path, total_size, chunk_size, content_hash, is_binary, timestamp: _ } => {
+        SyncMessage::StartFileStream { stream_id, rift_id, path, total_size, chunk_size, content_hash, is_binary, timestamp: _, base_hash } => {
             info!("📡 Starting file stream {} for {}: {} bytes", stream_id, path.display(), total_size);
             
             let mut stream_manager = state.stream_manager.lock().await;
-            let metadata = StreamMetadata::new(stream_id, rift_id, path.clone(), total_size, chunk_size, is_binary, content_hash);
+            let metadata = StreamMetadata::new(stream_id, rift_id, path.clone(), total_size, chunk_size, is_binary, content_hash, base_hash);
             stream_manager.active_streams.insert(stream_id, metadata);
             
             info!("✅ Stream {} registered for file {}", stream_id, path.display());
@@ -810,8 +820,17 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
                             // Read assembled file content and save to storage
                             match tokio::fs::read_to_string(&final_path).await {
                                 Ok(content) => {
-                                    // Save to storage
-                                    if let Err(e) = state.storage.update_live_state(metadata.rift_id, metadata.file_path.clone(), content.clone()).await {
+                                    let rift_id = metadata.rift_id;
+                                    let file_path = metadata.file_path.clone();
+                                    let original = state.storage.get_file_content(rift_id, &file_path).await.unwrap_or_default();
+                                    if is_stale_base(metadata.base_hash.as_deref(), &original) {
+                                        warn!("Stale base for streamed {} in rift {}; diverting to conflict rift", file_path.display(), rift_id);
+                                        if let Err(e) = create_conflict_rift_for_stale_edit(
+                                            state, rift_id, user_id, connection_channel, &file_path, content, original,
+                                        ).await {
+                                            error!("❌ Failed to create conflict rift for streamed file: {}", e);
+                                        }
+                                    } else if let Err(e) = state.storage.update_live_state(metadata.rift_id, metadata.file_path.clone(), content.clone()).await {
                                         error!("❌ Failed to save streamed file to storage: {}", e);
                                     } else {
                                         info!("💾 Streamed file saved to storage: {}", metadata.file_path.display());
@@ -821,7 +840,7 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
                                             rift_id: metadata.rift_id,
                                             path: metadata.file_path.clone(),
                                             content,
-                                            author: Uuid::new_v4(), // TODO: Get actual user ID
+                                            author: user_id,
                                             timestamp: chrono::Utc::now(),
                                         };
                                         

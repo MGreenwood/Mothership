@@ -391,7 +391,7 @@ impl MothershipDaemon {
     ) -> Result<()> {
         // Check if file requires streaming (empty content indicates streaming file)
         if event.content.is_empty() && event.file_size > 0 {
-            return Self::send_file_via_streaming(event, tracked_projects, outgoing_channels).await;
+            return Self::send_file_via_streaming(event, tracked_projects, outgoing_channels, base_hashes).await;
         }
         
         // Get project metadata to determine rift_id
@@ -451,6 +451,7 @@ impl MothershipDaemon {
         event: &FileChangeEvent,
         tracked_projects: &Arc<RwLock<HashMap<Uuid, TrackedProject>>>,
         outgoing_channels: &Arc<RwLock<HashMap<Uuid, mpsc::UnboundedSender<SyncMessage>>>>,
+        base_hashes: &BaseHashes,
     ) -> Result<()> {
         // Get project metadata to determine rift_id and construct full file path
         let (rift_id, full_path) = {
@@ -495,6 +496,8 @@ impl MothershipDaemon {
         };
         
         // Send stream start message
+        let base_key = (event.project_id, event.file_path.to_string_lossy().to_string());
+        let base_hash = base_hashes.read().await.get(&base_key).cloned();
         let start_message = SyncMessage::StartFileStream {
             stream_id,
             rift_id,
@@ -504,6 +507,7 @@ impl MothershipDaemon {
             content_hash: String::new(), // Will be calculated during streaming
             is_binary: !event.file_path.to_string_lossy().ends_with(".txt"), // Simple heuristic
             timestamp: event.timestamp,
+            base_hash,
         };
         
         // Send start message
@@ -544,7 +548,11 @@ impl MothershipDaemon {
         }
         
         match result {
-            Ok(_) => info!("✅ File stream completed for {}", event.file_path.display()),
+            Ok(ref hash) => {
+                info!("✅ File stream completed for {}", event.file_path.display());
+                // The streamed file now matches the server's copy, so it becomes the new base
+                base_hashes.write().await.insert(base_key, hash.clone());
+            }
             Err(ref e) => error!("❌ File stream failed for {}: {}", event.file_path.display(), e),
         }
         

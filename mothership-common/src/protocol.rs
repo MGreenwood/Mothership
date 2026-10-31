@@ -294,6 +294,9 @@ pub enum SyncMessage {
         content_hash: String,
         is_binary: bool,
         timestamp: DateTime<Utc>,
+        /// See `FileChanged::base_hash`. Checked by the server when the stream completes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        base_hash: Option<String>,
     },
     
     /// Send a chunk of file data during streaming
