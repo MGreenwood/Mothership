@@ -1012,7 +1012,8 @@ async fn get_rifts() -> Result<Vec<RiftInfo>> {
     }
     
     let rifts = api_response.data.ok_or_else(|| anyhow!("No rift data received"))?;
-    Ok(rifts)
+    let project_id = local_project_id();
+    Ok(rifts.into_iter().filter(|r| in_project(r, project_id)).collect())
 }
 
 /// Create a new rift
@@ -1037,11 +1038,13 @@ async fn create_rift(name: &str, description: Option<String>) -> Result<uuid::Uu
     struct CreateRiftRequest {
         name: String,
         description: Option<String>,
+        project_id: Option<uuid::Uuid>,
     }
     
     let request = CreateRiftRequest {
         name: name.to_string(),
         description,
+        project_id: local_project_id(),
     };
     
     let response = client
@@ -1052,8 +1055,7 @@ async fn create_rift(name: &str, description: Option<String>) -> Result<uuid::Uu
         .await?;
     
     if !response.status().is_success() {
-        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
-        return Err(anyhow!("Failed to create rift: {}", error_text));
+        return Err(anyhow!("Failed to create rift: {}", response_error_message(response).await));
     }
     
     // Parse ApiResponse format
@@ -1123,10 +1125,12 @@ async fn switch_to_rift(rift_name: &str) -> Result<()> {
     #[derive(serde::Serialize)]
     struct SwitchRiftRequest {
         rift_name: String,
+        project_id: Option<uuid::Uuid>,
     }
     
     let request = SwitchRiftRequest {
         rift_name: rift_name.to_string(),
+        project_id: local_project_id(),
     };
     
     let response = client
@@ -1137,8 +1141,7 @@ async fn switch_to_rift(rift_name: &str) -> Result<()> {
         .await?;
     
     if !response.status().is_success() {
-        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
-        return Err(anyhow!("Failed to switch rift: {}", error_text));
+        return Err(anyhow!("Failed to switch rift: {}", response_error_message(response).await));
     }
     
     // Parse ApiResponse format
@@ -1212,6 +1215,15 @@ fn get_current_project_metadata() -> Result<ProjectMetadata> {
     let project_content = std::fs::read_to_string(&project_file)?;
     let project_metadata: ProjectMetadata = serde_json::from_str(&project_content)?;
     Ok(project_metadata)
+}
+
+/// Read the error message from a failed server response, falling back to the raw body
+async fn response_error_message(response: reqwest::Response) -> String {
+    let body = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+    serde_json::from_str::<ApiResponse<serde_json::Value>>(&body)
+        .ok()
+        .and_then(|parsed| parsed.error)
+        .unwrap_or(body)
 }
 
 /// Helper function to update local rift metadata

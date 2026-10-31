@@ -371,6 +371,18 @@ impl Database {
         }))
     }
 
+    /// Whether a rift with this name already exists in the project
+    pub async fn rift_name_exists(&self, project_id: ProjectId, name: &str) -> Result<bool> {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM rifts WHERE project_id = $1 AND name = $2)",
+        )
+        .bind(project_id)
+        .bind(name)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(exists)
+    }
+
     /// Create a new rift for a user in a project
     pub async fn create_rift(
         &self,

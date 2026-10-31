@@ -475,7 +475,13 @@ async fn create_conflict_rift_for_stale_edit(
         .map(|u| u.username)
         .unwrap_or_else(|| user_id.to_string());
 
-    let conflict_name = format!("conflict-{}-{}", username, path.display());
+    let base_name = format!("conflict-{}-{}", username, path.display());
+    // A repeat conflict on the same file gets a suffix so the name stays unique in the project
+    let conflict_name = if state.db.rift_name_exists(original_rift.project_id, &base_name).await? {
+        format!("{}-{}", base_name, &Uuid::new_v4().to_string()[..8])
+    } else {
+        base_name
+    };
     let conflict_rift = state.db
         .create_rift(original_rift.project_id, user_id, Some(conflict_name.clone()))
         .await?;

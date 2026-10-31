@@ -131,11 +131,15 @@ pub struct RiftInfo {
 pub struct CreateRiftRequest {
     pub name: String,
     pub description: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<Uuid>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SwitchRiftRequest {
     pub rift_name: String,
+    #[serde(default)]
+    pub project_id: Option<Uuid>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -223,7 +227,9 @@ pub async fn create_rift(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(req): Json<CreateRiftRequest>,
-) -> Result<ResponseJson<ApiResponse<Uuid>>, StatusCode> {
+) -> Result<axum::response::Response, StatusCode> {
+    use axum::response::IntoResponse;
+
     // Extract user ID from JWT token
     let auth_header = headers.get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -247,18 +253,30 @@ pub async fn create_rift(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    // For now, create rift in the first project the user has access to
-    // TODO: Add project_id to request or get from context
-    let projects = match state.db.get_user_projects(user_id).await {
-        Ok(projects) => projects,
-        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+    // Use the requested project when given; older clients fall back to the user's first project
+    let project_id = match req.project_id {
+        Some(project_id) => {
+            if !state.db.user_has_project_access(user_id, project_id).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)? {
+                return Err(StatusCode::FORBIDDEN);
+            }
+            project_id
+        }
+        None => {
+            let projects = match state.db.get_user_projects(user_id).await {
+                Ok(projects) => projects,
+                Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+            };
+            match projects.first() {
+                Some(project) => project.id,
+                None => return Err(StatusCode::BAD_REQUEST),
+            }
+        }
     };
 
-    if projects.is_empty() {
-        return Err(StatusCode::BAD_REQUEST);
+    if state.db.rift_name_exists(project_id, &req.name).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)? {
+        let message = format!("A rift named '{}' already exists in this project", req.name);
+        return Ok((StatusCode::CONFLICT, ResponseJson(ApiResponse::<Uuid>::error(message))).into_response());
     }
-
-    let project_id = projects[0].id;
 
     // Create the rift
     let rift = match state.db.create_rift(project_id, user_id, Some(req.name.clone())).await {
@@ -268,14 +286,16 @@ pub async fn create_rift(
 
     info!("Created rift: {} for user: {} in project: {}", rift.id, user_id, project_id);
 
-    Ok(ResponseJson(ApiResponse::success(rift.id)))
+    Ok(ResponseJson(ApiResponse::success(rift.id)).into_response())
 }
 
 pub async fn switch_rift(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(req): Json<SwitchRiftRequest>,
-) -> Result<ResponseJson<ApiResponse<String>>, StatusCode> {
+) -> Result<axum::response::Response, StatusCode> {
+    use axum::response::IntoResponse;
+
     // Extract user ID from JWT token
     let auth_header = headers.get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -294,14 +314,17 @@ pub async fn switch_rift(
     let user_id = uuid::Uuid::parse_str(&claims.sub)
         .map_err(|_| StatusCode::UNAUTHORIZED)?;
 
-    // Find the rift by name in user's projects
+    // Find the rift by name, scoped to the requested project when given
     let projects = match state.db.get_user_projects(user_id).await {
         Ok(projects) => projects,
         Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
     };
 
-    let mut target_rift = None;
+    let mut matches = Vec::new();
     for project in projects {
+        if req.project_id.is_some_and(|id| id != project.id) {
+            continue;
+        }
         let rifts = match state.db.get_project_rifts(project.id).await {
             Ok(rifts) => rifts,
             Err(_) => continue,
@@ -309,20 +332,23 @@ pub async fn switch_rift(
 
         for rift in rifts {
             if rift.name == req.rift_name && rift.collaborators.contains(&user_id) {
-                target_rift = Some(rift);
-                break;
+                matches.push(rift);
             }
-        }
-        if target_rift.is_some() {
-            break;
         }
     }
 
-    let rift = target_rift.ok_or(StatusCode::NOT_FOUND)?;
+    let rift = match matches.len() {
+        0 => return Err(StatusCode::NOT_FOUND),
+        1 => matches.remove(0),
+        _ => {
+            let message = format!("Multiple rifts named '{}' exist; specify the project", req.rift_name);
+            return Ok((StatusCode::CONFLICT, ResponseJson(ApiResponse::<String>::error(message))).into_response());
+        }
+    };
 
     info!("User {} switched to rift: {} in project: {}", user_id, rift.id, rift.project_id);
 
-    Ok(ResponseJson(ApiResponse::success("Rift switched successfully".to_string())))
+    Ok(ResponseJson(ApiResponse::success("Rift switched successfully".to_string())).into_response())
 }
 
 pub async fn get_current_rift(
