@@ -6,6 +6,7 @@ use uuid::Uuid;
 pub mod auth;
 pub mod crdt;
 pub mod diff;
+pub mod merge;
 pub mod protocol;
 pub mod streaming;
 pub mod transaction;
