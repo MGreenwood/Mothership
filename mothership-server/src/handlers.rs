@@ -118,6 +118,7 @@ pub async fn handle_beam(
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RiftInfo {
     pub id: Uuid,
+    pub project_id: Uuid,
     pub name: String,
     pub description: Option<String>,
     pub created_at: DateTime<Utc>,
@@ -202,6 +203,7 @@ pub async fn list_rifts(
 
             let rift_info = RiftInfo {
                 id: rift.id,
+                project_id: rift.project_id,
                 name: rift.name,
                 description: None, // TODO: Add description field to database
                 created_at: rift.created_at,
@@ -367,6 +369,7 @@ pub async fn get_current_rift(
 
             let rift_info = RiftInfo {
                 id: rift.id,
+                project_id: rift.project_id,
                 name: rift.name,
                 description: None,
                 created_at: rift.created_at,

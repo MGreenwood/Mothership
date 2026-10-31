@@ -3,7 +3,11 @@ use clap::{Parser, Subcommand};
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
+use std::collections::HashSet;
+use std::io::Write;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use serde::{Serialize, Deserialize};
 use colored::Colorize;
 
@@ -230,6 +234,12 @@ enum ChatAction {
         #[arg(short, long, default_value_t = 20)]
         limit: i64,
     },
+    /// Open an interactive chat prompt for a rift (Ctrl+Z then Enter to leave)
+    Enter {
+        /// Rift name or ID (defaults to the rift you're currently in)
+        #[arg(short, long)]
+        rift: Option<String>,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -252,6 +262,8 @@ struct RiftDiff {
 #[derive(Debug, Serialize, Deserialize)]
 struct RiftInfo {
     id: Uuid,
+    #[serde(default)]
+    project_id: Option<Uuid>,
     name: String,
     description: Option<String>,
     created_at: DateTime<Utc>,
@@ -472,6 +484,9 @@ async fn main() -> Result<()> {
                     }
                     ChatAction::History { rift, limit } => {
                         handle_chat_history_command(&rift, limit).await?;
+                    }
+                    ChatAction::Enter { rift } => {
+                        handle_chat_enter_command(rift.as_deref()).await?;
                     }
                 },
             }
@@ -740,16 +755,18 @@ fn is_valid_rift_name(name: &str) -> bool {
     valid_chars && !name.is_empty() && name.len() <= 64
 }
 
-/// Resolve a rift name or UUID to its ID using the user's rift list
+/// Resolve a rift name or UUID to its ID, scoped to the current project when in one
 async fn resolve_rift_id(name_or_id: &str) -> Result<Uuid> {
     if let Ok(id) = Uuid::parse_str(name_or_id) {
         return Ok(id);
     }
 
+    let project_id = local_project_id();
     let matches: Vec<RiftInfo> = get_rifts()
         .await?
         .into_iter()
         .filter(|r| r.name == name_or_id)
+        .filter(|r| in_project(r, project_id))
         .collect();
 
     match matches.as_slice() {
@@ -826,6 +843,134 @@ async fn handle_chat_history_command(rift: &str, limit: i64) -> Result<()> {
             message.content
         );
     }
+    Ok(())
+}
+
+async fn fetch_chat_messages(server_url: &str, auth_token: &str, rift_id: Uuid, limit: i64) -> Result<Vec<ChatMessage>> {
+    let response = reqwest::Client::new()
+        .get(format!("{}/api/rifts/{}/chat", server_url, rift_id))
+        .query(&[("limit", limit)])
+        .header("Authorization", format!("Bearer {}", auth_token))
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        return Err(anyhow!("HTTP {}", response.status()));
+    }
+
+    let api_response: ApiResponse<Vec<ChatMessage>> = response.json().await?;
+    if !api_response.success {
+        return Err(anyhow!("Server error: {}", api_response.error.unwrap_or_else(|| "Unknown error".to_string())));
+    }
+    Ok(api_response.data.unwrap_or_default())
+}
+
+async fn post_chat_message(server_url: &str, auth_token: &str, rift_id: Uuid, content: &str) -> Result<ChatMessage> {
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/rifts/{}/chat", server_url, rift_id))
+        .header("Authorization", format!("Bearer {}", auth_token))
+        .json(&serde_json::json!({ "content": content }))
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        return Err(anyhow!("HTTP {}", response.status()));
+    }
+
+    let api_response: ApiResponse<ChatMessage> = response.json().await?;
+    if !api_response.success {
+        return Err(anyhow!("Server error: {}", api_response.error.unwrap_or_else(|| "Unknown error".to_string())));
+    }
+    api_response.data.ok_or_else(|| anyhow!("Server returned no message"))
+}
+
+fn print_chat_line(message: &ChatMessage) {
+    println!(
+        "[{}] {}: {}",
+        message.timestamp.format("%H:%M:%S"),
+        message.author_username,
+        message.content
+    );
+}
+
+/// Interactive chat prompt: shows recent history, polls for new messages, and sends each line entered
+async fn handle_chat_enter_command(rift: Option<&str>) -> Result<()> {
+    let (rift_id, rift_label) = match rift {
+        Some(name) => (resolve_rift_id(name).await?, name.to_string()),
+        None => {
+            let current = get_current_rift()
+                .await?
+                .ok_or_else(|| anyhow!("You're not in a rift. Pass one with -r <rift-name>."))?;
+            (current.id, current.name)
+        }
+    };
+    let (server_url, auth_token) = chat_api_context()?;
+
+    let seen: Arc<Mutex<HashSet<Uuid>>> = Arc::new(Mutex::new(HashSet::new()));
+
+    let history = fetch_chat_messages(&server_url, &auth_token, rift_id, 50).await?;
+    {
+        let mut seen = seen.lock().unwrap();
+        for message in &history {
+            seen.insert(message.id);
+            print_chat_line(message);
+        }
+    }
+    println!("Chatting in {}. Ctrl+Z then Enter to leave.", rift_label);
+
+    let poll_seen = Arc::clone(&seen);
+    let poll_url = server_url.clone();
+    let poll_token = auth_token.clone();
+    let poller = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            let Ok(messages) = fetch_chat_messages(&poll_url, &poll_token, rift_id, 50).await else {
+                continue;
+            };
+            let mut seen = poll_seen.lock().unwrap();
+            for message in messages {
+                if seen.insert(message.id) {
+                    println!();
+                    print_chat_line(&message);
+                    print!(">>> ");
+                    let _ = std::io::stdout().flush();
+                }
+            }
+        }
+    });
+
+    loop {
+        print!(">>> ");
+        std::io::stdout().flush()?;
+
+        let line = tokio::task::spawn_blocking(|| -> std::io::Result<(usize, String)> {
+            let mut buffer = String::new();
+            let bytes = std::io::stdin().read_line(&mut buffer)?;
+            Ok((bytes, buffer))
+        })
+        .await??;
+
+        let (bytes, input) = line;
+        if bytes == 0 {
+            break;
+        }
+
+        let content = input.trim();
+        if content.is_empty() {
+            continue;
+        }
+
+        match post_chat_message(&server_url, &auth_token, rift_id, content).await {
+            Ok(message) => {
+                seen.lock().unwrap().insert(message.id);
+            }
+            Err(error) => eprintln!("Failed to send: {}", error),
+        }
+    }
+
+    poller.abort();
+    println!();
+    println!("Left chat.");
     Ok(())
 }
 
@@ -923,43 +1068,38 @@ async fn create_rift(name: &str, description: Option<String>) -> Result<uuid::Uu
 }
 
 /// Get current rift information
+/// Project ID from the local .mothership metadata, if we're in a project directory
+fn local_project_id() -> Option<Uuid> {
+    get_current_project_metadata()
+        .ok()
+        .and_then(|metadata| Uuid::parse_str(&metadata.project_id).ok())
+}
+
+/// Whether a rift belongs to the given project (rifts without project info are kept)
+fn in_project(rift: &RiftInfo, project_id: Option<Uuid>) -> bool {
+    match (project_id, rift.project_id) {
+        (Some(project), Some(rift_project)) => project == rift_project,
+        _ => true,
+    }
+}
+
+/// The rift this project directory is currently on, from local metadata
 async fn get_current_rift() -> Result<Option<RiftInfo>> {
-    // Check if we're in a project directory
-    let _project_metadata = get_current_project_metadata()?;
-    
-    // Get active server connection
-    let active_server = connections::get_active_server()?
-        .ok_or_else(|| anyhow!("No active server connection. Please run 'mothership connect <server-url>' first."))?;
-    
-    // Get auth token
-    let auth_token = get_oauth_token()
-        .ok_or_else(|| anyhow!("Not authenticated. Please run 'mothership auth' first."))?;
-    
-    // Make API call to get current rift
-    let client = reqwest::Client::new();
-    let url = format!("{}/api/rifts/current", active_server.url);
-    
-    let response = client
-        .get(&url)
-        .header("Authorization", format!("Bearer {}", auth_token))
-        .send()
-        .await?;
-    
-    if !response.status().is_success() {
-        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
-        return Err(anyhow!("Failed to get current rift: {}", error_text));
-    }
-    
-    // Parse ApiResponse format
-    let api_response: ApiResponse<Option<RiftInfo>> = response.json().await?;
-    
-    if !api_response.success {
-        let error_msg = api_response.error.unwrap_or_else(|| "Unknown error".to_string());
-        return Err(anyhow!("Server error: {}", error_msg));
-    }
-    
-    let current_rift = api_response.data.ok_or_else(|| anyhow!("No rift data received"))?;
-    Ok(current_rift)
+    let metadata = get_current_project_metadata()?;
+    let project_id = local_project_id();
+
+    let rifts = get_rifts().await?;
+    let found = match (&metadata.current_rift, &metadata.rift_id) {
+        (Some(name), _) => rifts
+            .into_iter()
+            .find(|r| &r.name == name && in_project(r, project_id)),
+        (None, Some(rift_id)) => {
+            let rift_id = Uuid::parse_str(rift_id).ok();
+            rifts.into_iter().find(|r| Some(r.id) == rift_id)
+        }
+        (None, None) => None,
+    };
+    Ok(found)
 }
 
 /// Switch to a different rift
