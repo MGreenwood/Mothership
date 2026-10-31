@@ -241,11 +241,15 @@ pub async fn handle_gateway_create(
         print_info("Gateway was created successfully on the server, but local metadata may be incomplete.");
     }
     
-    // Upload initial files to the server
+    // Upload initial files to the server. A failed upload must fail the command,
+    // otherwise the project is created with no files and beaming it gives an empty directory.
     print_info("Scanning directory for initial files...");
     if let Err(e) = upload_initial_files(&config, &project, &dir, &active_server.url).await {
-        print_api_error(&format!("Warning: Failed to upload initial files: {}", e));
-        print_info("Gateway was created successfully, but you may need to sync files manually.");
+        return Err(anyhow!(
+            "Gateway '{}' was created on the server (Project ID: {}), but uploading its files failed: {}. \
+             Run 'mothership delete {} --force' to remove it, fix the problem, then create it again.",
+            name, project.id, e, name
+        ));
     }
     
     print_info(&format!("Use 'mothership beam {}' to start collaborating", project.id));

@@ -641,7 +641,8 @@ async fn handle_rifts_command(detailed: bool) -> Result<()> {
         println!("\nAvailable Rifts:");
         for rift in rifts {
             let conflict_marker = if rift.is_conflict_rift { " ⚠️" } else { "" };
-            println!("- {}{}", rift.name, conflict_marker);
+            let short_id = &rift.id.to_string()[..8];
+            println!("- {} ({}){}", rift.name, short_id, conflict_marker);
         }
     }
 
