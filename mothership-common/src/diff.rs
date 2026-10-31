@@ -28,10 +28,17 @@ impl DiffEngine {
         
         let operations = self.compute_diff_operations(&original_lines, &new_lines);
         
-        FileDiff::LineDiff {
+        let diff = FileDiff::LineDiff {
             operations,
             original_lines: original_lines.len() as u32,
             new_lines: new_lines.len() as u32,
+        };
+
+        // Line diffs cannot represent a trailing newline or CRLF endings, so only
+        // use one if it reproduces the new content exactly.
+        match self.apply_diff(original, &diff) {
+            Ok(rebuilt) if rebuilt == new => diff,
+            _ => FileDiff::FullContent(new.to_string()),
         }
     }
 
@@ -340,6 +347,26 @@ mod tests {
         };
 
         assert!(engine.apply_diff("a\nb\nc", &diff).is_err());
+    }
+
+    #[test]
+    fn test_round_trip_preserves_trailing_newline() {
+        let engine = DiffEngine::new();
+        let original: String = (0..200).map(|i| format!("let value_{} = {};\n", i, i)).collect();
+        let new = original.replacen("value_100 = 100", "value_100 = 999", 1);
+
+        let diff = engine.generate_line_diff(&original, &new);
+        assert_eq!(engine.apply_diff(&original, &diff).unwrap(), new);
+    }
+
+    #[test]
+    fn test_round_trip_preserves_crlf() {
+        let engine = DiffEngine::new();
+        let original: String = (0..200).map(|i| format!("let value_{} = {};\r\n", i, i)).collect();
+        let new = original.replacen("value_100 = 100", "value_100 = 999", 1);
+
+        let diff = engine.generate_line_diff(&original, &new);
+        assert_eq!(engine.apply_diff(&original, &diff).unwrap(), new);
     }
 
     #[test]
