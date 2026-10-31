@@ -1,10 +1,32 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use mothership_common::{
-    protocol::ChatMessage, Project, ProjectId, ProjectSettings, Rift, RiftId, User, UserId, UserRole,
+    merge::Resolution, protocol::ChatMessage, Project, ProjectId, ProjectSettings, Rift, RiftId,
+    User, UserId, UserRole,
 };
 use sqlx::PgPool;
+use std::collections::HashMap;
 use uuid::Uuid;
+
+/// Stored wormhole row, with its source rifts and base file hashes loaded
+#[derive(Debug, Clone)]
+pub struct WormholeRecord {
+    pub id: Uuid,
+    pub project_id: ProjectId,
+    pub name: String,
+    pub status: String,
+    pub created_by: UserId,
+    pub created_at: DateTime<Utc>,
+    pub converted_rift_id: Option<RiftId>,
+    /// Map of file path to content-store hash for the base snapshot
+    pub base_hashes: HashMap<String, String>,
+    pub rift_ids: Vec<RiftId>,
+}
+
+type WormholeRow = (Uuid, Uuid, String, String, Uuid, DateTime<Utc>, Option<Uuid>, String);
+
+const WORMHOLE_COLUMNS: &str =
+    "id, project_id, name, status, created_by, created_at, converted_rift_id, base_files";
 
 /// PostgreSQL database implementation
 #[derive(Clone)]
@@ -97,6 +119,38 @@ impl Database {
         sqlx::query("CREATE INDEX IF NOT EXISTS chat_messages_rift_created_idx ON chat_messages (rift_id, created_at)")
             .execute(&self.pool).await?;
         
+        // Wormholes: live merge previews over a set of rifts in one project
+        sqlx::query(r#"
+            CREATE TABLE IF NOT EXISTS wormholes (
+                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                name VARCHAR(255) NOT NULL,
+                status VARCHAR(20) NOT NULL DEFAULT 'active',
+                created_by UUID NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                converted_rift_id UUID,
+                base_files TEXT NOT NULL DEFAULT '{}'
+            )
+        "#).execute(&self.pool).await?;
+
+        sqlx::query(r#"
+            CREATE TABLE IF NOT EXISTS wormhole_rifts (
+                wormhole_id UUID NOT NULL REFERENCES wormholes(id) ON DELETE CASCADE,
+                rift_id UUID NOT NULL REFERENCES rifts(id) ON DELETE CASCADE,
+                PRIMARY KEY (wormhole_id, rift_id)
+            )
+        "#).execute(&self.pool).await?;
+
+        sqlx::query(r#"
+            CREATE TABLE IF NOT EXISTS wormhole_resolutions (
+                wormhole_id UUID NOT NULL REFERENCES wormholes(id) ON DELETE CASCADE,
+                path TEXT NOT NULL,
+                conflict_id TEXT NOT NULL,
+                resolution TEXT NOT NULL,
+                PRIMARY KEY (wormhole_id, path, conflict_id)
+            )
+        "#).execute(&self.pool).await?;
+
         tracing::info!("✅ Database schema ready!");
         Ok(())
     }
@@ -430,6 +484,162 @@ impl Database {
             last_checkpoint: None,
             is_active: true,
         })
+    }
+
+    /// Whether an active wormhole with this name already exists in the project
+    pub async fn active_wormhole_name_exists(&self, project_id: ProjectId, name: &str) -> Result<bool> {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM wormholes WHERE project_id = $1 AND name = $2 AND status = 'active')",
+        )
+        .bind(project_id)
+        .bind(name)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(exists)
+    }
+
+    /// Insert a wormhole with its source rifts and base snapshot in one transaction
+    pub async fn create_wormhole(
+        &self,
+        project_id: ProjectId,
+        name: &str,
+        created_by: UserId,
+        base_hashes: &HashMap<String, String>,
+        rift_ids: &[RiftId],
+    ) -> Result<WormholeRecord> {
+        let id = Uuid::new_v4();
+        let base_json = serde_json::to_string(base_hashes)?;
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query(
+            "INSERT INTO wormholes (id, project_id, name, created_by, base_files) VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(id)
+        .bind(project_id)
+        .bind(name)
+        .bind(created_by)
+        .bind(base_json)
+        .execute(&mut *tx)
+        .await?;
+
+        for rift_id in rift_ids {
+            sqlx::query("INSERT INTO wormhole_rifts (wormhole_id, rift_id) VALUES ($1, $2)")
+                .bind(id)
+                .bind(rift_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        tx.commit().await?;
+        self.get_wormhole(id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("wormhole {} missing after insert", id))
+    }
+
+    /// Load one wormhole by id
+    pub async fn get_wormhole(&self, wormhole_id: Uuid) -> Result<Option<WormholeRecord>> {
+        let rows: Vec<WormholeRow> = sqlx::query_as(&format!(
+            "SELECT {WORMHOLE_COLUMNS} FROM wormholes WHERE id = $1"
+        ))
+        .bind(wormhole_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(self.hydrate_wormholes(rows).await?.into_iter().next())
+    }
+
+    /// List every wormhole in a project, newest first
+    pub async fn list_project_wormholes(&self, project_id: ProjectId) -> Result<Vec<WormholeRecord>> {
+        let rows: Vec<WormholeRow> = sqlx::query_as(&format!(
+            "SELECT {WORMHOLE_COLUMNS} FROM wormholes WHERE project_id = $1 ORDER BY created_at DESC"
+        ))
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        self.hydrate_wormholes(rows).await
+    }
+
+    async fn hydrate_wormholes(&self, rows: Vec<WormholeRow>) -> Result<Vec<WormholeRecord>> {
+        let mut records = Vec::with_capacity(rows.len());
+        for (id, project_id, name, status, created_by, created_at, converted_rift_id, base_files) in rows {
+            let rift_rows: Vec<(Uuid,)> = sqlx::query_as(
+                "SELECT rift_id FROM wormhole_rifts WHERE wormhole_id = $1 ORDER BY rift_id",
+            )
+            .bind(id)
+            .fetch_all(&self.pool)
+            .await?;
+            records.push(WormholeRecord {
+                id,
+                project_id,
+                name,
+                status,
+                created_by,
+                created_at,
+                converted_rift_id,
+                base_hashes: serde_json::from_str(&base_files)?,
+                rift_ids: rift_rows.into_iter().map(|(rift_id,)| rift_id).collect(),
+            });
+        }
+        Ok(records)
+    }
+
+    /// Change a wormhole's lifecycle status, optionally recording the rift it converged into
+    pub async fn set_wormhole_status(
+        &self,
+        wormhole_id: Uuid,
+        status: &str,
+        converted_rift_id: Option<RiftId>,
+    ) -> Result<()> {
+        sqlx::query("UPDATE wormholes SET status = $2, converted_rift_id = $3 WHERE id = $1")
+            .bind(wormhole_id)
+            .bind(status)
+            .bind(converted_rift_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Stored resolutions for a wormhole, keyed by file path then conflict id
+    pub async fn get_wormhole_resolutions(
+        &self,
+        wormhole_id: Uuid,
+    ) -> Result<HashMap<String, HashMap<String, Resolution>>> {
+        let rows: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT path, conflict_id, resolution FROM wormhole_resolutions WHERE wormhole_id = $1",
+        )
+        .bind(wormhole_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut by_path: HashMap<String, HashMap<String, Resolution>> = HashMap::new();
+        for (path, conflict_id, resolution) in rows {
+            by_path
+                .entry(path)
+                .or_default()
+                .insert(conflict_id, serde_json::from_str(&resolution)?);
+        }
+        Ok(by_path)
+    }
+
+    /// Record or replace the resolution for one conflict
+    pub async fn upsert_wormhole_resolution(
+        &self,
+        wormhole_id: Uuid,
+        path: &str,
+        conflict_id: &str,
+        resolution: &Resolution,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO wormhole_resolutions (wormhole_id, path, conflict_id, resolution) \
+             VALUES ($1, $2, $3, $4) \
+             ON CONFLICT (wormhole_id, path, conflict_id) DO UPDATE SET resolution = EXCLUDED.resolution",
+        )
+        .bind(wormhole_id)
+        .bind(path)
+        .bind(conflict_id)
+        .bind(serde_json::to_string(resolution)?)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     /// Get a rift by ID

@@ -255,7 +255,7 @@ fn status_for(err: &ChatError) -> StatusCode {
     }
 }
 
-fn authenticated_user(state: &AppState, headers: &HeaderMap) -> Result<Uuid, StatusCode> {
+pub fn authenticated_user(state: &AppState, headers: &HeaderMap) -> Result<Uuid, StatusCode> {
     let auth_header = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
