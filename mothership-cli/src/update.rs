@@ -121,7 +121,19 @@ pub async fn handle_update(args: UpdateArgs) -> Result<()> {
         
 
         
-        download_and_install_update(&server_url, &target_version, &platform).await?;
+        let restart_daemon = stop_daemon_for_update().await?;
+        if let Err(e) = download_and_install_update(&server_url, &target_version, &platform, restart_daemon).await {
+            if restart_daemon {
+                let _ = crate::beam::ensure_daemon_running().await;
+            }
+            return Err(e);
+        }
+        // A CLI self-update exits the process inside download_and_install_update; its batch script restarts the daemon in that case.
+        if restart_daemon {
+            if let Err(e) = crate::beam::ensure_daemon_running().await {
+                println!("⚠️  Could not restart daemon: {}", e);
+            }
+        }
         
         println!("{}", "✅ Update completed successfully!".green());
         println!("🔄 Please restart any running mothership processes");
@@ -249,6 +261,7 @@ async fn download_and_install_update(
     server_url: &str,
     version: &str,
     platform: &str,
+    restart_daemon: bool,
 ) -> Result<()> {
     // Get authentication token
     let token = get_auth_token()?;
@@ -292,7 +305,12 @@ async fn download_and_install_update(
     // Handle self-update for CLI binary
     let cli_install_path = get_binary_install_path(cli_binary)?;
     if is_self_update(&cli_install_path)? {
-        return perform_self_update(&cli_install_path).await;
+        let daemon_restart_path = if restart_daemon {
+            Some(get_binary_install_path(daemon_binary)?)
+        } else {
+            None
+        };
+        return perform_self_update(&cli_install_path, daemon_restart_path).await;
     }
     
     Ok(())
@@ -305,7 +323,7 @@ fn is_self_update(install_path: &PathBuf) -> Result<bool> {
 }
 
 /// Perform a self-update using a restart script
-async fn perform_self_update(install_path: &PathBuf) -> Result<()> {
+async fn perform_self_update(install_path: &PathBuf, daemon_restart_path: Option<PathBuf>) -> Result<()> {
     println!("🔄 This is a self-update. Creating restart script...");
     
     let temp_dir = std::env::temp_dir();
@@ -334,11 +352,11 @@ if errorlevel 1 (\r\n\
 )\r\n\
 \r\n\
 echo Cleaning up...\r\n\
+echo Update completed successfully!\r\n\
+echo Press enter to use the new version of mothership.\r\n\
 del \"{new_binary}\" >nul 2>&1\r\n\
 del \"%~f0\" >nul 2>&1\r\n\
 \r\n\
-echo Update completed successfully!\r\n\
-echo You can now use the new version of mothership.\r\n\
 pause\r\n", 
         new_binary = new_binary_path.to_str().unwrap().replace("/", "\\"),
         install_path = install_path.to_str().unwrap().replace("/", "\\")
@@ -352,6 +370,11 @@ pause\r\n",
     
     println!("✅ Update downloaded successfully!");
     println!("🔄 Running update script...");
+
+    // Start the daemon before this process exits; the new binary is already in place.
+    if let Some(path) = daemon_restart_path {
+        crate::beam::try_start_daemon(&path)?;
+    }
     
     // Run the restart script
     let _status = std::process::Command::new("cmd")
@@ -361,6 +384,38 @@ pause\r\n",
         
     // Exit this process to allow the script to replace the binary
     std::process::exit(0)
+}
+
+/// Stops the running daemon so its binary can be replaced. Returns true if it was running.
+async fn stop_daemon_for_update() -> Result<bool> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()?;
+    let health_url = "http://localhost:7525/health";
+
+    if !is_daemon_healthy(&client, health_url).await {
+        return Ok(false);
+    }
+
+    println!("⏹️  Stopping daemon before update...");
+    let _ = client.post("http://localhost:7525/shutdown").send().await;
+
+    for _ in 0..30 {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        if !is_daemon_healthy(&client, health_url).await {
+            // Let the process finish exiting so it releases the binary file.
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            return Ok(true);
+        }
+    }
+
+    Err(anyhow::anyhow!(
+        "Daemon did not stop within 9 seconds. Run 'mothership daemon stop' and retry the update."
+    ))
+}
+
+async fn is_daemon_healthy(client: &reqwest::Client, url: &str) -> bool {
+    matches!(client.get(url).send().await, Ok(response) if response.status().is_success())
 }
 
 /// Download a single binary with safe self-update handling

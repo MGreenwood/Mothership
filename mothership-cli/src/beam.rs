@@ -21,7 +21,7 @@ use crate::{config::ConfigManager, get_http_client, print_api_error, print_info,
 
 /// Check if daemon is running and start it if needed
 /// Try to start daemon from a specific path
-fn try_start_daemon(daemon_path: &std::path::Path) -> Result<bool> {
+pub fn try_start_daemon(daemon_path: &std::path::Path) -> Result<bool> {
     #[cfg(windows)]
     {
         match std::process::Command::new(daemon_path)
@@ -52,7 +52,7 @@ fn try_start_daemon(daemon_path: &std::path::Path) -> Result<bool> {
     }
 }
 
-async fn ensure_daemon_running() -> Result<()> {
+pub async fn ensure_daemon_running() -> Result<()> {
     let daemon_client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(2))
         .build()?;
