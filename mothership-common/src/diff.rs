@@ -152,32 +152,45 @@ impl DiffEngine {
     pub fn apply_diff(&self, original: &str, diff: &FileDiff) -> Result<String> {
         match diff {
             FileDiff::FullContent(content) => Ok(content.clone()),
-            FileDiff::LineDiff { operations, original_lines: _, new_lines: _ } => {
-                let mut result = Vec::new();
+            FileDiff::LineDiff { operations, original_lines, new_lines: _ } => {
                 let lines: Vec<&str> = original.lines().collect();
+                if lines.len() != *original_lines as usize {
+                    return Err(anyhow::anyhow!(
+                        "Diff base mismatch: diff expects {} lines, base has {}",
+                        original_lines,
+                        lines.len()
+                    ));
+                }
+
+                let mut result = Vec::new();
                 let mut current_line = 0;
 
                 for op in operations {
                     match op {
                         DiffOperation::Keep { count } => {
-                            for _ in 0..*count {
-                                if current_line < lines.len() {
-                                    result.push(lines[current_line].to_string());
-                                    current_line += 1;
-                                }
-                            }
+                            let end = take_lines(&lines, current_line, *count)?;
+                            result.extend(lines[current_line..end].iter().map(|l| l.to_string()));
+                            current_line = end;
                         }
                         DiffOperation::Delete { count } => {
-                            current_line += *count as usize;
+                            current_line = take_lines(&lines, current_line, *count)?;
                         }
                         DiffOperation::Insert { lines: new_lines } => {
                             result.extend(new_lines.iter().cloned());
                         }
                         DiffOperation::Replace { delete_count, insert_lines } => {
-                            current_line += *delete_count as usize;
+                            current_line = take_lines(&lines, current_line, *delete_count)?;
                             result.extend(insert_lines.iter().cloned());
                         }
                     }
+                }
+
+                if current_line != lines.len() {
+                    return Err(anyhow::anyhow!(
+                        "Diff did not consume base: stopped at line {} of {}",
+                        current_line,
+                        lines.len()
+                    ));
                 }
 
                 Ok(result.join("\n"))
@@ -188,6 +201,19 @@ impl DiffEngine {
             FileDiff::Deleted => Ok(String::new()),
         }
     }
+}
+
+/// Advance `count` lines from `start`, failing if that runs past the base.
+fn take_lines(lines: &[&str], start: usize, count: u32) -> Result<usize> {
+    let end = start + count as usize;
+    if end > lines.len() {
+        return Err(anyhow::anyhow!(
+            "Diff operation runs past end of base ({} lines, needs {})",
+            lines.len(),
+            end
+        ));
+    }
+    Ok(end)
 }
 
 /// PERFORMANCE FIX: Compression utilities
@@ -268,6 +294,54 @@ mod tests {
         assert_eq!(applied, new);
     }
     
+    #[test]
+    fn test_large_line_diff_round_trip() {
+        let engine = DiffEngine::new();
+        let original: String = (0..200).map(|i| format!("let value_{} = {};", i, i)).collect::<Vec<_>>().join("\n");
+        let new = original.replacen("value_100 = 100", "value_100 = 999", 1);
+
+        let diff = engine.generate_line_diff(&original, &new);
+        assert!(matches!(diff, FileDiff::LineDiff { .. }), "expected LineDiff path");
+        assert_eq!(engine.apply_diff(&original, &diff).unwrap(), new);
+    }
+
+    #[test]
+    fn test_apply_rejects_base_mismatch() {
+        let engine = DiffEngine::new();
+        let original = "a\nb\nc";
+        let diff = FileDiff::LineDiff {
+            operations: vec![DiffOperation::Keep { count: 3 }],
+            original_lines: 3,
+            new_lines: 3,
+        };
+
+        assert!(engine.apply_diff("a\nb", &diff).is_err());
+    }
+
+    #[test]
+    fn test_apply_rejects_out_of_range_operation() {
+        let engine = DiffEngine::new();
+        let diff = FileDiff::LineDiff {
+            operations: vec![DiffOperation::Keep { count: 5 }],
+            original_lines: 3,
+            new_lines: 5,
+        };
+
+        assert!(engine.apply_diff("a\nb\nc", &diff).is_err());
+    }
+
+    #[test]
+    fn test_apply_rejects_incomplete_diff() {
+        let engine = DiffEngine::new();
+        let diff = FileDiff::LineDiff {
+            operations: vec![DiffOperation::Keep { count: 1 }],
+            original_lines: 3,
+            new_lines: 1,
+        };
+
+        assert!(engine.apply_diff("a\nb\nc", &diff).is_err());
+    }
+
     #[test]
     fn test_compression() {
         let data = b"This is a test string that should compress well when repeated. ".repeat(100);

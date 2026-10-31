@@ -153,7 +153,8 @@ impl SyncState {
         Ok(())
     }
 
-    /// Simple per-rift rate limiter. Returns true if the change should be throttled/dropped.
+    /// Per-rift change-rate monitor. Returns true when the rate is high.
+    /// Callers must still process the change: dropping edits loses work.
     pub async fn should_throttle(&self, rift_id: &str) -> bool {
         const WINDOW_SECS: u64 = 5;
         const MAX_EVENTS: usize = 8;
@@ -472,8 +473,7 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
         SyncMessage::FileChanged { rift_id: msg_rift_id, path, content, timestamp: _ } => {
             // Rate-limit noisy clients per rift
             if state.should_throttle(&msg_rift_id.to_string()).await {
-                info!("Dropping FileChanged due to rate limit for rift: {}", msg_rift_id);
-                return Ok(());
+                warn!("High change rate for rift {}; processing FileChanged anyway", msg_rift_id);
             }
             // SECURITY CHECK: Verify client is authorized for this rift
             let msg_rift_id_str = msg_rift_id.to_string();
@@ -519,8 +519,7 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
         SyncMessage::FileDiffChanged { rift_id: msg_rift_id, path, diff, file_size, timestamp: _ } => {
             // Rate-limit noisy clients per rift
             if state.should_throttle(&msg_rift_id.to_string()).await {
-                info!("Dropping FileDiffChanged due to rate limit for rift: {}", msg_rift_id);
-                return Ok(());
+                warn!("High change rate for rift {}; processing FileDiffChanged anyway", msg_rift_id);
             }
             // SECURITY CHECK: Verify client is authorized for this rift
             let msg_rift_id_str = msg_rift_id.to_string();
@@ -553,8 +552,7 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
         SyncMessage::BatchDiffChanges { rift_id: msg_rift_id, changes, timestamp: _, compressed } => {
             // Rate-limit noisy clients per rift
             if state.should_throttle(&msg_rift_id.to_string()).await {
-                info!("Dropping BatchDiffChanges due to rate limit for rift: {}", msg_rift_id);
-                return Ok(());
+                warn!("High change rate for rift {}; processing BatchDiffChanges anyway", msg_rift_id);
             }
             // SECURITY CHECK: Verify client is authorized for this rift
             let msg_rift_id_str = msg_rift_id.to_string();
