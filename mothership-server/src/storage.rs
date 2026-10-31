@@ -63,24 +63,85 @@ impl StorageEngine {
         }
     }
 
-    /// Update live working state for a rift
+    /// Directory holding a rift's persisted working files
+    fn live_rift_dir(&self, rift_id: RiftId) -> PathBuf {
+        self.storage_root.join("live").join(rift_id.to_string())
+    }
+
+    /// Reject paths that could escape the rift directory (absolute, `..`, prefixes)
+    fn safe_relative_path(path: &Path) -> Result<PathBuf> {
+        let mut out = PathBuf::new();
+        for component in path.components() {
+            match component {
+                std::path::Component::Normal(part) => out.push(part),
+                _ => return Err(anyhow::anyhow!("Invalid file path: {}", path.display())),
+            }
+        }
+        if out.as_os_str().is_empty() {
+            return Err(anyhow::anyhow!("Empty file path"));
+        }
+        Ok(out)
+    }
+
+    /// Load a rift's working files from disk into memory if not already cached
+    async fn ensure_live_loaded(&self, rift_id: RiftId) -> Result<()> {
+        if self.live_state.read().await.contains_key(&rift_id) {
+            return Ok(());
+        }
+
+        let root = self.live_rift_dir(rift_id);
+        let mut files = HashMap::new();
+        let mut pending = vec![root.clone()];
+        while let Some(dir) = pending.pop() {
+            if !dir.exists() {
+                break;
+            }
+            let mut entries = fs::read_dir(&dir).await?;
+            while let Some(entry) = entries.next_entry().await? {
+                let entry_path = entry.path();
+                if entry.file_type().await?.is_dir() {
+                    pending.push(entry_path);
+                } else if let Ok(relative) = entry_path.strip_prefix(&root) {
+                    match fs::read_to_string(&entry_path).await {
+                        Ok(content) => {
+                            files.insert(relative.to_path_buf(), content);
+                        }
+                        Err(e) => tracing::warn!("Skipping unreadable live file {}: {}", entry_path.display(), e),
+                    }
+                }
+            }
+        }
+
+        self.live_state.write().await.entry(rift_id).or_insert(files);
+        Ok(())
+    }
+
+    /// Update live working state for a rift, persisting it to disk
     pub async fn update_live_state(&self, rift_id: RiftId, path: PathBuf, content: String) -> Result<()> {
+        self.ensure_live_loaded(rift_id).await?;
+
+        let relative = Self::safe_relative_path(&path)?;
+        let file_path = self.live_rift_dir(rift_id).join(&relative);
+        if let Some(parent) = file_path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        fs::write(&file_path, content.as_bytes()).await?;
+
         let mut live_state = self.live_state.write().await;
-        
-        let rift_files = live_state.entry(rift_id).or_insert_with(HashMap::new);
-        rift_files.insert(path, content);
-        
+        live_state.entry(rift_id).or_insert_with(HashMap::new).insert(relative, content);
         Ok(())
     }
 
     /// Get current live state for a rift
     pub async fn get_live_state(&self, rift_id: RiftId) -> Result<HashMap<PathBuf, String>> {
+        self.ensure_live_loaded(rift_id).await?;
         let live_state = self.live_state.read().await;
         Ok(live_state.get(&rift_id).cloned().unwrap_or_default())
     }
 
     /// PERFORMANCE FIX: Get content for a specific file in a rift
     pub async fn get_file_content(&self, rift_id: RiftId, path: &PathBuf) -> Result<String> {
+        self.ensure_live_loaded(rift_id).await?;
         let live_state = self.live_state.read().await;
         if let Some(rift_files) = live_state.get(&rift_id) {
             if let Some(content) = rift_files.get(path) {
@@ -284,3 +345,27 @@ impl StorageStats {
         self.total_size_bytes as f64 / (1024.0 * 1024.0)
     }
 } 
+#[cfg(test)]
+mod persistence_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn live_state_survives_restart() {
+        let root = std::env::temp_dir().join(format!("mothership-live-{}", Uuid::new_v4()));
+        let rift_id = Uuid::new_v4();
+
+        let engine = StorageEngine::new(root.clone()).await.unwrap();
+        engine.update_live_state(rift_id, PathBuf::from("src/main.rs"), "fn main() {}".to_string()).await.unwrap();
+        engine.update_live_state(rift_id, PathBuf::from("README.md"), "hello".to_string()).await.unwrap();
+        drop(engine);
+
+        let restarted = StorageEngine::new(root.clone()).await.unwrap();
+        let files = restarted.get_live_state(rift_id).await.unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files.get(&PathBuf::from("src/main.rs")).map(String::as_str), Some("fn main() {}"));
+        assert_eq!(restarted.get_file_content(rift_id, &PathBuf::from("README.md")).await.unwrap(), "hello");
+        assert!(StorageEngine::safe_relative_path(Path::new("../escape.txt")).is_err());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
