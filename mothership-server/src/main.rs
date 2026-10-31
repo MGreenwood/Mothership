@@ -22,6 +22,7 @@ use url;
 use urlencoding;
 
 mod auth;
+mod chat;
 mod cli_distribution;
 mod config;
 mod database;
@@ -149,7 +150,7 @@ async fn main() -> anyhow::Result<()> {
     let oauth = OAuthService::new().expect("Failed to initialize OAuth service");
 
     // Initialize sync state
-    let sync = SyncState::new(db.clone(), storage.clone());
+    let sync = SyncState::new(db.clone(), storage.clone(), chat::ChatSettings::from_config(&config));
 
     // Create application state
     let state = AppState {
@@ -247,6 +248,7 @@ fn create_api_router(state: AppState) -> Router {
         .route("/gateway/create", post(create_gateway))
         // Rift routes
         .route("/api/rifts", get(handlers::list_rifts).post(handlers::create_rift))
+        .route("/api/rifts/:id/chat", get(chat::get_chat_history).post(chat::post_chat))
         // WebSocket route
         .route("/ws/:rift_id", get(websocket_handler))
         // CLI distribution routes

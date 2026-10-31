@@ -7,6 +7,17 @@ use crate::transaction::TransactionStatus;
 
 use crate::{CheckpointId, FileChange, ProjectId, RiftId, UserId};
 
+/// A chat message posted to a rift
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatMessage {
+    pub id: Uuid,
+    pub rift_id: RiftId,
+    pub author_id: UserId,
+    pub author_username: String,
+    pub content: String,
+    pub timestamp: DateTime<Utc>,
+}
+
 /// WebSocket messages for real-time synchronization
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
@@ -132,6 +143,18 @@ pub enum SyncMessage {
         server_timestamp: DateTime<Utc>,
         client_timestamp: DateTime<Utc>,
         auto_created_rift: Option<ConflictRiftInfo>,
+    },
+
+    /// Client posts a chat message to the rift it is connected to
+    SendChatMessage {
+        rift_id: RiftId,
+        content: String,
+    },
+
+    /// Server broadcasts a stored chat message to everyone in the rift
+    ChatMessageReceived {
+        rift_id: RiftId,
+        message: ChatMessage,
     },
 
     // Bidirectional

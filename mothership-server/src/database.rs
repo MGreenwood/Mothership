@@ -1,7 +1,7 @@
 use anyhow::Result;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use mothership_common::{
-    Project, ProjectId, ProjectSettings, Rift, RiftId, User, UserId, UserRole,
+    protocol::ChatMessage, Project, ProjectId, ProjectSettings, Rift, RiftId, User, UserId, UserRole,
 };
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -82,8 +82,92 @@ impl Database {
             )
         "#).execute(&self.pool).await?;
         
+        // Create chat_messages table (rift-scoped, pruned to max_chat_history per rift)
+        sqlx::query(r#"
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                rift_id UUID NOT NULL,
+                author_id UUID NOT NULL,
+                author_username VARCHAR(255) NOT NULL,
+                content TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        "#).execute(&self.pool).await?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS chat_messages_rift_created_idx ON chat_messages (rift_id, created_at)")
+            .execute(&self.pool).await?;
+        
         tracing::info!("✅ Database schema ready!");
         Ok(())
+    }
+
+    /// Store a chat message for a rift and return it with its server-assigned id and timestamp
+    pub async fn insert_chat_message(
+        &self,
+        rift_id: RiftId,
+        author_id: UserId,
+        author_username: &str,
+        content: &str,
+    ) -> Result<ChatMessage> {
+        let (id, timestamp) = sqlx::query_as::<_, (Uuid, DateTime<Utc>)>(
+            "INSERT INTO chat_messages (rift_id, author_id, author_username, content) \
+             VALUES ($1, $2, $3, $4) RETURNING id, created_at",
+        )
+        .bind(rift_id)
+        .bind(author_id)
+        .bind(author_username)
+        .bind(content)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(ChatMessage {
+            id,
+            rift_id,
+            author_id,
+            author_username: author_username.to_string(),
+            content: content.to_string(),
+            timestamp,
+        })
+    }
+
+    /// Keep only the newest `keep` messages for a rift
+    pub async fn prune_chat_messages(&self, rift_id: RiftId, keep: i64) -> Result<()> {
+        sqlx::query(
+            "DELETE FROM chat_messages WHERE rift_id = $1 AND id NOT IN (\
+                SELECT id FROM chat_messages WHERE rift_id = $1 ORDER BY created_at DESC LIMIT $2\
+             )",
+        )
+        .bind(rift_id)
+        .bind(keep)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Return the newest `limit` messages for a rift, oldest first
+    pub async fn list_chat_messages(&self, rift_id: RiftId, limit: i64) -> Result<Vec<ChatMessage>> {
+        let rows = sqlx::query_as::<_, (Uuid, Uuid, String, String, DateTime<Utc>)>(
+            "SELECT id, author_id, author_username, content, created_at FROM (\
+                SELECT id, author_id, author_username, content, created_at FROM chat_messages \
+                WHERE rift_id = $1 ORDER BY created_at DESC LIMIT $2\
+             ) recent ORDER BY created_at ASC",
+        )
+        .bind(rift_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(id, author_id, author_username, content, timestamp)| ChatMessage {
+                id,
+                rift_id,
+                author_id,
+                author_username,
+                content,
+                timestamp,
+            })
+            .collect())
     }
 
     /// Get all projects a user has access to (simplified version for rift handlers)

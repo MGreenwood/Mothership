@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use sha2::{Sha256, Digest};
 use flate2;
 
+use crate::chat::{self, ChatSettings};
 use crate::database::Database;
 use crate::storage::StorageEngine;
 
@@ -81,10 +82,11 @@ pub struct SyncState {
     pub stream_manager: Arc<Mutex<StreamManager>>, // Streaming support
     // Rate limiting: track recent change timestamps per rift to detect floods
     pub recent_change_timestamps: Arc<RwLock<HashMap<String, Vec<Instant>>>>,
+    pub chat: ChatSettings,
 }
 
 impl SyncState {
-    pub fn new(db: Database, storage: Arc<StorageEngine>) -> Self {
+    pub fn new(db: Database, storage: Arc<StorageEngine>, chat: ChatSettings) -> Self {
         let (broadcaster, _) = broadcast::channel(1000);
         let sync_state = Self {
             db,
@@ -93,6 +95,7 @@ impl SyncState {
             batching_state: Arc::new(RwLock::new(BatchingState::default())),
             stream_manager: Arc::new(Mutex::new(StreamManager::default())),
             recent_change_timestamps: Arc::new(RwLock::new(HashMap::new())),
+            chat,
         };
         
         // PERFORMANCE FIX: Start background batch flusher
@@ -490,6 +493,16 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
     let sync_message: SyncMessage = serde_json::from_str(message)?;
     
     match sync_message {
+        SyncMessage::SendChatMessage { rift_id: msg_rift_id, content } => {
+            // SECURITY CHECK: Chat is scoped to the rift this socket was authorized for
+            if msg_rift_id.to_string() != client_rift_id {
+                error!("🚨 SECURITY: Client attempted to chat in unauthorized rift {} (authorized: {})", msg_rift_id, client_rift_id);
+                return Err(anyhow::anyhow!("Unauthorized rift access attempt"));
+            }
+            chat::post_chat_message(&state.db, &state.broadcaster, &state.chat, msg_rift_id, user_id, &content)
+                .await
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        }
         SyncMessage::JoinRift { rift_id: msg_rift_id, last_checkpoint } => {
             info!("Client joining rift: {} (last checkpoint: {:?})", msg_rift_id, last_checkpoint);
             

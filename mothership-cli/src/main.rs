@@ -201,6 +201,45 @@ enum RiftAction {
         /// Second rift to compare (optional)
         to: Option<String>,
     },
+    /// Send and read chat messages in a rift
+    Chat {
+        #[command(subcommand)]
+        action: ChatAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum ChatAction {
+    /// Send a message to everyone in a rift
+    Send {
+        /// Rift name or ID
+        #[arg(short, long)]
+        rift: String,
+
+        /// Message text
+        #[arg(required = true)]
+        message: Vec<String>,
+    },
+    /// Show recent chat messages in a rift
+    History {
+        /// Rift name or ID
+        #[arg(short, long)]
+        rift: String,
+
+        /// Number of messages to show
+        #[arg(short, long, default_value_t = 20)]
+        limit: i64,
+    },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ChatMessage {
+    id: Uuid,
+    rift_id: Uuid,
+    author_id: Uuid,
+    author_username: String,
+    content: String,
+    timestamp: DateTime<Utc>,
 }
 
 // Local types
@@ -427,6 +466,14 @@ async fn main() -> Result<()> {
                 RiftAction::Diff { from, to } => {
                     handle_rift_diff_command(from, to).await?;
                 }
+                RiftAction::Chat { action } => match action {
+                    ChatAction::Send { rift, message } => {
+                        handle_chat_send_command(&rift, &message.join(" ")).await?;
+                    }
+                    ChatAction::History { rift, limit } => {
+                        handle_chat_history_command(&rift, limit).await?;
+                    }
+                },
             }
         }
     }
@@ -691,6 +738,95 @@ fn is_valid_rift_name(name: &str) -> bool {
         c.is_alphanumeric() || c == '-' || c == '_'
     });
     valid_chars && !name.is_empty() && name.len() <= 64
+}
+
+/// Resolve a rift name or UUID to its ID using the user's rift list
+async fn resolve_rift_id(name_or_id: &str) -> Result<Uuid> {
+    if let Ok(id) = Uuid::parse_str(name_or_id) {
+        return Ok(id);
+    }
+
+    let matches: Vec<RiftInfo> = get_rifts()
+        .await?
+        .into_iter()
+        .filter(|r| r.name == name_or_id)
+        .collect();
+
+    match matches.as_slice() {
+        [] => Err(anyhow!("No rift named '{}' found", name_or_id)),
+        [rift] => Ok(rift.id),
+        _ => Err(anyhow!("Multiple rifts named '{}'; use the rift ID instead", name_or_id)),
+    }
+}
+
+/// Build an authenticated request target for the active server
+fn chat_api_context() -> Result<(String, String)> {
+    let active_server = connections::get_active_server()?
+        .ok_or_else(|| anyhow!("No active server connection. Please run 'mothership connect <server-url>' first."))?;
+    let auth_token = get_oauth_token()
+        .ok_or_else(|| anyhow!("Not authenticated. Please run 'mothership auth' first."))?;
+    Ok((active_server.url, auth_token))
+}
+
+async fn handle_chat_send_command(rift: &str, content: &str) -> Result<()> {
+    let rift_id = resolve_rift_id(rift).await?;
+    let (server_url, auth_token) = chat_api_context()?;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/rifts/{}/chat", server_url, rift_id))
+        .header("Authorization", format!("Bearer {}", auth_token))
+        .json(&serde_json::json!({ "content": content }))
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        return Err(anyhow!("Failed to send message: HTTP {}", response.status()));
+    }
+
+    let api_response: ApiResponse<ChatMessage> = response.json().await?;
+    if !api_response.success {
+        return Err(anyhow!("Server error: {}", api_response.error.unwrap_or_else(|| "Unknown error".to_string())));
+    }
+
+    println!("✅ Sent to rift {}", rift);
+    Ok(())
+}
+
+async fn handle_chat_history_command(rift: &str, limit: i64) -> Result<()> {
+    let rift_id = resolve_rift_id(rift).await?;
+    let (server_url, auth_token) = chat_api_context()?;
+
+    let response = reqwest::Client::new()
+        .get(format!("{}/api/rifts/{}/chat", server_url, rift_id))
+        .query(&[("limit", limit)])
+        .header("Authorization", format!("Bearer {}", auth_token))
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        return Err(anyhow!("Failed to load chat history: HTTP {}", response.status()));
+    }
+
+    let api_response: ApiResponse<Vec<ChatMessage>> = response.json().await?;
+    if !api_response.success {
+        return Err(anyhow!("Server error: {}", api_response.error.unwrap_or_else(|| "Unknown error".to_string())));
+    }
+
+    let messages = api_response.data.unwrap_or_default();
+    if messages.is_empty() {
+        println!("No chat messages in {}", rift);
+        return Ok(());
+    }
+
+    for message in messages {
+        println!(
+            "[{}] {}: {}",
+            message.timestamp.format("%Y-%m-%d %H:%M:%S"),
+            message.author_username,
+            message.content
+        );
+    }
+    Ok(())
 }
 
 /// Get list of rifts for current project

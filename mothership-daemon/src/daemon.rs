@@ -1579,6 +1579,10 @@ impl MothershipDaemon {
                 
                 Ok(())
             }
+            SyncMessage::ChatMessageReceived { message, .. } => {
+                info!("💬 [{}] {}: {}", message.timestamp.format("%H:%M:%S"), message.author_username, message.content);
+                Ok(())
+            }
             SyncMessage::ForceSync { path, server_content, .. } => {
                 // Server replaced our base with its version (e.g. after a stale-edit conflict); adopt it
                 info!("🔄 Force syncing {} from server", path.display());
