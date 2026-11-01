@@ -1405,6 +1405,8 @@ fn print_verbose_help() {
         ("resolve", "Resolve a conflict", Some("<wormhole> <path> <conflict> --side <rift> | --text <t> | --file <f>")),
         ("converge", "Turn a wormhole into a rift", Some("<wormhole> [--name <rift>]")),
         ("dissolve", "Archive a wormhole", Some("<wormhole>")),
+        ("beam", "Copy merged files to a read-only folder", Some("<wormhole> [--dir <folder>]")),
+        ("watch", "Report when a wormhole's rifts change", Some("<wormhole>")),
     ]);
     
     print_command_section("🚀", "init", "Quick Init", &[]);

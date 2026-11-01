@@ -254,7 +254,9 @@ fn create_api_router(state: AppState) -> Router {
         .route("/api/wormholes/:id", get(wormhole::get_wormhole))
         .route("/api/wormholes/:id/resolve", post(wormhole::resolve_conflict))
         .route("/api/wormholes/:id/converge", post(wormhole::converge_wormhole))
+        .route("/api/wormholes/:id/files", get(wormhole::wormhole_files))
         .route("/api/wormholes/:id/dissolve", post(wormhole::dissolve_wormhole))
+        .route("/ws/wormholes/:id", get(wormhole::watch_wormhole))
         // WebSocket route
         .route("/ws/:rift_id", get(websocket_handler))
         // CLI distribution routes

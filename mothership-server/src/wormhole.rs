@@ -6,16 +6,21 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 use axum::{
-    extract::{Path as AxPath, Query, State},
+    extract::{
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        Path as AxPath, Query, State,
+    },
     http::{HeaderMap, StatusCode},
+    response::Response,
     Json,
 };
 use chrono::{DateTime, Utc};
 use mothership_common::{
     merge::{merge_rifts, snapshot_base, Choice, FileMerge, Resolution},
-    protocol::ApiResponse,
+    protocol::{ApiResponse, SyncMessage},
 };
 use serde::{Deserialize, Serialize};
+use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use crate::chat::authenticated_user;
@@ -466,6 +471,95 @@ pub async fn converge_wormhole(
         files_written,
         files_removed,
     })))
+}
+
+#[derive(Debug, Serialize)]
+pub struct WormholeFile {
+    pub path: String,
+    pub content: String,
+}
+
+/// Rendered merged files for a wormhole, used to beam a read-only copy.
+/// Refuses while conflicts are unresolved, since there is no single correct content yet.
+pub async fn wormhole_files(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxPath(wormhole_id): AxPath<Uuid>,
+) -> ApiResult<Vec<WormholeFile>> {
+    let user_id = current_user(&state, &headers)?;
+    let wormhole = load_wormhole(&state, user_id, wormhole_id).await?;
+    require_active(&wormhole)?;
+
+    let computed = compute(&state, &wormhole).await?;
+    let unresolved = computed.unresolved_count();
+    if unresolved > 0 {
+        return Err(fail(
+            StatusCode::CONFLICT,
+            format!("{unresolved} unresolved conflict(s) must be resolved before beaming"),
+        ));
+    }
+
+    let mut files = Vec::new();
+    for (path, merge) in &computed.merges {
+        let lines = merge
+            .render(&computed.resolutions_for(path))
+            .ok_or_else(|| internal(format!("unresolved conflict in {path} while beaming")))?;
+        if lines.is_empty() {
+            continue;
+        }
+        files.push(WormholeFile { path: path.clone(), content: lines.join("\n") });
+    }
+
+    Ok(Json(ApiResponse::success(files)))
+}
+
+/// Live push channel for a wormhole. Sends `WormholeUpdated` whenever a side rift changes.
+/// Browsers and CLIs pass the token as `?token=` like the rift WebSocket does.
+pub async fn watch_wormhole(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+    AxPath(wormhole_id): AxPath<Uuid>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Response, ApiError> {
+    let token = params
+        .get("token")
+        .ok_or_else(|| fail(StatusCode::UNAUTHORIZED, "missing token"))?;
+    let claims = state
+        .auth
+        .verify_token(token)
+        .map_err(|_| fail(StatusCode::UNAUTHORIZED, "invalid token"))?;
+    let user_id = Uuid::parse_str(&claims.sub)
+        .map_err(|_| fail(StatusCode::UNAUTHORIZED, "invalid token"))?;
+    load_wormhole(&state, user_id, wormhole_id).await?;
+
+    let receiver = state.sync.broadcaster.subscribe();
+    Ok(ws.on_upgrade(move |socket| watch_loop(socket, receiver, wormhole_id)))
+}
+
+async fn watch_loop(
+    mut socket: WebSocket,
+    mut receiver: broadcast::Receiver<(String, SyncMessage)>,
+    wormhole_id: Uuid,
+) {
+    let channel = format!("wormhole_{wormhole_id}");
+    loop {
+        tokio::select! {
+            event = receiver.recv() => match event {
+                Ok((event_channel, message)) if event_channel == channel => {
+                    let Ok(text) = serde_json::to_string(&message) else { continue };
+                    if socket.send(Message::Text(text)).await.is_err() {
+                        break;
+                    }
+                }
+                Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Closed) => break,
+            },
+            incoming = socket.recv() => match incoming {
+                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                Some(Ok(_)) => {}
+            },
+        }
+    }
 }
 
 pub async fn dissolve_wormhole(

@@ -88,6 +88,26 @@ pub struct SyncState {
     pub chat: ChatSettings,
 }
 
+/// Tells watchers of every active wormhole that includes `rift_id` to refetch.
+/// Runs in a spawned task so the sync write path never waits on the database.
+fn notify_wormholes(state: &SyncState, rift_id: Uuid) {
+    let db = state.db.clone();
+    let broadcaster = state.broadcaster.clone();
+    tokio::spawn(async move {
+        match db.active_wormholes_for_rift(rift_id).await {
+            Ok(ids) => {
+                for wormhole_id in ids {
+                    let _ = broadcaster.send((
+                        format!("wormhole_{}", wormhole_id),
+                        SyncMessage::WormholeUpdated { wormhole_id },
+                    ));
+                }
+            }
+            Err(e) => warn!("Failed to look up wormholes for rift {}: {}", rift_id, e),
+        }
+    });
+}
+
 impl SyncState {
     pub fn new(db: Database, storage: Arc<StorageEngine>, chat: ChatSettings) -> Self {
         let (broadcaster, _) = broadcast::channel(1000);
@@ -601,8 +621,8 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
             
             // Update live working state
             state.storage.update_live_state(msg_rift_id, path.clone(), content.clone()).await?;
-            
-            // PERFORMANCE FIX: Generate diff instead of sending full content
+            notify_wormholes(&state, msg_rift_id);
+
             let diff_engine = DiffEngine::new();
             let diff = diff_engine.generate_line_diff(&original_content, &content);
             let diff_change = FileDiffChange {
@@ -663,6 +683,7 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
             
             // Update live working state
             state.storage.update_live_state(msg_rift_id, path.clone(), new_content).await?;
+            notify_wormholes(&state, msg_rift_id);
             
             // PERFORMANCE FIX: Batch the diff change
             let diff_change = FileDiffChange { path, diff, file_size };
@@ -702,6 +723,7 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
                 
                 // Update live working state
                 state.storage.update_live_state(msg_rift_id, change.path.clone(), new_content).await?;
+                notify_wormholes(&state, msg_rift_id);
             }
             
             // PERFORMANCE FIX: Forward the batch to other collaborators
@@ -843,6 +865,7 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
                                     } else if let Err(e) = state.storage.update_live_state(metadata.rift_id, metadata.file_path.clone(), content.clone()).await {
                                         error!("❌ Failed to save streamed file to storage: {}", e);
                                     } else {
+                                        notify_wormholes(&state, metadata.rift_id);
                                         info!("💾 Streamed file saved to storage: {}", metadata.file_path.display());
                                         
                                         // Broadcast file change to other collaborators

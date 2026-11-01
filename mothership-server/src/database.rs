@@ -558,6 +558,19 @@ impl Database {
         self.hydrate_wormholes(rows).await
     }
 
+    /// IDs of active wormholes that include the given rift as one of their sides
+    pub async fn active_wormholes_for_rift(&self, rift_id: RiftId) -> Result<Vec<Uuid>> {
+        let rows: Vec<(Uuid,)> = sqlx::query_as(
+            "SELECT w.id FROM wormholes w \
+             JOIN wormhole_rifts wr ON wr.wormhole_id = w.id \
+             WHERE wr.rift_id = $1 AND w.status = 'active'",
+        )
+        .bind(rift_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
     async fn hydrate_wormholes(&self, rows: Vec<WormholeRow>) -> Result<Vec<WormholeRecord>> {
         let mut records = Vec::with_capacity(rows.len());
         for (id, project_id, name, status, created_by, created_at, converted_rift_id, base_files) in rows {

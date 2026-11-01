@@ -283,6 +283,11 @@ pub enum SyncMessage {
         conflict_rift_name: String,
     },
 
+    /// Pushed to wormhole watchers when a side rift changed; clients should refetch the wormhole
+    WormholeUpdated {
+        wormhole_id: Uuid,
+    },
+
     // STREAMING: Large file support via chunked transfer
     /// Initiate streaming transfer of a large file
     StartFileStream {

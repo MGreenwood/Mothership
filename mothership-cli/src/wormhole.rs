@@ -1,13 +1,16 @@
 //! `mothership wormhole` commands: live, non-destructive merge previews across rifts.
 
 use anyhow::{anyhow, bail, Result};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, Utc};
 use clap::Subcommand;
 use colored::Colorize;
+use futures_util::StreamExt;
 use mothership_common::merge::Choice;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::path::{Component, PathBuf};
+use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
 
 use crate::{
@@ -63,11 +66,26 @@ pub enum WormholeAction {
         /// Wormhole ID or name
         wormhole: String,
     },
+    /// Copy the merged files into a folder, read-only, to build or run locally
+    Beam {
+        /// Wormhole ID or name
+        wormhole: String,
+        /// Folder to write into (defaults to a folder named after the wormhole).
+        /// An existing folder is refreshed only if it was beamed from this same wormhole.
+        #[arg(long)]
+        dir: Option<std::path::PathBuf>,
+    },
+    /// Watch a wormhole and report when any of its rifts change
+    Watch {
+        /// Wormhole ID or name
+        wormhole: String,
+    },
 }
 
 #[derive(Deserialize)]
 struct WormholeSummary {
     id: Uuid,
+    project_id: Uuid,
     name: String,
     status: String,
     #[allow(dead_code)]
@@ -119,6 +137,20 @@ struct ConvergeResponse {
 #[derive(Deserialize)]
 struct DissolveResponse {
     id: Uuid,
+}
+
+#[derive(Deserialize)]
+struct WormholeFile {
+    path: String,
+    content: String,
+}
+
+/// Written to `.mothership/wormhole.json` in a beamed folder, so it knows its source
+#[derive(Serialize, Deserialize)]
+struct BeamMarker {
+    wormhole_id: Uuid,
+    wormhole_name: String,
+    project_id: Uuid,
 }
 
 struct Session {
@@ -173,6 +205,17 @@ async fn read_response<T: DeserializeOwned>(response: reqwest::Response) -> Resu
 }
 
 pub async fn run(action: WormholeAction) -> Result<()> {
+    if let WormholeAction::Beam { wormhole, dir } = action {
+        let session = session()?;
+        let id = wormhole_id_anywhere(&session, &wormhole).await?;
+        return beam(&session, id, dir).await;
+    }
+    if let WormholeAction::Watch { wormhole } = action {
+        let session = session()?;
+        let id = wormhole_id_anywhere(&session, &wormhole).await?;
+        return watch(&session, id).await;
+    }
+
     get_current_project_metadata()?;
     let project_id = local_project_id().ok_or_else(|| anyhow!("Could not read this project's ID from .mothership/project.json"))?;
     let session = session()?;
@@ -202,7 +245,28 @@ pub async fn run(action: WormholeAction) -> Result<()> {
             let id = resolve_wormhole_id(&session, project_id, &wormhole).await?;
             dissolve(&session, id).await
         }
+        WormholeAction::Beam { .. } | WormholeAction::Watch { .. } => unreachable!("handled above"),
     }
+}
+
+/// Project ID from this folder's project.json, or from a beamed copy's marker
+fn project_id_here() -> Option<Uuid> {
+    local_project_id().or_else(|| read_beam_marker(&std::env::current_dir().ok()?).map(|marker| marker.project_id))
+}
+
+/// Accepts a wormhole ID anywhere; accepts a name only from a project or beamed folder
+async fn wormhole_id_anywhere(session: &Session, reference: &str) -> Result<Uuid> {
+    if let Ok(id) = Uuid::parse_str(reference) {
+        return Ok(id);
+    }
+    let project_id = project_id_here()
+        .ok_or_else(|| anyhow!("Use the wormhole ID here, or run this from a project folder to use its name"))?;
+    resolve_wormhole_id(session, project_id, reference).await
+}
+
+fn read_beam_marker(dir: &std::path::Path) -> Option<BeamMarker> {
+    let text = std::fs::read_to_string(dir.join(".mothership").join("wormhole.json")).ok()?;
+    serde_json::from_str(&text).ok()
 }
 
 fn find_rift(rifts: &[RiftInfo], reference: &str) -> Result<Uuid> {
@@ -239,6 +303,117 @@ async fn resolve_wormhole_id(session: &Session, project_id: Uuid, reference: &st
         [] => bail!("No active wormhole named '{}' in this project", reference),
         _ => bail!("More than one active wormhole is named '{}'; use its ID", reference),
     }
+}
+
+/// Server-supplied paths must stay inside the beam folder
+fn safe_relative(path: &str) -> Result<PathBuf> {
+    let relative = PathBuf::from(path);
+    let is_plain = !relative.as_os_str().is_empty()
+        && relative.components().all(|component| matches!(component, Component::Normal(_)));
+    if is_plain {
+        Ok(relative)
+    } else {
+        bail!("Refusing to write unsafe path from server: {}", path)
+    }
+}
+
+async fn beam(session: &Session, id: Uuid, dir: Option<PathBuf>) -> Result<()> {
+    let summary: WormholeSummary = session.get(&format!("/api/wormholes/{}", id)).await?;
+    let files: Vec<WormholeFile> = session.get(&format!("/api/wormholes/{}/files", id)).await?;
+    let relative_paths: Vec<PathBuf> = files
+        .iter()
+        .map(|file| safe_relative(&file.path))
+        .collect::<Result<_>>()?;
+
+    let target = dir.unwrap_or_else(|| PathBuf::from(&summary.name));
+    if target.exists() {
+        let same_wormhole = read_beam_marker(&target).map_or(false, |marker| marker.wormhole_id == id);
+        if !same_wormhole {
+            bail!(
+                "{} already exists and was not beamed from this wormhole; pass --dir with a new folder",
+                target.display()
+            );
+        }
+    }
+
+    std::fs::create_dir_all(&target)?;
+    for (file, relative) in files.iter().zip(&relative_paths) {
+        let full = target.join(relative);
+        if let Some(parent) = full.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&full, &file.content)?;
+    }
+
+    let marker = BeamMarker {
+        wormhole_id: id,
+        wormhole_name: summary.name.clone(),
+        project_id: summary.project_id,
+    };
+    let marker_dir = target.join(".mothership");
+    std::fs::create_dir_all(&marker_dir)?;
+    std::fs::write(marker_dir.join("wormhole.json"), serde_json::to_string_pretty(&marker)?)?;
+
+    println!(
+        "{} {} into {} ({} files)",
+        "Beamed".green(),
+        summary.name.bold(),
+        target.display(),
+        files.len()
+    );
+    println!("{}", "This copy is read-only. Converging creates a new rift and does not change this folder.".dimmed());
+    println!("Watch for changes with: mothership wormhole watch {}", id);
+    Ok(())
+}
+
+async fn print_status(session: &Session, id: Uuid) -> Result<()> {
+    let summary: WormholeSummary = session.get(&format!("/api/wormholes/{}", id)).await?;
+    let time = Local::now().format("%H:%M:%S");
+    if summary.status == "active" {
+        println!(
+            "[{}] {}: {} unresolved conflict(s)",
+            time,
+            summary.name.bold(),
+            summary.unresolved_conflicts
+        );
+    } else {
+        println!("[{}] {} is {}", time, summary.name.bold(), summary.status);
+    }
+    Ok(())
+}
+
+async fn watch(session: &Session, id: Uuid) -> Result<()> {
+    let ws_base = if let Some(rest) = session.base_url.strip_prefix("https://") {
+        format!("wss://{}", rest)
+    } else if let Some(rest) = session.base_url.strip_prefix("http://") {
+        format!("ws://{}", rest)
+    } else {
+        bail!("Unexpected server URL: {}", session.base_url);
+    };
+    let url = format!("{}/ws/wormholes/{}?token={}", ws_base, id, urlencoding::encode(&session.token));
+    let (mut socket, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .map_err(|e| anyhow!("Failed to connect to wormhole watch: {}", e))?;
+
+    print_status(session, id).await?;
+    println!("{}", "Watching for changes (Ctrl+C to stop)".dimmed());
+
+    while let Some(message) = socket.next().await {
+        match message? {
+            Message::Text(text) => {
+                let is_update = serde_json::from_str::<serde_json::Value>(&text)
+                    .ok()
+                    .and_then(|value| value.get("type").and_then(|kind| kind.as_str()).map(|kind| kind == "WormholeUpdated"))
+                    .unwrap_or(false);
+                if is_update {
+                    print_status(session, id).await?;
+                }
+            }
+            Message::Close(_) => break,
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 async fn create(session: &Session, project_id: Uuid, name: &str, rift_refs: &[String]) -> Result<()> {
