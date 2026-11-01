@@ -23,7 +23,7 @@ use crate::storage::StorageEngine;
 struct BatchingState {
     pending_changes: HashMap<String, Vec<FileDiffChange>>, // rift_id -> changes
     last_batch_time: HashMap<String, Instant>, // rift_id -> time
-    pending_author: HashMap<String, Uuid>, // rift_id -> author of the pending batch
+    pending_author: HashMap<String, (Uuid, String)>, // rift_id -> (author, origin connection) of the pending batch
 }
 
 /// Stream manager for handling large file transfers
@@ -161,11 +161,11 @@ impl SyncState {
             
             // Now remove the expired batches
             for rift_id in expired_rifts {
-            let author = batching.pending_author.remove(&rift_id);
+            let pending = batching.pending_author.remove(&rift_id);
             if let Some(changes) = batching.pending_changes.remove(&rift_id) {
                 if !changes.is_empty() {
-                    if let Some(author) = author {
-                        to_flush.push((rift_id.clone(), author, changes));
+                    if let Some((author, origin)) = pending {
+                        to_flush.push((rift_id.clone(), author, origin, changes));
                     }
                 }
             }
@@ -174,9 +174,9 @@ impl SyncState {
         }
         
         // Send batched updates
-        for (rift_id, author, changes) in to_flush {
+        for (rift_id, author, origin, changes) in to_flush {
         debug!("🚀 Flushing batch for rift {} ({} changes)", rift_id, changes.len());
-        Self::send_diff_batch(state, &rift_id, author, changes).await?;
+        Self::send_diff_batch(state, &rift_id, author, origin, changes).await?;
         }
         
         Ok(())
@@ -210,7 +210,7 @@ impl SyncState {
     }
     
     /// PERFORMANCE FIX: Send batched diff changes with compression
-    async fn send_diff_batch(state: &SyncState, rift_id: &str, author: Uuid, changes: Vec<FileDiffChange>) -> Result<()> {
+    async fn send_diff_batch(state: &SyncState, rift_id: &str, author: Uuid, origin: String, changes: Vec<FileDiffChange>) -> Result<()> {
         let should_compress = changes.len() > 5; // Compress if more than 5 changes
         
         let response = SyncMessage::RiftDiffUpdate {
@@ -219,6 +219,7 @@ impl SyncState {
             author,
             timestamp: chrono::Utc::now(),
             compressed: should_compress,
+            origin: Some(origin),
         };
         
         let channel = format!("rift_{}", rift_id);
@@ -292,6 +293,13 @@ pub async fn handle_websocket(socket: WebSocket, state: SyncState, rift_id: Stri
                 // Only process messages for THIS rift or this private connection channel
                 if channel != my_channel && channel != my_conn {
                     continue;
+                }
+
+                // Never echo a connection's own changes back to it
+                if let SyncMessage::RiftDiffUpdate { origin: Some(ref origin), .. } = message {
+                    if origin == &my_conn {
+                        continue;
+                    }
                 }
 
                 let json = match serde_json::to_string(&message) {
@@ -635,7 +643,7 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
                 path.display(), original_content.len(), content.len());
             
             // PERFORMANCE FIX: Add to batch instead of immediate broadcast
-            handle_diff_change_batched(state, msg_rift_id, user_id, diff_change).await?;
+            handle_diff_change_batched(state, msg_rift_id, user_id, connection_channel, diff_change).await?;
             
             // TODO: Implement smart checkpointing
             // Check if we should create automatic checkpoint (every N changes or time-based)
@@ -687,7 +695,7 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
             
             // PERFORMANCE FIX: Batch the diff change
             let diff_change = FileDiffChange { path, diff, file_size };
-            handle_diff_change_batched(state, msg_rift_id, user_id, diff_change).await?;
+            handle_diff_change_batched(state, msg_rift_id, user_id, connection_channel, diff_change).await?;
             
             info!("✅ Applied diff successfully: {} bytes", file_size);
         }
@@ -733,6 +741,7 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
                 author: user_id,
                 timestamp: chrono::Utc::now(),
                 compressed,
+                origin: Some(connection_channel.to_string()),
             };
             
             let channel = format!("rift_{}", msg_rift_id);
@@ -961,25 +970,26 @@ async fn handle_diff_change_batched(
     state: &SyncState, 
     rift_id: uuid::Uuid, 
     author: Uuid,
+    origin: &str,
     diff_change: FileDiffChange
 ) -> Result<()> {
     let rift_id_str = rift_id.to_string();
     let now = Instant::now();
-    let mut to_flush: Option<(Uuid, Vec<FileDiffChange>)> = None;
+    let mut to_flush: Option<(Uuid, String, Vec<FileDiffChange>)> = None;
     
     {
         let mut batching = state.batching_state.write().await;
 
-        // Author changed: take the previous user's batch out so it is sent under their ID
-        if batching.pending_author.get(&rift_id_str).is_some_and(|prev| *prev != author) {
-            let prev_author = batching.pending_author.remove(&rift_id_str);
+        // Author or connection changed: take the previous batch out so it is sent under its own origin
+        if batching.pending_author.get(&rift_id_str).is_some_and(|(prev, prev_origin)| *prev != author || prev_origin != origin) {
+            let prev = batching.pending_author.remove(&rift_id_str);
             let prev_changes = batching.pending_changes.remove(&rift_id_str).unwrap_or_default();
-            if let (Some(prev_author), false) = (prev_author, prev_changes.is_empty()) {
-                to_flush = Some((prev_author, prev_changes));
+            if let (Some((prev_author, prev_origin)), false) = (prev, prev_changes.is_empty()) {
+                to_flush = Some((prev_author, prev_origin, prev_changes));
             }
         }
 
-        batching.pending_author.insert(rift_id_str.clone(), author);
+        batching.pending_author.insert(rift_id_str.clone(), (author, origin.to_string()));
         
         // Add to pending changes
         let changes = batching.pending_changes.entry(rift_id_str.clone()).or_insert_with(Vec::new);
@@ -994,14 +1004,14 @@ async fn handle_diff_change_batched(
             let full = batching.pending_changes.remove(&rift_id_str).unwrap_or_default();
             batching.pending_author.remove(&rift_id_str);
             batching.last_batch_time.remove(&rift_id_str);
-            to_flush = Some((author, full));
+            to_flush = Some((author, origin.to_string(), full));
         }
     }
     
-    if let Some((batch_author, changes)) = to_flush {
+    if let Some((batch_author, batch_origin, changes)) = to_flush {
         if !changes.is_empty() {
             debug!("🚀 Flushing batch for rift {} ({} changes)", rift_id_str, changes.len());
-            SyncState::send_diff_batch(state, &rift_id_str, batch_author, changes).await?;
+            SyncState::send_diff_batch(state, &rift_id_str, batch_author, batch_origin, changes).await?;
         }
     }
     

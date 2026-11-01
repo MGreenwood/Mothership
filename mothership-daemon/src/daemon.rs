@@ -420,6 +420,12 @@ impl MothershipDaemon {
         let base_key = (event.project_id, event.file_path.to_string_lossy().to_string());
         let base_hash = base_hashes.read().await.get(&base_key).cloned();
 
+        // Content already matches the last synced base (e.g. a watcher echo of a write we just applied): nothing new to send
+        if base_hash.as_deref() == Some(content_hash(&event.content).as_str()) {
+            debug!("Skipping unchanged content for {}", event.file_path.display());
+            return Ok(());
+        }
+
         // Create sync message
         let sync_message = SyncMessage::FileChanged {
             rift_id,

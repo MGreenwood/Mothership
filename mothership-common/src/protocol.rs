@@ -101,6 +101,9 @@ pub enum SyncMessage {
         author: UserId,
         timestamp: DateTime<Utc>,
         compressed: bool,
+        /// Connection that sent these changes; the server skips delivering the update back to it
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        origin: Option<String>,
     },
     
     /// Server notifies about checkpoint creation
