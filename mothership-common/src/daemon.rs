@@ -122,6 +122,18 @@ pub async fn register_snapshot(folder: &std::path::Path, wormhole_id: Uuid) -> R
     unwrap(resp)
 }
 
+/// Restarts the daemon's WebSocket for `project_id` so it re-reads `rift_id` from project.json.
+pub async fn reconnect_project(project_id: Uuid) -> Result<()> {
+    let resp: ApiResponse<String> = http(Duration::from_secs(10))?
+        .post(format!("{DAEMON_URL}/projects/{project_id}/reconnect"))
+        .send()
+        .await
+        .context("Daemon is not reachable")?
+        .json()
+        .await?;
+    unwrap(resp).map(|_| ())
+}
+
 /// Asks the daemon to exit, then waits up to 5 seconds for it to stop answering.
 pub async fn stop() -> Result<()> {
     let client = http(Duration::from_secs(3))?;

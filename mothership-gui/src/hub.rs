@@ -333,12 +333,66 @@ pub async fn hub_create_rift(
     Ok(id.to_string())
 }
 
+/// Points a project's local metadata at a rift. Other keys written by the CLI are kept.
+fn update_local_rift(folder: &std::path::Path, rift_name: &str, rift_id: Option<Uuid>) -> Result<(), String> {
+    let file = folder.join(".mothership").join("project.json");
+    let content = std::fs::read_to_string(&file)
+        .map_err(|e| format!("reading {}: {e}", file.display()))?;
+    let mut meta: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| format!("parsing {}: {e}", file.display()))?;
+    let obj = meta
+        .as_object_mut()
+        .ok_or_else(|| format!("{} is not a JSON object", file.display()))?;
+    obj.insert("current_rift".into(), serde_json::json!(rift_name));
+    if let Some(id) = rift_id {
+        obj.insert("rift_id".into(), serde_json::json!(id.to_string()));
+    }
+    let out = serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
+    std::fs::write(&file, out).map_err(|e| format!("writing {}: {e}", file.display()))
+}
+
+/// Mirrors the CLI's `switch_to_rift`: switch on the server, update the local
+/// project.json, then tell the daemon to reconnect its WebSocket to the new rift.
 #[tauri::command]
 pub async fn hub_switch_rift(project_id: String, rift_name: String) -> Result<String, String> {
-    client()?
-        .switch_rift(parse_id(&project_id)?, &rift_name)
+    let project = parse_id(&project_id)?;
+    let client = client()?;
+    client.switch_rift(project, &rift_name).await.map_err(err)?;
+
+    let rift_id = client
+        .list_rifts(project)
         .await
-        .map_err(err)
+        .map_err(err)?
+        .into_iter()
+        .find(|r| r.name == rift_name)
+        .map(|r| r.id);
+
+    let tracked = match daemon::tracked_projects().await {
+        Ok(list) => list,
+        Err(e) => {
+            return Ok(format!(
+                "Switched server to rift \"{rift_name}\", but the daemon is not reachable ({e}). \
+                 Local files were not changed, so sync will use the old rift until you switch again."
+            ));
+        }
+    };
+    let Some(local) = tracked.into_iter().find(|p| p.project_id == project) else {
+        return Ok(format!(
+            "Switched server to rift \"{rift_name}\". This project is not tracked by the daemon, \
+             so local files were not changed."
+        ));
+    };
+
+    update_local_rift(std::path::Path::new(&local.project_path), &rift_name, rift_id)?;
+
+    match daemon::reconnect_project(project).await {
+        Ok(()) => Ok(format!(
+            "Switched to rift \"{rift_name}\". Local project and daemon sync now use it."
+        )),
+        Err(e) => Ok(format!(
+            "Switched to rift \"{rift_name}\" and updated local files, but the daemon reconnect failed ({e})."
+        )),
+    }
 }
 
 #[tauri::command]

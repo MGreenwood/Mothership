@@ -190,8 +190,9 @@ export default function Hub({ onOpenInEditor, onGatewayChange, onRiftChanged }) 
     })
 
   const switchRift = (rift) =>
-    run(`Switched server to rift "${rift.name}". Daemon reconnect is not wired yet.`, async () => {
-      await invoke('hub_switch_rift', { projectId: selected.id, riftName: rift.name })
+    run(null, async () => {
+      const text = await invoke('hub_switch_rift', { projectId: selected.id, riftName: rift.name })
+      setMessage({ kind: 'ok', text })
       onRiftChanged?.()
     })
 

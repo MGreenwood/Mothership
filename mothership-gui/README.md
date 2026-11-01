@@ -11,7 +11,7 @@ A Tauri 2 desktop hub for Mothership. It runs the real Neovim binary in embedded
 - **Explorer**: A tree view of the chosen root. Folders come first, and `.git`, `node_modules`, and `target` are skipped.
 - **Top bar**: Shows the selected gateway and the rift its local folder is beamed into, or "Not local" or "Not beamed into a rift". It stays visible in every view.
 - **Gateways**: Create, init, delete, and beam. Each gateway shows whether it is local (green) or remote-only (red). Beam downloads the gateway and overwrites existing local files, matching the CLI.
-- **Rifts**: List, create, and switch.
+- **Rifts**: List, create, and switch. Switch moves the server to the rift, updates the local project's `.mothership/project.json`, and tells the daemon to reconnect. If the daemon is not running, the local folder is left unchanged and the message says so.
 - **Checkpoints**: Create and list.
 - **Wormholes**: Create (two or more rifts), list, show, resolve conflicts, converge, dissolve, and watch (polls every 3 s). An active wormhole can be beamed to a snapshot folder it picks. The daemon removes that snapshot once the wormhole is dissolved or converted, provided the folder's marker still matches. A converged wormhole shows "Beam converted rift", which beams the rift it created through the same flow as the gateway Beam button.
 - **Daemon panel**: Shows status, tracked gateways, and server connection. Start, stop, and restart are available. The GUI starts the daemon on launch if it is not already running. The daemon also cleans up registered snapshots every 60 s.
