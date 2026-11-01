@@ -12,6 +12,7 @@ use reqwest::{Client, RequestBuilder, Response, Url};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::auth::{OAuthProvider, OAuthRequest, OAuthResponse, OAuthSource};
 use crate::protocol::ApiResponse;
 use crate::{Checkpoint, Project};
 
@@ -63,6 +64,82 @@ pub fn load_oauth_token() -> Option<String> {
     let content = std::fs::read_to_string(path).ok()?;
     let creds: StoredCredentials = serde_json::from_str(&content).ok()?;
     Some(creds.access_token)
+}
+
+/// Starts the browser login flow, same as `mothership auth`. The caller opens `auth_url`.
+pub async fn start_oauth_login(base_url: &str, provider: OAuthProvider) -> Result<OAuthResponse> {
+    let hostname = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "unknown".to_string());
+    let request = OAuthRequest {
+        provider,
+        machine_id: Uuid::new_v4().to_string(),
+        machine_name: format!("{}-mothership-gui", hostname),
+        platform: std::env::consts::OS.to_string(),
+        hostname,
+        source: OAuthSource::CLI,
+        callback_url: None,
+    };
+    let url = format!("{}/auth/oauth/start", base_url.trim_end_matches('/'));
+    let body: ApiResponse<OAuthResponse> = Client::new()
+        .post(url)
+        .json(&request)
+        .send()
+        .await?
+        .json()
+        .await?;
+    if !body.success {
+        return Err(anyhow!(body.error.unwrap_or_else(|| "Unknown error".to_string())));
+    }
+    body.data.ok_or_else(|| anyhow!("Server returned no OAuth data"))
+}
+
+/// Confirms a pasted token with the server before it is saved.
+pub async fn verify_oauth_token(base_url: &str, token: &str) -> Result<()> {
+    let url = format!("{}/auth/check", base_url.trim_end_matches('/'));
+    let response = Client::new().get(url).bearer_auth(token).send().await?;
+    if !response.status().is_success() {
+        return Err(anyhow!("Invalid token. Please try the authentication process again."));
+    }
+    Ok(())
+}
+
+/// Path of the shared credentials file used by the CLI, GUI, and daemon.
+fn credentials_path() -> Result<PathBuf> {
+    Ok(dirs::config_dir()
+        .ok_or_else(|| anyhow!("Could not find config directory"))?
+        .join("mothership")
+        .join("credentials.json"))
+}
+
+/// Writes the token in the same format as the CLI's `save_credentials`.
+pub fn save_oauth_token(token: &str) -> Result<()> {
+    #[derive(Serialize)]
+    struct CredentialsFile<'a> {
+        access_token: &'a str,
+        user_email: Option<String>,
+        user_name: Option<String>,
+        stored_at: String,
+    }
+    let path = credentials_path()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).context("creating credentials directory")?;
+    }
+    let file = CredentialsFile {
+        access_token: token,
+        user_email: None,
+        user_name: None,
+        stored_at: Utc::now().to_rfc3339(),
+    };
+    std::fs::write(path, serde_json::to_string_pretty(&file)?).context("writing credentials")?;
+    Ok(())
+}
+
+/// Removes the stored token. Missing file is not an error.
+pub fn clear_oauth_token() -> Result<()> {
+    let path = credentials_path()?;
+    if path.exists() {
+        std::fs::remove_file(path).context("removing credentials")?;
+    }
+    Ok(())
 }
 
 /// Returns true for paths the initial upload should skip.

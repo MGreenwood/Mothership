@@ -1,11 +1,19 @@
+use mothership_common::auth::OAuthProvider;
 use mothership_common::client::{
-    load_oauth_token, scan_text_files, CheckpointData, MothershipClient, RiftInfo,
-    DEFAULT_MAX_UPLOAD_BYTES,
+    clear_oauth_token, load_oauth_token, save_oauth_token, scan_text_files, start_oauth_login,
+    verify_oauth_token, CheckpointData, MothershipClient, RiftInfo, DEFAULT_MAX_UPLOAD_BYTES,
 };
 use mothership_common::{Checkpoint, ClientConfig, Project};
 use serde::Serialize;
 use std::path::PathBuf;
+use tauri_plugin_opener::open_url;
 use uuid::Uuid;
+
+#[derive(Serialize)]
+pub struct AuthStatus {
+    pub signed_in: bool,
+    pub server_url: String,
+}
 
 #[derive(Serialize)]
 pub struct HubHealth {
@@ -37,6 +45,46 @@ fn parse_id(id: &str) -> Result<Uuid, String> {
 
 fn err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
+}
+
+#[tauri::command]
+pub fn hub_auth_status() -> AuthStatus {
+    AuthStatus {
+        signed_in: load_oauth_token().is_some(),
+        server_url: server_url(),
+    }
+}
+
+/// Starts the browser login, the same flow as `mothership auth`. Returns the URL it opened.
+#[tauri::command]
+pub async fn hub_auth_start(provider: String) -> Result<String, String> {
+    let provider = match provider.as_str() {
+        "google" => OAuthProvider::Google,
+        "github" => OAuthProvider::GitHub,
+        other => return Err(format!("Unknown provider '{}'", other)),
+    };
+    let started = start_oauth_login(&server_url(), provider).await.map_err(err)?;
+    open_url(&started.auth_url, None::<String>).map_err(err)?;
+    Ok(started.auth_url)
+}
+
+/// Validates a token pasted from the browser's success page, then saves it.
+#[tauri::command]
+pub async fn hub_auth_complete(token: String) -> Result<(), String> {
+    let token = token.trim().to_string();
+    if token.is_empty() {
+        return Err("No token provided. Paste the token from the browser.".to_string());
+    }
+    if token.len() < 50 {
+        return Err("Token seems too short. Make sure you copied the full token.".to_string());
+    }
+    verify_oauth_token(&server_url(), &token).await.map_err(err)?;
+    save_oauth_token(&token).map_err(err)
+}
+
+#[tauri::command]
+pub fn hub_auth_logout() -> Result<(), String> {
+    clear_oauth_token().map_err(err)
 }
 
 #[tauri::command]

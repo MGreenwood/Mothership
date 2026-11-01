@@ -22,6 +22,7 @@
     "core:window:allow-unminimize",
     "dialog:allow-open",
     "dialog:allow-ask",
+    "dialog:allow-message",
     "opener:allow-open-url"
   ],
   "platforms": ["linux", "macOS", "windows"]

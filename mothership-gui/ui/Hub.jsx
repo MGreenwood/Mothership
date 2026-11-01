@@ -15,6 +15,9 @@ export default function Hub() {
   const [newProject, setNewProject] = useState({ name: '', description: '', folder: '' })
   const [newRiftName, setNewRiftName] = useState('')
   const [checkpointMsg, setCheckpointMsg] = useState('')
+  const [auth, setAuth] = useState(null)
+  const [authProvider, setAuthProvider] = useState(null)
+  const [authToken, setAuthToken] = useState('')
 
   const run = async (label, fn) => {
     setBusy(true)
@@ -52,12 +55,42 @@ export default function Hub() {
     setCheckpoints(c)
   }, [])
 
+  const loadAuth = useCallback(async () => {
+    setAuth(await invoke('hub_auth_status'))
+  }, [])
+
   useEffect(() => {
     run(null, async () => {
+      await loadAuth()
       await loadHealth()
       await loadProjects()
     })
-  }, [loadHealth, loadProjects])
+  }, [loadAuth, loadHealth, loadProjects])
+
+  const signIn = (provider) =>
+    run(`Opened ${provider} sign-in in your browser. Paste the code it shows below.`, async () => {
+      setAuthProvider(provider)
+      await invoke('hub_auth_start', { provider })
+    })
+
+  const completeSignIn = () =>
+    run('Signed in', async () => {
+      await invoke('hub_auth_complete', { token: authToken })
+      setAuthToken('')
+      setAuthProvider(null)
+      await loadAuth()
+      await loadHealth()
+      await loadProjects()
+    })
+
+  const [confirmSignOut, setConfirmSignOut] = useState(false)
+
+  const signOut = () =>
+    run('Signed out', async () => {
+      await invoke('hub_auth_logout')
+      setConfirmSignOut(false)
+      await loadAuth()
+    })
 
   const refreshAll = () =>
     run('Refreshed', async () => {
@@ -145,6 +178,45 @@ export default function Hub() {
           <button onClick={() => setMessage(null)} aria-label="Dismiss">×</button>
         </div>
       )}
+
+      <section className="card">
+        <h3>Sign in</h3>
+        {auth?.signed_in ? (
+          <>
+            <p><span className="ok">Signed in</span> to <code>{auth.server_url}</code></p>
+            {confirmSignOut ? (
+              <div className="row">
+                <span>Sign out? The stored token will be removed.</span>
+                <button onClick={signOut} disabled={busy}>Yes</button>
+                <button onClick={() => setConfirmSignOut(false)}>No</button>
+              </div>
+            ) : (
+              <button onClick={() => setConfirmSignOut(true)}>Sign out</button>
+            )}
+          </>
+        ) : (
+          <>
+            <p className="muted">
+              Pick a provider. Your browser opens, and after you approve, it shows a code. Paste that code here.
+            </p>
+            <div className="row">
+              <button onClick={() => signIn('google')} disabled={busy}>Sign in with Google</button>
+              <button onClick={() => signIn('github')} disabled={busy}>Sign in with GitHub</button>
+            </div>
+            {authProvider && (
+              <div className="row">
+                <input
+                  type="password"
+                  placeholder="Paste code from browser"
+                  value={authToken}
+                  onChange={(e) => setAuthToken(e.target.value)}
+                />
+                <button onClick={completeSignIn} disabled={busy || !authToken.trim()}>Save token</button>
+              </div>
+            )}
+          </>
+        )}
+      </section>
 
       <section className="card">
         <h3>Server</h3>
