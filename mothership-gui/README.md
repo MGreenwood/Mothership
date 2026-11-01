@@ -27,32 +27,32 @@ A Tauri 2 desktop hub for Mothership. It runs the real Neovim binary in embedded
 
 ## Development
 
-Start the Vite dev server, which `devUrl` points to on port 1420:
+The `custom-protocol` feature is on by default, so the app loads the built frontend from `dist/`. No Vite dev server is needed to run it. Build the frontend first, then build or run the app from the repo root:
 
 ```bash
 cd mothership-gui
-npm run dev
+npm run build
 ```
-
-In a second shell, build and run the Tauri app from the repo root:
 
 ```powershell
 $env:SQLX_OFFLINE='true'; cargo run -p mothership-gui
 ```
 
-`cargo run` does not start Vite on its own. If the window shows "localhost refused to connect", the Vite server is not running.
+To work on the frontend with hot reload, run `npm run dev` in `mothership-gui` and build with `--no-default-features` so the window loads `devUrl` (port 1420) instead.
 
 ## Building
 
 ```bash
-npm run build                   # frontend only, output in dist/
+npm run build                   # frontend, output in mothership-gui/dist/
 cargo build -p mothership-gui   # binary in target\debug\mothership-gui.exe
 ```
+
+`cargo build` runs `npm run build` automatically when the frontend sources (`ui/`, `hub.html`, `vite.config.js`, `package*.json`) change. Dev builds with `--no-default-features` skip it.
 
 ## Usage
 
 1. **Start the server** (in the parent directory): `docker-compose up`.
-2. **Start the app**: `npm run dev` in one shell, then `cargo run -p mothership-gui` in another.
+2. **Start the app**: run `npm run build` in `mothership-gui`, then `cargo run -p mothership-gui`. No Vite server is needed.
 3. **Sign in**: click Sign in. The browser shows a code. Paste it into the GUI.
 4. **Gateways and rifts**: pick a gateway to see its rifts, checkpoints, and wormholes. Beam downloads a gateway into a local folder. The top bar shows which rift that folder is beamed into.
 5. **Explorer and Neovim**: the explorer starts empty. Open a folder from the explorer to browse it, and the choice is remembered. Click a file to open it in Neovim. Click "New Neovim" to open an empty Neovim tab.

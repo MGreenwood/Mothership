@@ -32,6 +32,8 @@ portable-pty = "0.8"
 base64 = "0.22"
 
 [features]
-# This feature is used for production builds or when `devPath` points to the filesystem
+# Embeds the built frontend from `frontendDist` (../dist) so the exe does not need the Vite dev server.
+# Run `npm run build` in mothership-gui before `cargo build` so dist/ is current.
 # DO NOT REMOVE!!
+default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"] 
