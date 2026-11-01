@@ -133,6 +133,9 @@ pub struct CreateRiftRequest {
     pub description: Option<String>,
     #[serde(default)]
     pub project_id: Option<Uuid>,
+    /// Rift whose current files the new rift starts with
+    #[serde(default)]
+    pub fork_from: Option<Uuid>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -278,11 +281,33 @@ pub async fn create_rift(
         return Ok((StatusCode::CONFLICT, ResponseJson(ApiResponse::<Uuid>::error(message))).into_response());
     }
 
+    // Validate the fork source before creating anything, so a bad source leaves no empty rift behind
+    let fork_source = match req.fork_from {
+        Some(source_id) => {
+            let source = state.db.get_rift(source_id).await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+                .filter(|source| source.project_id == project_id)
+                .ok_or(StatusCode::BAD_REQUEST)?;
+            Some(source.id)
+        }
+        None => None,
+    };
+
     // Create the rift
     let rift = match state.db.create_rift(project_id, user_id, Some(req.name.clone())).await {
         Ok(rift) => rift,
         Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
     };
+
+    if let Some(source_id) = fork_source {
+        let files = state.sync.storage.get_live_state(source_id).await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        for (path, content) in files {
+            state.sync.storage.update_live_state(rift.id, path, content).await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        }
+        info!("Forked rift {} from {}", rift.id, source_id);
+    }
 
     info!("Created rift: {} for user: {} in project: {}", rift.id, user_id, project_id);
 

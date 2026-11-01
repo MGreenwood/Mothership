@@ -1028,7 +1028,7 @@ async fn get_rifts() -> Result<Vec<RiftInfo>> {
 /// Create a new rift
 async fn create_rift(name: &str, description: Option<String>) -> Result<uuid::Uuid> {
     // Check if we're in a project directory
-    let _project_metadata = get_current_project_metadata()?;
+    let project_metadata = get_current_project_metadata()?;
     
     // Get active server connection
     let active_server = connections::get_active_server()?
@@ -1048,12 +1048,14 @@ async fn create_rift(name: &str, description: Option<String>) -> Result<uuid::Uu
         name: String,
         description: Option<String>,
         project_id: Option<uuid::Uuid>,
+        fork_from: Option<uuid::Uuid>,
     }
     
     let request = CreateRiftRequest {
         name: name.to_string(),
         description,
         project_id: local_project_id(),
+        fork_from: project_metadata.rift_id.as_deref().and_then(|id| Uuid::parse_str(id).ok()),
     };
     
     let response = client
