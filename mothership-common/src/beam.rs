@@ -94,6 +94,34 @@ fn is_pruned(entry: &walkdir::DirEntry) -> bool {
             .map_or(false, |name| PRUNED_DIRS.iter().any(|p| p.eq_ignore_ascii_case(name)))
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct RestoreOutcome {
+    pub written: usize,
+    /// Checkpoint paths rejected as unsafe (absolute, `..`, or inside `.mothership`).
+    pub skipped_unsafe: Vec<String>,
+}
+
+/// Writes checkpoint files into a linked project folder, overwriting matching files.
+/// Files that exist locally but are missing from the checkpoint are left alone.
+pub fn restore_files_into(project_dir: &Path, files: &HashMap<PathBuf, String>) -> Result<RestoreOutcome> {
+    let mut outcome = RestoreOutcome::default();
+    for (raw, content) in files {
+        let Some(rel) = safe_relative_path(raw) else {
+            outcome.skipped_unsafe.push(raw.display().to_string());
+            continue;
+        };
+        let target = project_dir.join(&rel);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create {}", parent.display()))?;
+        }
+        fs::write(&target, content)
+            .with_context(|| format!("Failed to write {}", target.display()))?;
+        outcome.written += 1;
+    }
+    Ok(outcome)
+}
+
 pub fn read_project_metadata(project_dir: &Path) -> Option<ProjectMetadata> {
     let raw = fs::read_to_string(project_dir.join(METADATA_DIR).join(METADATA_FILE)).ok()?;
     serde_json::from_str(&raw).ok()
@@ -422,6 +450,26 @@ mod tests {
         assert_eq!(safe_relative_path(Path::new("a/../../evil.txt")), None);
         assert_eq!(safe_relative_path(Path::new(".mothership/project.json")), None);
         assert_eq!(safe_relative_path(Path::new("")), None);
+    }
+
+    #[test]
+    fn restore_writes_safe_files_and_skips_unsafe() {
+        let dir = temp_dir("restore");
+        let mut files = HashMap::new();
+        files.insert(PathBuf::from("src/main.rs"), "fn main() {}".to_string());
+        files.insert(PathBuf::from("../escape.txt"), "x".to_string());
+        files.insert(PathBuf::from(".mothership/project.json"), "{}".to_string());
+
+        let outcome = restore_files_into(&dir, &files).unwrap();
+
+        assert_eq!(outcome.written, 1);
+        assert_eq!(outcome.skipped_unsafe.len(), 2);
+        assert_eq!(
+            fs::read_to_string(dir.join("src").join("main.rs")).unwrap(),
+            "fn main() {}"
+        );
+        assert!(!dir.join(".mothership").exists());
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

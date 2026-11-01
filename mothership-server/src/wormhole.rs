@@ -513,6 +513,45 @@ pub async fn wormhole_files(
     Ok(Json(ApiResponse::success(files)))
 }
 
+#[derive(Debug, Serialize)]
+pub struct RiftFileSides {
+    pub path: String,
+    /// One entry per side, in `SideView::index` order. `None` means the file is absent on that side.
+    pub contents: Vec<Option<String>>,
+}
+
+/// Per-side file text for every path whose content differs between the wormhole's rifts.
+/// Read-only and independent of conflict state, so it works while conflicts remain.
+pub async fn wormhole_rift_files(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxPath(wormhole_id): AxPath<Uuid>,
+) -> ApiResult<Vec<RiftFileSides>> {
+    let user_id = current_user(&state, &headers)?;
+    let wormhole = load_wormhole(&state, user_id, wormhole_id).await?;
+
+    let mut live: Vec<HashMap<PathBuf, String>> = Vec::with_capacity(wormhole.rift_ids.len());
+    for rift_id in &wormhole.rift_ids {
+        live.push(state.sync.storage.get_live_state(*rift_id).await.map_err(internal)?);
+    }
+
+    let mut all_paths: Vec<PathBuf> = live.iter().flat_map(|side| side.keys().cloned()).collect();
+    all_paths.sort();
+    all_paths.dedup();
+
+    let mut files = Vec::new();
+    for path in all_paths {
+        let contents: Vec<Option<String>> = live.iter().map(|side| side.get(&path).cloned()).collect();
+        let identical = contents.windows(2).all(|pair| pair[0] == pair[1]);
+        if identical {
+            continue;
+        }
+        files.push(RiftFileSides { path: path.to_string_lossy().into_owned(), contents });
+    }
+
+    Ok(Json(ApiResponse::success(files)))
+}
+
 /// Live push channel for a wormhole. Sends `WormholeUpdated` whenever a side rift changes.
 /// Browsers and CLIs pass the token as `?token=` like the rift WebSocket does.
 pub async fn watch_wormhole(

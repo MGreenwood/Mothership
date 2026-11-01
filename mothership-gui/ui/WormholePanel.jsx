@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
+import { countChanges, diffLines, MAX_DIFF_LINES } from './lineDiff'
 
 const errText = (e) => (typeof e === 'string' ? e : e?.message ?? String(e))
 
@@ -18,6 +19,8 @@ export default function WormholePanel({ project, rifts }) {
   const [confirmDissolve, setConfirmDissolve] = useState(false)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState(null)
+  const [changes, setChanges] = useState(null)
+  const [showChanges, setShowChanges] = useState(false)
 
   const fail = (e) => setMessage({ kind: 'error', text: errText(e) })
   const succeed = (text) => setMessage({ kind: 'ok', text })
@@ -100,6 +103,8 @@ export default function WormholePanel({ project, rifts }) {
       setWatching(false)
       setConfirmDissolve(false)
       setConvergeName('')
+      setChanges(null)
+      setShowChanges(false)
       await loadDetail(wormhole.id)
     })
 
@@ -150,9 +155,43 @@ export default function WormholePanel({ project, rifts }) {
       setDetail(null)
       setWatching(false)
       setConfirmDissolve(false)
+      setChanges(null)
+      setShowChanges(false)
       await loadList()
       succeed('Wormhole dissolved')
     })
+
+  const loadChanges = () =>
+    run(async () => {
+      const files = await invoke('hub_wormhole_rift_files', { wormholeId: activeId })
+      setChanges(files)
+      setShowChanges(true)
+    })
+
+  // One card per file per side pair: side 0 against each other side, skipping identical pairs.
+  const changeCards = useMemo(() => {
+    if (!changes || !detail) return []
+    const sideName = (i) => detail.sides[i]?.rift_name ?? `side ${i}`
+    const cards = []
+    for (const file of changes) {
+      for (let k = 1; k < file.contents.length; k++) {
+        const oldText = file.contents[0]
+        const newText = file.contents[k]
+        if (oldText === newText) continue
+        const lines = diffLines(oldText ?? '', newText ?? '')
+        cards.push({
+          key: `${file.path}|${k}`,
+          path: file.path,
+          title: `${sideName(0)} → ${sideName(k)}`,
+          missing:
+            oldText === null ? sideName(0) : newText === null ? sideName(k) : null,
+          lines,
+          counts: lines ? countChanges(lines) : null,
+        })
+      }
+    }
+    return cards
+  }, [changes, detail])
 
   const riftName = (id) => rifts.find((r) => r.id === id)?.name ?? id
   const conflictCount = detail
@@ -279,6 +318,7 @@ export default function WormholePanel({ project, rifts }) {
           </div>
 
           <div className="row">
+            <button onClick={loadChanges} disabled={busy}>View changes</button>
             <button onClick={beam} disabled={busy || conflictCount > 0} title={conflictCount ? 'Resolve all conflicts first' : ''}>
               Beam to folder…
             </button>
@@ -292,6 +332,55 @@ export default function WormholePanel({ project, rifts }) {
                 <button onClick={() => setConfirmDissolve(false)}>No</button>
               </>
             )}
+          </div>
+        </div>
+      )}
+
+      {showChanges && (
+        <div className="diff-overlay" role="dialog" aria-label="Wormhole changes">
+          <div className="diff-window">
+            <div className="diff-header">
+              <strong>Changes in {detail?.name}</strong>
+              <span className="muted">
+                {changeCards.length} file change(s)
+              </span>
+              <button onClick={loadChanges} disabled={busy}>Refresh</button>
+              <button onClick={() => setShowChanges(false)} aria-label="Close">×</button>
+            </div>
+            <div className="diff-body">
+              {changeCards.length === 0 && <p className="muted">No differences between the rifts.</p>}
+              {changeCards.map((card) => (
+                <div key={card.key} className="diff-card">
+                  <div className="diff-card-header">
+                    <code className="path">{card.path}</code>
+                    <span className="muted">{card.title}</span>
+                    {card.counts && (
+                      <span>
+                        <span className="ok">+{card.counts.added}</span>{' '}
+                        <span className="bad">-{card.counts.removed}</span>
+                      </span>
+                    )}
+                    {card.missing && <span className="muted">(missing in {card.missing})</span>}
+                  </div>
+                  {card.lines === null ? (
+                    <p className="muted diff-note">
+                      Too large to show inline (over {MAX_DIFF_LINES} lines on one side).
+                    </p>
+                  ) : (
+                    <pre className="diff-lines">
+                      {card.lines.map((line, i) => (
+                        <div key={i} className={`diff-line ${line.type}`}>
+                          <span className="diff-sign">
+                            {line.type === 'add' ? '+' : line.type === 'del' ? '-' : ' '}
+                          </span>
+                          {line.text}
+                        </div>
+                      ))}
+                    </pre>
+                  )}
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}

@@ -290,6 +290,93 @@ button:hover {
   white-space: pre;
 }
 
+.diff-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.diff-window {
+  width: min(960px, 92vw);
+  height: min(720px, 86vh);
+  display: flex;
+  flex-direction: column;
+  background: #1e1e1e;
+  border: 1px solid #3c3c3c;
+  border-radius: 6px;
+}
+
+.diff-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #3c3c3c;
+}
+
+.diff-header > button:last-child {
+  margin-left: auto;
+}
+
+.diff-body {
+  flex: 1;
+  overflow: auto;
+  padding: 8px 12px;
+}
+
+.diff-card {
+  border: 1px solid #3c3c3c;
+  border-radius: 4px;
+  margin-bottom: 12px;
+  overflow: hidden;
+}
+
+.diff-card-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  background: #252526;
+  border-bottom: 1px solid #3c3c3c;
+}
+
+.diff-note {
+  margin: 8px 10px;
+}
+
+.diff-lines {
+  margin: 0;
+  max-height: 360px;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.diff-line {
+  white-space: pre;
+  padding: 0 10px;
+}
+
+.diff-line.add {
+  background: rgba(46, 160, 67, 0.22);
+}
+
+.diff-line.del {
+  background: rgba(248, 81, 73, 0.22);
+}
+
+.diff-sign {
+  display: inline-block;
+  width: 14px;
+  color: #8b949e;
+  user-select: none;
+}
+
 .list {
   list-style: none;
   margin: 0;

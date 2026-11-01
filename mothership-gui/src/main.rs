@@ -33,6 +33,7 @@ fn main() {
             hub::hub_switch_rift,
             hub::hub_create_checkpoint,
             hub::hub_checkpoint_history,
+            hub::hub_restore_checkpoint,
             hub::hub_server_info,
             hub::hub_daemon_status,
             hub::hub_daemon_start,
@@ -45,6 +46,7 @@ fn main() {
             hub::hub_converge_wormhole,
             hub::hub_dissolve_wormhole,
             hub::hub_beam_wormhole,
+            hub::hub_wormhole_rift_files,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

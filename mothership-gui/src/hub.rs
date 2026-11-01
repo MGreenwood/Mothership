@@ -1,12 +1,11 @@
 use mothership_common::auth::OAuthProvider;
 use mothership_common::beam::{
     beam_project, beam_wormhole_files, default_search_roots, ensure_daemon_running,
-    index_local_projects, register_with_daemon, WormholeMarker,
+    index_local_projects, register_with_daemon, restore_files_into, WormholeMarker,
 };
 use mothership_common::client::{
     clear_oauth_token, load_oauth_token, save_oauth_token, scan_text_files, start_oauth_login,
-    verify_oauth_token, CheckpointData, ConvergeResult, MothershipClient, RiftInfo,
-    WormholeDetail, WormholeSummary, DEFAULT_MAX_UPLOAD_BYTES,
+    verify_oauth_token,     CheckpointData, ConvergeResult, MothershipClient, RiftFileSides, RiftInfo,    WormholeDetail, WormholeSummary, DEFAULT_MAX_UPLOAD_BYTES,
 };
 use mothership_common::daemon::{self, DaemonStatus, TrackedProject};
 use mothership_common::merge::Choice;
@@ -342,6 +341,40 @@ pub async fn hub_checkpoint_history(project_id: String) -> Result<Vec<Checkpoint
 }
 
 #[derive(Serialize)]
+pub struct RestoreResult {
+    pub local_path: String,
+    pub written: usize,
+    pub skipped_unsafe: Vec<String>,
+}
+
+/// Overwrites matching files in the project's local folder with the checkpoint's contents.
+#[tauri::command]
+pub async fn hub_restore_checkpoint(
+    project_id: String,
+    checkpoint_id: String,
+) -> Result<RestoreResult, String> {
+    let project = parse_id(&project_id)?;
+    let checkpoint = parse_id(&checkpoint_id)?;
+
+    let local_path = index_local_projects(&default_search_roots())
+        .get(&project)
+        .cloned()
+        .ok_or_else(|| "This project has no local folder. Beam it first.".to_string())?;
+
+    let data = client()?
+        .restore_checkpoint(project, checkpoint)
+        .await
+        .map_err(err)?;
+
+    let outcome = restore_files_into(&local_path, &data.files).map_err(|e| format!("{:#}", e))?;
+    Ok(RestoreResult {
+        local_path: local_path.display().to_string(),
+        written: outcome.written,
+        skipped_unsafe: outcome.skipped_unsafe,
+    })
+}
+
+#[derive(Serialize)]
 pub struct ServerInfo {
     pub server_url: String,
     pub reachable: bool,
@@ -494,6 +527,15 @@ pub async fn hub_dissolve_wormhole(wormhole_id: String) -> Result<String, String
         .await
         .map_err(err)?;
     Ok(id.to_string())
+}
+
+/// Per-side text for files that differ between a wormhole's rifts. Works while conflicts remain.
+#[tauri::command]
+pub async fn hub_wormhole_rift_files(wormhole_id: String) -> Result<Vec<RiftFileSides>, String> {
+    client()?
+        .wormhole_rift_files(parse_id(&wormhole_id)?)
+        .await
+        .map_err(err)
 }
 
 #[derive(Serialize)]

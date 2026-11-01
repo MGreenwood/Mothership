@@ -17,6 +17,7 @@ export default function Hub({ onOpenInEditor }) {
   const [newProject, setNewProject] = useState({ name: '', description: '', folder: '' })
   const [newRiftName, setNewRiftName] = useState('')
   const [checkpointMsg, setCheckpointMsg] = useState('')
+  const [restoreId, setRestoreId] = useState(null)
   const [auth, setAuth] = useState(null)
   const [authProvider, setAuthProvider] = useState(null)
   const [authToken, setAuthToken] = useState('')
@@ -198,6 +199,22 @@ export default function Hub({ onOpenInEditor }) {
       setCheckpoints(await invoke('hub_checkpoint_history', { projectId: selected.id }))
     })
 
+  const restoreCheckpoint = (checkpointId) =>
+    run('', async () => {
+      const result = await invoke('hub_restore_checkpoint', {
+        projectId: selected.id,
+        checkpointId,
+      })
+      setRestoreId(null)
+      const skipped = result.skipped_unsafe.length
+      setMessage({
+        kind: 'ok',
+        text: `Restored ${result.written} file(s) into ${result.local_path}` +
+          (skipped ? `. Skipped ${skipped} unsafe path(s).` : '.') +
+          ' The daemon will sync these as new changes to your rift.',
+      })
+    })
+
   return (
     <div className="hub">
       <header className="hub-header">
@@ -353,6 +370,15 @@ export default function Hub({ onOpenInEditor }) {
                 <li key={c.id}>
                   <span>{c.message || '(no message)'}</span>
                   <span className="muted">{c.timestamp}</span>
+                  {restoreId === c.id ? (
+                    <span className="row">
+                      <span className="bad">Overwrite local files with this checkpoint?</span>
+                      <button className="danger" onClick={() => restoreCheckpoint(c.id)} disabled={busy}>Yes</button>
+                      <button onClick={() => setRestoreId(null)}>No</button>
+                    </span>
+                  ) : (
+                    <button onClick={() => setRestoreId(c.id)} disabled={busy}>Restore</button>
+                  )}
                 </li>
               ))}
             </ul>

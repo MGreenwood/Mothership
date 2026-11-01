@@ -34,6 +34,9 @@ use mothership_common::{
     transaction::TransactionManager,
 };
 
+/// How often the daemon re-checks the server's health endpoint
+const SERVER_PROBE_INTERVAL_SECS: u64 = 15;
+
 /// Commands that can be sent to the daemon
 #[derive(Debug, Clone)]
 pub enum DaemonCommand {
@@ -183,6 +186,17 @@ impl MothershipDaemon {
             status.is_running = true;
         }
         
+        // Keep server_connected in sync with the server's health endpoint,
+        // independent of whether any project WebSocket is open.
+        let probe_status = self.status.clone();
+        tokio::spawn(async move {
+            loop {
+                let reachable = Self::check_server_connectivity().await;
+                probe_status.write().await.server_connected = reachable;
+                tokio::time::sleep(std::time::Duration::from_secs(SERVER_PROBE_INTERVAL_SECS)).await;
+            }
+        });
+
         // Start the IPC server
         let ipc_handle = {
             // Move the IPC server out of self
@@ -1204,12 +1218,6 @@ impl MothershipDaemon {
                         }
                         
                         info!("🔌 WebSocket connection closed");
-                        
-                        // Update connection status to disconnected
-                        {
-                            let mut status_guard = status_clone.write().await;
-                            status_guard.server_connected = false;
-                        }
                     }
                     Err(e) => {
                         error!("❌ Failed to connect to WebSocket: {}", e);
@@ -1235,12 +1243,6 @@ impl MothershipDaemon {
                         }
                         
                         health.record_error();
-                        
-                        // Update connection status to disconnected
-                        {
-                            let mut status_guard = status_clone.write().await;
-                            status_guard.server_connected = false;
-                        }
                     }
                 }
                 

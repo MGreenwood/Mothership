@@ -41,6 +41,13 @@ pub struct CheckpointData {
     pub file_count: usize,
 }
 
+/// Checkpoint metadata plus the full contents of every file in it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RestoreData {
+    pub checkpoint: Checkpoint,
+    pub files: HashMap<PathBuf, String>,
+}
+
 /// A wormhole as listed by `GET /api/wormholes`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WormholeSummary {
@@ -102,6 +109,14 @@ pub struct ConvergeResult {
 pub struct WormholeFile {
     pub path: String,
     pub content: String,
+}
+
+/// A path whose text differs between a wormhole's rifts, from `GET /api/wormholes/:id/rift-files`.
+/// `contents[i]` is the text on side `i`, or `None` when that rift lacks the file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RiftFileSides {
+    pub path: String,
+    pub contents: Vec<Option<String>>,
 }
 
 /// Result of scanning a directory for uploadable text files.
@@ -521,6 +536,17 @@ impl MothershipClient {
         Self::unwrap_api(resp)
     }
 
+    /// Fetches a checkpoint's files from the server. Nothing is written to disk here.
+    pub async fn restore_checkpoint(&self, project_id: Uuid, checkpoint_id: Uuid) -> Result<RestoreData> {
+        let project_id = project_id.to_string();
+        let checkpoint_id = checkpoint_id.to_string();
+        let url = self.endpoint(&["projects", &project_id, "checkpoints", &checkpoint_id, "restore"])?;
+        let response = self.authed(self.http.post(url)).send().await?;
+        let response = Self::ensure_success(response).await?;
+        let resp: ApiResponse<RestoreData> = response.json().await?;
+        Self::unwrap_api(resp)
+    }
+
     /// Lists wormholes for a project, including active and dissolved ones.
     pub async fn list_wormholes(&self, project_id: Uuid) -> Result<Vec<WormholeSummary>> {
         let url = self.endpoint(&["api", "wormholes"])?;
@@ -596,6 +622,15 @@ impl MothershipClient {
             .post_api(&["api", "wormholes", &id, "dissolve"], &serde_json::json!({}))
             .await?;
         Ok(Self::unwrap_api(resp)?.id)
+    }
+
+    /// Per-side file text for paths that differ between a wormhole's rifts.
+    pub async fn wormhole_rift_files(&self, wormhole_id: Uuid) -> Result<Vec<RiftFileSides>> {
+        let id = wormhole_id.to_string();
+        let resp: ApiResponse<Vec<RiftFileSides>> = self
+            .get_api(&["api", "wormholes", &id, "rift-files"])
+            .await?;
+        Self::unwrap_api(resp)
     }
 }
 

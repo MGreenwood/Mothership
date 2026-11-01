@@ -279,7 +279,7 @@ pub async fn handle_restore(config_manager: &ConfigManager, checkpoint_id: Strin
     print_info(&format!("Restoring to checkpoint {}...", &checkpoint_id[..8]));
 
     // Request checkpoint files from server
-    let restore_url = format!("{}/projects/{}/restore/{}", server_url, project_id, checkpoint_uuid);
+    let restore_url = format!("{}/projects/{}/checkpoints/{}/restore", server_url, project_id, checkpoint_uuid);
     let response = client.post(&restore_url).send().await?;
 
     if !response.status().is_success() {
