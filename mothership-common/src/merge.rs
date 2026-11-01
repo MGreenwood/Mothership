@@ -195,7 +195,7 @@ pub fn snapshot_base(rifts: &[&HashMap<PathBuf, String>]) -> HashMap<PathBuf, St
 
 fn lines_of(content: Option<&str>) -> Vec<&str> {
     match content {
-        None => Vec::new(),
+        None | Some("") => Vec::new(),
         Some(text) => text.split('\n').collect(),
     }
 }
@@ -407,6 +407,14 @@ mod tests {
         let base = "a\nb\nc";
         let merged = merge(base, &["a\nb\np\nc", "a\nb\nq\nc"]);
         assert_eq!(conflict_count(&merged), 1);
+    }
+
+    #[test]
+    fn two_sides_writing_into_empty_base_conflict() {
+        let merged = merge("", &["line1\nside-a\nline3", "line1\nline2\nline3"]);
+        assert_eq!(conflict_count(&merged), 1);
+        let conflict = merged.conflicts().next().unwrap();
+        assert_eq!((conflict.base_start, conflict.base_end), (0, 0));
     }
 
     #[test]

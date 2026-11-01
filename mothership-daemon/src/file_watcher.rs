@@ -19,6 +19,9 @@ const MAX_DIRECT_SYNC_SIZE: u64 = 1_048_576; // 1MB in bytes
 /// Minimum debounce interval between file events (100ms)
 const DEBOUNCE_INTERVAL: Duration = Duration::from_millis(100);
 
+/// How long to wait before trusting an empty modified file (truncate-then-write race)
+const EMPTY_WRITE_SETTLE: Duration = Duration::from_millis(250);
+
 /// File change event sent to the daemon
 #[derive(Debug, Clone)]
 pub struct FileChangeEvent {
@@ -303,6 +306,15 @@ fn handle_file_event(
             continue;
         }
         
+        // Editors and shells often truncate before writing; wait briefly so an
+        // empty read isn't sent as the file's final state
+        let file_size = if file_size == 0 && matches!(change_type, FileChangeType::Modified) {
+            std::thread::sleep(EMPTY_WRITE_SETTLE);
+            std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+        } else {
+            file_size
+        };
+
         // Read file content for direct sync (files <= MAX_DIRECT_SYNC_SIZE)
         let content = match std::fs::read_to_string(path) {
             Ok(content) => content,

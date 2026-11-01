@@ -250,6 +250,7 @@ fn create_api_router(state: AppState) -> Router {
         // Rift routes
         .route("/api/rifts", get(handlers::list_rifts).post(handlers::create_rift))
         .route("/api/rifts/switch", post(handlers::switch_rift))
+        .route("/api/rifts/diff", get(handlers::get_rift_diffs))
         .route("/api/rifts/:id/chat", get(chat::get_chat_history).post(chat::post_chat))
         .route("/api/wormholes", get(wormhole::list_wormholes).post(wormhole::create_wormhole))
         .route("/api/wormholes/:id", get(wormhole::get_wormhole))
@@ -332,8 +333,18 @@ fn create_combined_router(state: AppState) -> Router {
         .route("/gateway", post(gateway))
         .route("/gateway/create", post(create_gateway))
 
-        
-        // WebSocket route
+        // Rift and wormhole routes
+        .route("/api/rifts", get(handlers::list_rifts).post(handlers::create_rift))
+        .route("/api/rifts/switch", post(handlers::switch_rift))
+        .route("/api/rifts/diff", get(handlers::get_rift_diffs))
+        .route("/api/rifts/:id/chat", get(chat::get_chat_history).post(chat::post_chat))
+        .route("/api/wormholes", get(wormhole::list_wormholes).post(wormhole::create_wormhole))
+        .route("/api/wormholes/:id", get(wormhole::get_wormhole))
+        .route("/api/wormholes/:id/resolve", post(wormhole::resolve_conflict))
+        .route("/api/wormholes/:id/converge", post(wormhole::converge_wormhole))
+        .route("/api/wormholes/:id/files", get(wormhole::wormhole_files))
+        .route("/api/wormholes/:id/dissolve", post(wormhole::dissolve_wormhole))
+        .route("/ws/wormholes/:id", get(wormhole::watch_wormhole))
         .route("/ws/:rift_id", get(websocket_handler))
         
         // Web UI routes
