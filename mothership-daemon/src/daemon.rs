@@ -1212,6 +1212,8 @@ impl MothershipDaemon {
                                             if let Err(e) = Self::handle_websocket_sync_message(&text, &project_path, &server_write_flags, &base_hashes, &outgoing_channels, project_id).await {
                                                 error!("Failed to handle incoming sync message: {}", e);
                                             }
+                                            // Handlers set this flag and clear it on success only; a failed write would otherwise leave local changes ignored
+                                            server_write_flags.write().await.remove(&project_id);
                                         }
                                         Some(Ok(tokio_tungstenite::tungstenite::Message::Close(close_frame))) => {
                                             info!("WebSocket closed by server: {:?}", close_frame);

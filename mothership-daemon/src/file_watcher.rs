@@ -19,6 +19,10 @@ const DEBOUNCE_INTERVAL: Duration = Duration::from_millis(100);
 /// How long to wait before trusting an empty modified file (truncate-then-write race)
 const EMPTY_WRITE_SETTLE: Duration = Duration::from_millis(250);
 
+/// Retries when a file is still held open by its writer (Windows sharing violation, os error 32)
+const READ_LOCK_RETRIES: u32 = 10;
+const READ_LOCK_RETRY_DELAY: Duration = Duration::from_millis(100);
+
 /// File change event sent to the daemon
 #[derive(Debug, Clone)]
 pub struct FileChangeEvent {
@@ -304,12 +308,22 @@ fn handle_file_event(
         };
 
         // Read file content for direct sync (files <= MAX_DIRECT_SYNC_SIZE; larger files stream above)
-        let content = match std::fs::read_to_string(path) {
-            Ok(content) => content,
-            Err(e) => {
-                error!("Failed to read file content for {}: {}", path.display(), e);
-                continue;
+        let mut attempts = 0;
+        let content = loop {
+            match std::fs::read_to_string(path) {
+                Ok(content) => break Some(content),
+                Err(e) if e.raw_os_error() == Some(32) && attempts < READ_LOCK_RETRIES => {
+                    attempts += 1;
+                    std::thread::sleep(READ_LOCK_RETRY_DELAY);
+                }
+                Err(e) => {
+                    error!("Failed to read file content for {}: {}", path.display(), e);
+                    break None;
+                }
             }
+        };
+        let Some(content) = content else {
+            continue;
         };
         
         info!("File changed in project {}: {} ({} bytes)", 
