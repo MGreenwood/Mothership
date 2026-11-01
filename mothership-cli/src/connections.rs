@@ -221,12 +221,12 @@ async fn authenticate_with_server(_server_url: &str, capabilities: &ServerCapabi
     // handle various auth methods based on server capabilities
     
     if capabilities.oauth_providers.contains(&"google".to_string()) {
-        print_info("🔐 Authenticating with Google OAuth...");
+        print_info("Authenticating with Google OAuth...");
         // TODO: Implement OAuth flow
         // For now, return a placeholder token
         Ok("placeholder_oauth_token".to_string())
     } else if capabilities.sso_domain.is_some() {
-        print_info("🔐 Authenticating with company SSO...");
+        print_info("Authenticating with company SSO...");
         // TODO: Implement SSO flow
         Ok("placeholder_sso_token".to_string())
     } else {
@@ -244,7 +244,7 @@ pub async fn handle_connect(_config_manager: &ConfigManager, server_url: String)
         Err(e) => {
             print_api_error(&format!("Failed to connect to server: {}", e));
             print_info("Make sure the server URL is correct and the server is running");
-            print_info("💡 Try specifying the full URL: https://your-server.com:7523");
+            print_info("Try specifying the full URL: https://your-server.com:7523");
             return Ok(());
         }
     };
@@ -291,7 +291,7 @@ pub async fn handle_connect(_config_manager: &ConfigManager, server_url: String)
 async fn offer_to_sync_existing_projects() -> Result<()> {
     // TODO: Scan for .mothership directories and offer to sync them
     // For now, just show info message
-    print_info("💡 Tip: Run 'mothership init' in existing project directories to sync them to the server");
+    print_info("Tip: Run 'mothership init' in existing project directories to sync them to the server");
     Ok(())
 }
 
@@ -314,9 +314,9 @@ pub async fn handle_server_status(_config_manager: &ConfigManager) -> Result<()>
                 // Test connection
                 print_info("Testing connection...");
                 match test_server_connection(&server.url).await {
-                    Ok(()) => print_success("✅ Server is reachable"),
+                    Ok(()) => print_success("Server is reachable"),
                     Err(e) => {
-                        print_api_error(&format!("❌ Server connection failed: {}", e));
+                        print_api_error(&format!("Server connection failed: {}", e));
                         print_info("Use 'mothership server disconnect' if the server is no longer available");
                     }
                 }
@@ -386,11 +386,11 @@ pub async fn handle_server_list(_config_manager: &ConfigManager) -> Result<()> {
         return Ok(());
     }
     
-    println!("\n{}", "🌐 Configured Servers".cyan().bold());
+    println!("\n{}", "Configured Servers".cyan().bold());
     
     for (url, server) in &config.servers {
         let is_active = config.active_server.as_ref() == Some(url);
-        let status_indicator = if is_active { "🟢" } else { "⚪" };
+        let status_indicator = if is_active { "" } else { "" };
         let server_name = if is_active { 
             server.name.green().bold() 
         } else { 
@@ -406,7 +406,7 @@ pub async fn handle_server_list(_config_manager: &ConfigManager) -> Result<()> {
         }
         
         if is_active {
-            println!("   {} Currently active", "🟢".green());
+            println!("   {} Currently active", "".green());
         }
     }
     

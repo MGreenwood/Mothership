@@ -175,7 +175,7 @@ impl SyncState {
         
         // Send batched updates
         for (rift_id, author, origin, changes) in to_flush {
-        debug!("🚀 Flushing batch for rift {} ({} changes)", rift_id, changes.len());
+        debug!("Flushing batch for rift {} ({} changes)", rift_id, changes.len());
         Self::send_diff_batch(state, &rift_id, author, origin, changes).await?;
         }
         
@@ -225,7 +225,7 @@ impl SyncState {
         let channel = format!("rift_{}", rift_id);
         let _ = state.broadcaster.send((channel.clone(), response));
         
-        info!("📤 Sent diff batch to rift channel: {} (compressed: {})", channel, should_compress);
+        info!("Sent diff batch to rift channel: {} (compressed: {})", channel, should_compress);
         Ok(())
     }
     
@@ -266,7 +266,7 @@ impl SyncState {
             // For now, we'll skip this optimization
         }
         
-        info!("✅ File assembled successfully: {} bytes", file_size);
+        info!("File assembled successfully: {} bytes", file_size);
         Ok(metadata.temp_file_path.clone())
     }
 }
@@ -536,7 +536,7 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
         SyncMessage::SendChatMessage { rift_id: msg_rift_id, content } => {
             // SECURITY CHECK: Chat is scoped to the rift this socket was authorized for
             if msg_rift_id.to_string() != client_rift_id {
-                error!("🚨 SECURITY: Client attempted to chat in unauthorized rift {} (authorized: {})", msg_rift_id, client_rift_id);
+                error!("SECURITY: Client attempted to chat in unauthorized rift {} (authorized: {})", msg_rift_id, client_rift_id);
                 return Err(anyhow::anyhow!("Unauthorized rift access attempt"));
             }
             chat::post_chat_message(&state.db, &state.broadcaster, &state.chat, msg_rift_id, user_id, &content)
@@ -549,18 +549,18 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
             // SECURITY CHECK: Verify client is authorized for this rift
             let msg_rift_id_str = msg_rift_id.to_string();
             if msg_rift_id_str != client_rift_id {
-                error!("🚨 SECURITY: Client attempted to join unauthorized rift {} (authorized: {})", msg_rift_id_str, client_rift_id);
+                error!("SECURITY: Client attempted to join unauthorized rift {} (authorized: {})", msg_rift_id_str, client_rift_id);
                 return Err(anyhow::anyhow!("Unauthorized rift access attempt"));
             }
             
             // Get current live state for the rift
             let live_files = match state.storage.get_live_state(msg_rift_id).await {
                 Ok(files) => {
-                    info!("✅ Retrieved {} files from rift {}", files.len(), msg_rift_id);
+                    info!("Retrieved {} files from rift {}", files.len(), msg_rift_id);
                     files
                 }
                 Err(e) => {
-                    error!("❌ Failed to get live state for rift {}: {}", msg_rift_id, e);
+                    error!("Failed to get live state for rift {}: {}", msg_rift_id, e);
                     return Err(e);
                 }
             };
@@ -578,21 +578,21 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
             // Test serialization before sending
             match serde_json::to_string(&response) {
                 Ok(json) => {
-                    info!("✅ RiftJoined message serialized successfully ({} bytes)", json.len());
+                    info!("RiftJoined message serialized successfully ({} bytes)", json.len());
                     
                     // Send only to the joining client (not broadcast to all)
                     let channel = format!("rift_{}", msg_rift_id);
                     match state.broadcaster.send((channel.clone(), response)) {
                         Ok(_) => {
-                            info!("✅ RiftJoined message sent to channel: {}", channel);
+                            info!("RiftJoined message sent to channel: {}", channel);
                         }
                         Err(e) => {
-                            error!("❌ Failed to send RiftJoined message to channel {}: {}", channel, e);
+                            error!("Failed to send RiftJoined message to channel {}: {}", channel, e);
                         }
                     }
                 }
                 Err(e) => {
-                    error!("❌ Failed to serialize RiftJoined message: {}", e);
+                    error!("Failed to serialize RiftJoined message: {}", e);
                     return Err(anyhow::anyhow!("Serialization failed: {}", e));
                 }
             }
@@ -606,11 +606,11 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
             // SECURITY CHECK: Verify client is authorized for this rift
             let msg_rift_id_str = msg_rift_id.to_string();
             if msg_rift_id_str != client_rift_id {
-                error!("🚨 SECURITY: Client attempted to modify unauthorized rift {} (authorized: {})", msg_rift_id_str, client_rift_id);
+                error!("SECURITY: Client attempted to modify unauthorized rift {} (authorized: {})", msg_rift_id_str, client_rift_id);
                 return Err(anyhow::anyhow!("Unauthorized rift modification attempt"));
             }
             
-            info!("📝 File changed in rift {}: {} ({} bytes)", msg_rift_id, path.display(), content.len());
+            info!("File changed in rift {}: {} ({} bytes)", msg_rift_id, path.display(), content.len());
             
             // PERFORMANCE FIX: Get original content to generate diff
             let original_content = match state.storage.get_file_content(msg_rift_id, &path).await {
@@ -639,7 +639,7 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
                 file_size: content.len() as u64,
             };
             
-            info!("📊 Generated diff for {}: original {} bytes -> new {} bytes", 
+            info!("Generated diff for {}: original {} bytes -> new {} bytes", 
                 path.display(), original_content.len(), content.len());
             
             // PERFORMANCE FIX: Add to batch instead of immediate broadcast
@@ -661,11 +661,11 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
             // SECURITY CHECK: Verify client is authorized for this rift
             let msg_rift_id_str = msg_rift_id.to_string();
             if msg_rift_id_str != client_rift_id {
-                error!("🚨 SECURITY: Client attempted to modify unauthorized rift {} (authorized: {})", msg_rift_id_str, client_rift_id);
+                error!("SECURITY: Client attempted to modify unauthorized rift {} (authorized: {})", msg_rift_id_str, client_rift_id);
                 return Err(anyhow::anyhow!("Unauthorized rift modification attempt"));
             }
             
-            info!("📝 Diff change in rift {}: {} ({} bytes)", msg_rift_id, path.display(), file_size);
+            info!("Diff change in rift {}: {} ({} bytes)", msg_rift_id, path.display(), file_size);
             
             // PERFORMANCE FIX: Apply diff to get new content
             let original_content = match state.storage.get_file_content(msg_rift_id, &path).await {
@@ -697,7 +697,7 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
             let diff_change = FileDiffChange { path, diff, file_size };
             handle_diff_change_batched(state, msg_rift_id, user_id, connection_channel, diff_change).await?;
             
-            info!("✅ Applied diff successfully: {} bytes", file_size);
+            info!("Applied diff successfully: {} bytes", file_size);
         }
 
         SyncMessage::BatchDiffChanges { rift_id: msg_rift_id, changes, timestamp: _, compressed } => {
@@ -708,11 +708,11 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
             // SECURITY CHECK: Verify client is authorized for this rift
             let msg_rift_id_str = msg_rift_id.to_string();
             if msg_rift_id_str != client_rift_id {
-                error!("🚨 SECURITY: Client attempted to modify unauthorized rift {} (authorized: {})", msg_rift_id_str, client_rift_id);
+                error!("SECURITY: Client attempted to modify unauthorized rift {} (authorized: {})", msg_rift_id_str, client_rift_id);
                 return Err(anyhow::anyhow!("Unauthorized rift modification attempt"));
             }
             
-            info!("📦 Batch diff changes in rift {}: {} changes (compressed: {})", 
+            info!("Batch diff changes in rift {}: {} changes (compressed: {})", 
                 msg_rift_id, changes.len(), compressed);
             
             // Clone changes before processing to avoid move issues
@@ -747,18 +747,18 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
             let channel = format!("rift_{}", msg_rift_id);
             let _ = state.broadcaster.send((channel.clone(), response));
             
-            info!("📤 Forwarded diff batch to rift channel: {}", channel);
+            info!("Forwarded diff batch to rift channel: {}", channel);
         }
 
         SyncMessage::CreateCheckpoint { rift_id: msg_rift_id, message } => {
             // SECURITY CHECK: Verify client is authorized for this rift
             let msg_rift_id_str = msg_rift_id.to_string();
             if msg_rift_id_str != client_rift_id {
-                error!("🚨 SECURITY: Client attempted to create checkpoint in unauthorized rift {} (authorized: {})", msg_rift_id_str, client_rift_id);
+                error!("SECURITY: Client attempted to create checkpoint in unauthorized rift {} (authorized: {})", msg_rift_id_str, client_rift_id);
                 return Err(anyhow::anyhow!("Unauthorized checkpoint creation attempt"));
             }
             
-            info!("📸 Checkpoint requested for rift: {} (message: {:?})", msg_rift_id, message);
+            info!("Checkpoint requested for rift: {} (message: {:?})", msg_rift_id, message);
             
             // Create actual checkpoint using storage engine
             let checkpoint = state.storage.create_checkpoint(
@@ -782,22 +782,22 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
 
         SyncMessage::Heartbeat => {
             // Heartbeat messages are just for connection keepalive - no action needed
-            debug!("🏓 Received heartbeat from client");
+            debug!("Received heartbeat from client");
         }
 
         // Streaming support
         SyncMessage::StartFileStream { stream_id, rift_id, path, total_size, chunk_size, content_hash, is_binary, timestamp: _, base_hash } => {
-            info!("📡 Starting file stream {} for {}: {} bytes", stream_id, path.display(), total_size);
+            info!("Starting file stream {} for {}: {} bytes", stream_id, path.display(), total_size);
             
             let mut stream_manager = state.stream_manager.lock().await;
             let metadata = StreamMetadata::new(stream_id, rift_id, path.clone(), total_size, chunk_size, is_binary, content_hash, base_hash);
             stream_manager.active_streams.insert(stream_id, metadata);
             
-            info!("✅ Stream {} registered for file {}", stream_id, path.display());
+            info!("Stream {} registered for file {}", stream_id, path.display());
         }
 
         SyncMessage::FileChunk { stream_id, chunk_index, data, is_compressed, chunk_hash } => {
-            debug!("📦 Received chunk {} for stream {}", chunk_index, stream_id);
+            debug!("Received chunk {} for stream {}", chunk_index, stream_id);
             
             let mut stream_manager = state.stream_manager.lock().await;
             if let Some(metadata) = stream_manager.active_streams.get_mut(&stream_id) {
@@ -805,7 +805,7 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
                 if !chunk_hash.is_empty() {
                     let computed_hash = format!("{:x}", Sha256::digest(&data));
                     if computed_hash != chunk_hash {
-                        error!("❌ Chunk hash mismatch for stream {} chunk {}", stream_id, chunk_index);
+                        error!("Chunk hash mismatch for stream {} chunk {}", stream_id, chunk_index);
                         // Send error back to client
                         let error_msg = SyncMessage::StreamError {
                             stream_id,
@@ -827,7 +827,7 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
                     match decoder.read_to_end(&mut decompressed) {
                         Ok(_) => decompressed,
                         Err(e) => {
-                            error!("❌ Failed to decompress chunk {} for stream {}: {}", chunk_index, stream_id, e);
+                            error!("Failed to decompress chunk {} for stream {}: {}", chunk_index, stream_id, e);
                             let error_msg = SyncMessage::StreamError {
                                 stream_id,
                                 error_code: mothership_common::protocol::StreamErrorCode::ChunkCorrupted,
@@ -846,17 +846,17 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
                 // Store chunk
                 metadata.received_chunks.insert(chunk_index, chunk_data);
                 
-                debug!("✅ Chunk {} received for stream {} ({}/{} chunks)", 
+                debug!("Chunk {} received for stream {} ({}/{} chunks)", 
                     chunk_index, stream_id, metadata.received_chunks.len(), metadata.expected_chunks);
 
                 // Check if stream is complete
                 if metadata.is_complete() {
-                    info!("🎉 Stream {} complete, assembling file {}", stream_id, metadata.file_path.display());
+                    info!("Stream {} complete, assembling file {}", stream_id, metadata.file_path.display());
                     
                     // Assemble file from chunks
                     match SyncState::assemble_stream_file(metadata).await {
                         Ok(final_path) => {
-                            info!("✅ File assembled successfully: {}", final_path.display());
+                            info!("File assembled successfully: {}", final_path.display());
                             
                             // Read assembled file content and save to storage
                             match tokio::fs::read_to_string(&final_path).await {
@@ -869,13 +869,13 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
                                         if let Err(e) = create_conflict_rift_for_stale_edit(
                                             state, rift_id, user_id, connection_channel, &file_path, content, original,
                                         ).await {
-                                            error!("❌ Failed to create conflict rift for streamed file: {}", e);
+                                            error!("Failed to create conflict rift for streamed file: {}", e);
                                         }
                                     } else if let Err(e) = state.storage.update_live_state(metadata.rift_id, metadata.file_path.clone(), content.clone()).await {
-                                        error!("❌ Failed to save streamed file to storage: {}", e);
+                                        error!("Failed to save streamed file to storage: {}", e);
                                     } else {
                                         notify_wormholes(&state, metadata.rift_id);
-                                        info!("💾 Streamed file saved to storage: {}", metadata.file_path.display());
+                                        info!("Streamed file saved to storage: {}", metadata.file_path.display());
                                         
                                         // Broadcast file change to other collaborators
                                         let response = SyncMessage::FileUpdate {
@@ -894,12 +894,12 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
                                     let _ = tokio::fs::remove_file(&final_path).await;
                                 }
                                 Err(e) => {
-                                    error!("❌ Failed to read assembled file: {}", e);
+                                    error!("Failed to read assembled file: {}", e);
                                 }
                             }
                         }
                         Err(e) => {
-                            error!("❌ Failed to assemble stream {}: {}", stream_id, e);
+                            error!("Failed to assemble stream {}: {}", stream_id, e);
                             let error_msg = SyncMessage::StreamError {
                                 stream_id,
                                 error_code: mothership_common::protocol::StreamErrorCode::StorageFull,
@@ -915,7 +915,7 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
                     stream_manager.active_streams.remove(&stream_id);
                 }
             } else {
-                warn!("⚠️  Received chunk for unknown stream {}", stream_id);
+                warn!(" Received chunk for unknown stream {}", stream_id);
                 let error_msg = SyncMessage::StreamError {
                     stream_id,
                     error_code: mothership_common::protocol::StreamErrorCode::StreamNotFound,
@@ -928,36 +928,36 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
         }
 
         SyncMessage::EndFileStream { stream_id, final_hash, success } => {
-            info!("🏁 Stream {} ended (success: {}, hash: {})", stream_id, success, final_hash);
+            info!("Stream {} ended (success: {}, hash: {})", stream_id, success, final_hash);
             
             let mut stream_manager = state.stream_manager.lock().await;
             if let Some(metadata) = stream_manager.active_streams.remove(&stream_id) {
                 if !success {
-                    info!("⚠️  Stream {} failed, cleaning up", stream_id);
+                    info!(" Stream {} failed, cleaning up", stream_id);
                     let _ = tokio::fs::remove_file(&metadata.temp_file_path).await;
                 } else {
                     // Verify final hash if provided
                     if !final_hash.is_empty() {
                         // TODO: Verify against assembled file hash
                     }
-                    info!("✅ Stream {} completed successfully", stream_id);
+                    info!("Stream {} completed successfully", stream_id);
                 }
             }
         }
 
         SyncMessage::StreamControl { stream_id, operation } => {
-            info!("🎛️ Stream control for {}: {:?}", stream_id, operation);
+            info!("Stream control for {}: {:?}", stream_id, operation);
             // TODO: Implement stream control operations (pause, resume, cancel)
         }
 
         SyncMessage::StreamError { stream_id, error_code, message, retry_chunk } => {
-            error!("❌ Stream error for {}: {:?} - {} (retry chunk: {:?})", 
+            error!("Stream error for {}: {:?} - {} (retry chunk: {:?})", 
                 stream_id, error_code, message, retry_chunk);
             // TODO: Implement error handling and retry logic
         }
 
         _ => {
-            warn!("⚠️  Unhandled sync message type");
+            warn!(" Unhandled sync message type");
         }
     }
 
@@ -1010,7 +1010,7 @@ async fn handle_diff_change_batched(
     
     if let Some((batch_author, batch_origin, changes)) = to_flush {
         if !changes.is_empty() {
-            debug!("🚀 Flushing batch for rift {} ({} changes)", rift_id_str, changes.len());
+            debug!("Flushing batch for rift {} ({} changes)", rift_id_str, changes.len());
             SyncState::send_diff_batch(state, &rift_id_str, batch_author, batch_origin, changes).await?;
         }
     }

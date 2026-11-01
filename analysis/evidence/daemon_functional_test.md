@@ -6,27 +6,27 @@
 
 ## Test Results
 
-### ✅ PASS: Daemon Binary Existence
+### PASS: Daemon Binary Existence
 - **Result**: Daemon binary found at `target/release/mothership-daemon.exe`
 - **Evidence**: Binary exists and is executable
 - **Status**: WORKING
 
-### ✅ PASS: Daemon Startup
+### PASS: Daemon Startup
 - **Result**: Daemon starts successfully with PID assignment
 - **Evidence**: Process starts without immediate exit
 - **Status**: WORKING
 
-### ✅ PASS: IPC Health Check
+### PASS: IPC Health Check
 - **Result**: Health endpoint responds with HTTP 200
 - **Evidence**: `GET http://localhost:7525/health` returns success
 - **Status**: WORKING
 
-### ✅ PASS: IPC Status Check  
+### PASS: IPC Status Check  
 - **Result**: Status endpoint responds with HTTP 200 and JSON data
 - **Evidence**: Response shows daemon status: `{"status":"success","data":{"is_running":true,"projects_tracked":0,"files_syncing":0,"last_sync":null}}`
 - **Status**: WORKING
 
-### ❌ FAIL: Graceful Shutdown
+### FAIL: Graceful Shutdown
 - **Result**: Shutdown endpoint causes connection abort
 - **Evidence**: `POST http://localhost:7525/shutdown` results in `RemoteDisconnected('Remote end closed connection without response')`
 - **Status**: BROKEN - Daemon shuts down but doesn't send proper HTTP response

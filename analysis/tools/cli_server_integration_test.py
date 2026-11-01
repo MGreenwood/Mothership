@@ -284,21 +284,21 @@ def main():
     # Analyze daemon integration
     daemon_results = all_results.get('daemon_integration', {})
     if daemon_results.get('daemon_http_check', {}).get('running'):
-        print("✅ Daemon is running and accessible")
+        print("Daemon is running and accessible")
     else:
-        print("❌ Daemon is not running or not accessible")
+        print("Daemon is not running or not accessible")
     
     # Analyze server connection
     server_results = all_results.get('server_connection', {})
     server_found = False
     for key, value in server_results.items():
         if key.startswith('server_check_') and isinstance(value, dict) and value.get('running'):
-            print(f"✅ Server found on port {value['port']}")
+            print(f"Server found on port {value['port']}")
             server_found = True
             break
     
     if not server_found:
-        print("❌ No Mothership server found running")
+        print("No Mothership server found running")
     
     # Analyze authentication
     auth_results = all_results.get('authentication_flow', {})
@@ -309,9 +309,9 @@ def main():
             break
     
     if auth_working:
-        print("✅ Authentication flow is working")
+        print("Authentication flow is working")
     else:
-        print("⚠️  Authentication requires server connection")
+        print(" Authentication requires server connection")
     
     print(f"\nDetailed results saved to: {output_dir}/integration_test_results.json")
 

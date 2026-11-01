@@ -542,7 +542,7 @@ class CLITester:
             report.append(f"### {category.title()} Commands")
             
             if 'error' in results:
-                report.append(f"❌ Category failed: {results['error']}")
+                report.append(f"Category failed: {results['error']}")
                 continue
                 
             for test_name, analysis in results.items():

@@ -223,13 +223,13 @@ impl ServerConfig {
         let config_path = config_path.as_ref();
         
         if !config_path.exists() {
-            info!("📋 Server config not found, creating default: {}", config_path.display());
+            info!("Server config not found, creating default: {}", config_path.display());
             let default_config = Self::default();
             default_config.save_to_file(config_path)?;
             return Ok(default_config);
         }
         
-        info!("📋 Loading server config from: {}", config_path.display());
+        info!("Loading server config from: {}", config_path.display());
         let config_content = fs::read_to_string(config_path)
             .map_err(|e| anyhow!("Failed to read config file: {}", e))?;
         
@@ -243,7 +243,7 @@ impl ServerConfig {
             Self::parse_simple_format(&config_content)?
         };
         
-        info!("✅ Server config loaded successfully");
+        info!("Server config loaded successfully");
         Ok(config)
     }
     
@@ -255,7 +255,7 @@ impl ServerConfig {
         fs::write(config_path.as_ref(), config_toml)
             .map_err(|e| anyhow!("Failed to write config file: {}", e))?;
         
-        info!("💾 Server config saved to: {}", config_path.as_ref().display());
+        info!("Server config saved to: {}", config_path.as_ref().display());
         Ok(())
     }
     
@@ -271,7 +271,7 @@ impl ServerConfig {
             
             let parts: Vec<&str> = line.splitn(2, '=').collect();
             if parts.len() != 2 {
-                warn!("⚠️ Invalid config line: {}", line);
+                warn!("Invalid config line: {}", line);
                 continue;
             }
             
@@ -288,7 +288,7 @@ impl ServerConfig {
                 "debug_logging" => config.server.debug_logging = parse_bool(value)?,
                 "oauth_enabled" => config.features.oauth_enabled = parse_bool(value)?,
                 "cli_distribution_enabled" => config.features.cli_distribution_enabled = parse_bool(value)?,
-                _ => warn!("⚠️ Unknown config key: {}", key),
+                _ => warn!("Unknown config key: {}", key),
             }
         }
         
@@ -303,11 +303,11 @@ impl ServerConfig {
         
         let whitelist_path = Path::new(&self.auth.whitelist_path);
         if !whitelist_path.exists() {
-            warn!("⚠️ Whitelist enabled but file not found: {}", whitelist_path.display());
+            warn!("Whitelist enabled but file not found: {}", whitelist_path.display());
             return Ok(None);
         }
         
-        info!("📋 Loading user whitelist from: {}", whitelist_path.display());
+        info!("Loading user whitelist from: {}", whitelist_path.display());
         let content = fs::read_to_string(whitelist_path)
             .map_err(|e| anyhow!("Failed to read whitelist file: {}", e))?;
         
@@ -333,7 +333,7 @@ impl ServerConfig {
             }
         }
         
-        info!("✅ Whitelist loaded: {} usernames, {} emails, {} domains", 
+        info!("Whitelist loaded: {} usernames, {} emails, {} domains", 
             usernames.len(), emails.len(), domains.len());
         
         Ok(Some(UserWhitelist {

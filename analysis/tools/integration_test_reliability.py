@@ -28,20 +28,20 @@ class IntegrationTestReliabilityTester:
         
     def run_multiple_tests(self):
         """Run integration tests multiple times"""
-        print(f"🔄 Running integration tests {self.num_runs} times for reliability analysis...")
+        print(f"Running integration tests {self.num_runs} times for reliability analysis...")
         
         for run_num in range(1, self.num_runs + 1):
-            print(f"\n📋 Starting test run {run_num}/{self.num_runs}")
+            print(f"\nStarting test run {run_num}/{self.num_runs}")
             
             run_result = self.execute_single_test(run_num)
             self.results["test_runs"].append(run_result)
             
             # Wait between runs to avoid interference
             if run_num < self.num_runs:
-                print("⏳ Waiting 2 seconds before next run...")
+                print("Waiting 2 seconds before next run...")
                 time.sleep(2)
         
-        print(f"\n✅ Completed {self.num_runs} test runs")
+        print(f"\nCompleted {self.num_runs} test runs")
         return self.results
     
     def execute_single_test(self, run_number):
@@ -75,15 +75,15 @@ class IntegrationTestReliabilityTester:
                 "features_tested": self.extract_features_tested(stdout)
             }
             
-            print(f"  ⏱️  Duration: {run_result['execution_time']:.2f}s")
-            print(f"  📊 Exit code: {run_result['exit_code']}")
-            print(f"  ✅ Passed: {len(run_result['passed_tests'])}")
-            print(f"  ❌ Failed: {len(run_result['failed_tests'])}")
+            print(f"   Duration: {run_result['execution_time']:.2f}s")
+            print(f"  Exit code: {run_result['exit_code']}")
+            print(f"  Passed: {len(run_result['passed_tests'])}")
+            print(f"  Failed: {len(run_result['failed_tests'])}")
             
             return run_result
             
         except Exception as e:
-            print(f"  💥 Error in run {run_number}: {e}")
+            print(f"  Error in run {run_number}: {e}")
             return {
                 "run_number": run_number,
                 "error": str(e),
@@ -126,10 +126,10 @@ class IntegrationTestReliabilityTester:
     
     def analyze_reliability(self):
         """Analyze test reliability across multiple runs"""
-        print("🔍 Analyzing test reliability...")
+        print("Analyzing test reliability...")
         
         if not self.results["test_runs"]:
-            print("❌ No test runs to analyze")
+            print("No test runs to analyze")
             return
         
         # Collect metrics
@@ -164,14 +164,14 @@ class IntegrationTestReliabilityTester:
             }
         }
         
-        print(f"📊 Success rate: {self.results['reliability_analysis']['success_rate']:.1f}%")
-        print(f"⏱️  Avg execution time: {self.results['reliability_analysis']['execution_time_stats']['mean']:.2f}s")
-        print(f"✅ Passed tests consistent: {self.results['reliability_analysis']['passed_tests_stats']['consistent']}")
-        print(f"❌ Failed tests consistent: {self.results['reliability_analysis']['failed_tests_stats']['consistent']}")
+        print(f"Success rate: {self.results['reliability_analysis']['success_rate']:.1f}%")
+        print(f" Avg execution time: {self.results['reliability_analysis']['execution_time_stats']['mean']:.2f}s")
+        print(f"Passed tests consistent: {self.results['reliability_analysis']['passed_tests_stats']['consistent']}")
+        print(f"Failed tests consistent: {self.results['reliability_analysis']['failed_tests_stats']['consistent']}")
     
     def analyze_consistency(self):
         """Analyze consistency of test results across runs"""
-        print("🔍 Analyzing test consistency...")
+        print("Analyzing test consistency...")
         
         # Track which tests passed/failed in each run
         all_passed_tests = set()
@@ -215,17 +215,17 @@ class IntegrationTestReliabilityTester:
             "flaky_test_percentage": (len(flaky_tests) / len(test_consistency) * 100) if test_consistency else 0
         }
         
-        print(f"🧪 Total unique tests: {len(test_consistency)}")
-        print(f"🔄 Flaky tests: {len(flaky_tests)}")
+        print(f"Total unique tests: {len(test_consistency)}")
+        print(f"Flaky tests: {len(flaky_tests)}")
         if flaky_tests:
-            print("⚠️  Flaky tests found:")
+            print(" Flaky tests found:")
             for test in flaky_tests:
                 stats = test_consistency[test]
                 print(f"   - {test} (passed {stats['pass_count']}/{stats['total_appearances']} times)")
     
     def generate_summary(self):
         """Generate overall summary of reliability testing"""
-        print("📋 Generating reliability summary...")
+        print("Generating reliability summary...")
         
         reliability = self.results.get("reliability_analysis", {})
         consistency = self.results.get("consistency_analysis", {})
@@ -267,13 +267,13 @@ class IntegrationTestReliabilityTester:
                 "Improve test reliability before using for automated testing"
             )
         
-        print(f"🎯 Overall reliability: {self.results['summary']['overall_reliability']}")
-        print(f"🔄 Test consistency: {self.results['summary']['test_consistency']}")
-        print(f"⚡ Execution stability: {self.results['summary']['execution_stability']}")
+        print(f"Overall reliability: {self.results['summary']['overall_reliability']}")
+        print(f"Test consistency: {self.results['summary']['test_consistency']}")
+        print(f"Execution stability: {self.results['summary']['execution_stability']}")
     
     def save_results(self, output_file):
         """Save reliability test results"""
-        print(f"💾 Saving reliability results to {output_file}")
+        print(f"Saving reliability results to {output_file}")
         
         with open(output_file, 'w', encoding='utf-8') as f:
             json.dump(self.results, f, indent=2)
@@ -282,7 +282,7 @@ class IntegrationTestReliabilityTester:
         report_file = output_file.replace('.json', '_report.md')
         self.generate_report(report_file)
         
-        print(f"📄 Report saved to {report_file}")
+        print(f"Report saved to {report_file}")
     
     def generate_report(self, report_file):
         """Generate human-readable reliability report"""
@@ -381,11 +381,11 @@ def main():
         output_file.parent.mkdir(parents=True, exist_ok=True)
         tester.save_results(str(output_file))
         
-        print("\n🎉 Reliability analysis complete!")
-        print(f"📊 Results saved to: {output_file}")
+        print("\nReliability analysis complete!")
+        print(f"Results saved to: {output_file}")
         
     except Exception as e:
-        print(f"💥 Fatal error: {e}")
+        print(f"Fatal error: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":

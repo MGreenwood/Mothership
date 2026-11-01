@@ -1,7 +1,8 @@
 use mothership_common::auth::OAuthProvider;
 use mothership_common::beam::{
     beam_project, beam_wormhole_files, default_search_roots, ensure_daemon_running,
-    index_local_projects, register_with_daemon, restore_files_into, WormholeMarker,
+    index_local_projects, read_project_metadata, register_with_daemon, restore_files_into,
+    WormholeMarker,
 };
 use mothership_common::client::{
     clear_oauth_token, load_oauth_token, save_oauth_token, scan_text_files, start_oauth_login,
@@ -151,9 +152,13 @@ pub async fn hub_ensure_daemon() -> Result<(), String> {
 
 /// Joins a project's default rift and writes its files to disk, then registers the folder with the daemon.
 /// Local projects are beamed in place. Remote projects are written to `local_dir/<project name>`.
-/// Existing local files are kept, not overwritten.
+/// Existing local files are overwritten, matching the CLI. With `rift_id`, that rift is joined instead of the default.
 #[tauri::command]
-pub async fn hub_beam(project_id: String, local_dir: Option<String>) -> Result<BeamResult, String> {
+pub async fn hub_beam(
+    project_id: String,
+    local_dir: Option<String>,
+    rift_id: Option<String>,
+) -> Result<BeamResult, String> {
     let id = parse_id(&project_id)?;
     let c = client()?;
     let project = c
@@ -163,6 +168,21 @@ pub async fn hub_beam(project_id: String, local_dir: Option<String>) -> Result<B
         .into_iter()
         .find(|p| p.id == id)
         .ok_or_else(|| format!("Project {} not found on the server", project_id))?;
+
+    let rift_name = match rift_id.filter(|r| !r.trim().is_empty()) {
+        Some(raw) => {
+            let rid = parse_id(&raw)?;
+            let rift = c
+                .list_rifts(id)
+                .await
+                .map_err(err)?
+                .into_iter()
+                .find(|r| r.id == rid)
+                .ok_or_else(|| format!("Rift {} not found in this project", raw))?;
+            Some(rift.name)
+        }
+        None => None,
+    };
 
     let index = tauri::async_runtime::spawn_blocking(|| {
         index_local_projects(&default_search_roots())
@@ -205,7 +225,7 @@ pub async fn hub_beam(project_id: String, local_dir: Option<String>) -> Result<B
         project.id,
         &project.name,
         &local_path,
-        None,
+        rift_name.as_deref(),
     )
     .await
     .map_err(|e| format!("{:#}", e))?;
@@ -543,9 +563,12 @@ pub struct WormholeBeamResult {
     pub folder: String,
     pub written: usize,
     pub skipped_unsafe: Vec<String>,
+    /// Set when the snapshot was written but the daemon could not be told to clean it up later.
+    pub daemon_warning: Option<String>,
 }
 
 /// Writes the merged files of a converged-ready wormhole into `parent_dir/<wormhole name>`.
+/// The folder is registered with the daemon so it is removed once the wormhole is dissolved or converted.
 #[tauri::command]
 pub async fn hub_beam_wormhole(
     wormhole_id: String,
@@ -563,10 +586,62 @@ pub async fn hub_beam_wormhole(
     let folder = PathBuf::from(&parent_dir).join(&detail.summary.name);
     let pairs: Vec<(String, String)> = files.into_iter().map(|f| (f.path, f.content)).collect();
     let outcome = beam_wormhole_files(&folder, &marker, &pairs).map_err(err)?;
+
+    let daemon_warning = match daemon::register_snapshot(&outcome.folder, id).await {
+        Ok(()) => None,
+        Err(e) => Some(format!(
+            "Snapshot written, but the daemon could not register it for cleanup: {:#}",
+            e
+        )),
+    };
+
     Ok(WormholeBeamResult {
         folder: outcome.folder.display().to_string(),
         written: outcome.written,
         skipped_unsafe: outcome.skipped_unsafe,
+        daemon_warning,
     })
 }
+
+#[derive(Serialize)]
+pub struct ActiveRift {
+    /// Local folder of the gateway, or `None` when it only exists on the server.
+    pub local_path: Option<String>,
+    /// Rift recorded in the folder's `.mothership/project.json`, or `None` when not beamed into one.
+    pub rift_id: Option<String>,
+    pub rift_name: Option<String>,
+}
+
+/// Reports which rift a gateway's local folder is beamed into, for the top bar.
+#[tauri::command]
+pub async fn hub_active_rift(project_id: String) -> Result<ActiveRift, String> {
+    let id = parse_id(&project_id)?;
+    let index = tauri::async_runtime::spawn_blocking(|| {
+        index_local_projects(&default_search_roots())
+    })
+    .await
+    .map_err(err)?;
+
+    let Some(local_path) = index.get(&id).cloned() else {
+        return Ok(ActiveRift { local_path: None, rift_id: None, rift_name: None });
+    };
+    let rift_id = read_project_metadata(&local_path).and_then(|m| m.rift_id);
+    let rift_name = match &rift_id {
+        Some(raw) => {
+            let rid = parse_id(raw)?;
+            client()?
+                .list_rifts(id)
+                .await
+                .ok()
+                .and_then(|rifts| rifts.into_iter().find(|r| r.id == rid).map(|r| r.name))
+        }
+        None => None,
+    };
+    Ok(ActiveRift {
+        local_path: Some(local_path.display().to_string()),
+        rift_id,
+        rift_name,
+    })
+}
+
 

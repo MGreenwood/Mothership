@@ -21,6 +21,7 @@ use flate2;
 // Internal imports
 use crate::file_watcher::{FileChangeEvent, FileWatcher};
 use crate::ipc_server::IpcServer;
+use crate::snapshots::{SnapshotRegistry, SNAPSHOT_SWEEP_INTERVAL_SECS};
 use crate::system_tray::SystemTray;
 use mothership_common::{
     DiffEngine,
@@ -100,6 +101,9 @@ pub struct MothershipDaemon {
     
     /// Channel for sending daemon commands (cloned to system tray)
     command_sender: mpsc::UnboundedSender<DaemonCommand>,
+
+    /// Wormhole snapshot folders waiting to be removed (see snapshots.rs)
+    snapshots: Arc<SnapshotRegistry>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -140,6 +144,7 @@ impl MothershipDaemon {
         let server_write_flags = Arc::new(RwLock::new(HashMap::new()));
         
         let base_hashes: BaseHashes = Arc::new(RwLock::new(HashMap::new()));
+        let snapshots = Arc::new(SnapshotRegistry::load());
 
         // Create IPC server with access to daemon methods
         let ipc_server = IpcServer::new(
@@ -150,6 +155,7 @@ impl MothershipDaemon {
             outgoing_channels.clone(),
             server_write_flags.clone(),
             base_hashes.clone(),
+            snapshots.clone(),
         ).await?;
         
         // Initialize system tray (Windows only)
@@ -173,12 +179,13 @@ impl MothershipDaemon {
             base_hashes,
             command_receiver,
             command_sender,
+            snapshots,
         })
     }
     
     /// Run the daemon (main event loop)
     pub async fn run(self) -> Result<()> {
-        info!("🚀 Starting Mothership Daemon...");
+        info!("Starting Mothership Daemon...");
         
         // Update status
         {
@@ -194,6 +201,15 @@ impl MothershipDaemon {
                 let reachable = Self::check_server_connectivity().await;
                 probe_status.write().await.server_connected = reachable;
                 tokio::time::sleep(std::time::Duration::from_secs(SERVER_PROBE_INTERVAL_SECS)).await;
+            }
+        });
+
+        // Remove beamed wormhole snapshots once their wormhole is dissolved or converted
+        let sweep_snapshots = self.snapshots.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(SNAPSHOT_SWEEP_INTERVAL_SECS)).await;
+                sweep_snapshots.sweep().await;
             }
         });
 
@@ -235,9 +251,9 @@ impl MothershipDaemon {
         let tray_handle: Option<tokio::task::JoinHandle<()>> = None;
         
         // Main event loop - process file change events and daemon commands
-        info!("✅ Mothership Daemon is running!");
-        info!("🔍 IPC server listening on http://localhost:7525");
-        info!("⏳ Waiting for projects to be registered via CLI/GUI...");
+        info!("Mothership Daemon is running!");
+        info!("IPC server listening on http://localhost:7525");
+        info!("Waiting for projects to be registered via CLI/GUI...");
         
         loop {
             tokio::select! {
@@ -260,32 +276,32 @@ impl MothershipDaemon {
                 command = command_receiver.recv() => {
                     match command {
                         Some(DaemonCommand::ForceSync) => {
-                            info!("🔄 Processing force sync command from system tray");
+                            info!("Processing force sync command from system tray");
                             match Self::force_sync_all_static(&tracked_projects, &status, &outgoing_channels, &base_hashes).await {
                                 Ok(count) => {
-                                    info!("✅ Force sync completed: {} files synced", count);
+                                    info!("Force sync completed: {} files synced", count);
                                 }
                                 Err(e) => {
-                                    error!("❌ Force sync failed: {}", e);
+                                    error!("Force sync failed: {}", e);
                                 }
                             }
                         }
                         Some(DaemonCommand::Stop) => {
-                            info!("⏹️ Processing stop tracking command from system tray");
+                            info!("Processing stop tracking command from system tray");
                             // Stop tracking all projects but keep daemon running
                             Self::stop_all_tracking_static(&tracked_projects, &websocket_listeners, &outgoing_channels).await;
-                            info!("✅ Stopped tracking all projects - daemon still running");
+                            info!("Stopped tracking all projects - daemon still running");
                         }
                         Some(DaemonCommand::Restart) => {
-                            info!("🔄 Processing restart command from system tray");
+                            info!("Processing restart command from system tray");
                             // Implement self-restart by spawning a new instance
                             match MothershipDaemon::restart_daemon().await {
                                 Ok(()) => {
-                                    info!("✅ New daemon instance started, shutting down current instance");
+                                    info!("New daemon instance started, shutting down current instance");
                                     break;
                                 }
                                 Err(e) => {
-                                    error!("❌ Failed to restart daemon: {}", e);
+                                    error!("Failed to restart daemon: {}", e);
                                     // Continue running the current instance
                                 }
                             }
@@ -300,7 +316,7 @@ impl MothershipDaemon {
         }
         
         // Clean shutdown
-        info!("🔄 Shutting down Mothership Daemon...");
+        info!("Shutting down Mothership Daemon...");
         
         // Update status
         {
@@ -313,7 +329,7 @@ impl MothershipDaemon {
             let mut listeners = websocket_listeners.write().await;
             for (project_id, handle) in listeners.drain() {
                 handle.abort();
-                info!("✅ Stopped persistent WebSocket for project {}", project_id);
+                info!("Stopped persistent WebSocket for project {}", project_id);
             }
         }
         
@@ -331,7 +347,7 @@ impl MothershipDaemon {
             handle.abort();
         }
         
-        info!("✅ Mothership Daemon shutdown complete");
+        info!("Mothership Daemon shutdown complete");
         Ok(())
     }
     
@@ -347,7 +363,7 @@ impl MothershipDaemon {
         {
             let flags = server_write_flags.read().await;
             if flags.get(&event.project_id).copied().unwrap_or(false) {
-                debug!("🔄 Skipping file change event during server write: {} in project {}", 
+                debug!("Skipping file change event during server write: {} in project {}", 
                     event.file_path.display(), event.project_id);
                 return Ok(());
             }
@@ -361,7 +377,7 @@ impl MothershipDaemon {
                 .unwrap_or_else(|| event.project_id.to_string())
         };
         
-        info!("📝 File {:?}: {} ({} bytes) in project '{}'", 
+        info!("File {:?}: {} ({} bytes) in project '{}'", 
             event.change_type, event.file_path.display(), event.file_size, project_name);
         
         // Update sync status
@@ -375,10 +391,10 @@ impl MothershipDaemon {
         let sync_result = Self::send_file_change_via_persistent_websocket(&event, tracked_projects, outgoing_channels, base_hashes).await;
         match sync_result {
             Ok(()) => {
-                info!("✅ Successfully queued file change for persistent WebSocket");
+                info!("Successfully queued file change for persistent WebSocket");
             }
             Err(e) => {
-                error!("❌ Failed to queue file change for persistent WebSocket: {}", e);
+                error!("Failed to queue file change for persistent WebSocket: {}", e);
             }
         }
         
@@ -498,7 +514,7 @@ impl MothershipDaemon {
             (rift_id, full_path)
         };
         
-        info!("📡 Starting file stream for {} ({} bytes)", event.file_path.display(), event.file_size);
+        info!("Starting file stream for {} ({} bytes)", event.file_path.display(), event.file_size);
         
         // Generate unique stream ID
         let stream_id = uuid::Uuid::new_v4();
@@ -569,11 +585,11 @@ impl MothershipDaemon {
         
         match result {
             Ok(ref hash) => {
-                info!("✅ File stream completed for {}", event.file_path.display());
+                info!("File stream completed for {}", event.file_path.display());
                 // The streamed file now matches the server's copy, so it becomes the new base
                 base_hashes.write().await.insert(base_key, hash.clone());
             }
-            Err(ref e) => error!("❌ File stream failed for {}: {}", event.file_path.display(), e),
+            Err(ref e) => error!("File stream failed for {}: {}", event.file_path.display(), e),
         }
         
         result.map(|_| ())
@@ -642,7 +658,7 @@ impl MothershipDaemon {
                     .map_err(|e| anyhow::anyhow!("Failed to send chunk {}: {}", chunk_index, e))?;
             }
             
-            debug!("📦 Sent chunk {} ({} bytes, compressed: {})", 
+            debug!("Sent chunk {} ({} bytes, compressed: {})", 
                 chunk_index, bytes_read, config.compression_enabled);
             
             chunk_index += 1;
@@ -671,7 +687,7 @@ impl MothershipDaemon {
         project_name: String,
         project_path: PathBuf
     ) -> Result<()> {
-        info!("📂 Registering project for tracking: '{}' at {} ({})", 
+        info!("Registering project for tracking: '{}' at {} ({})", 
             project_name, project_path.display(), project_id);
         
         // Check if project is already tracked
@@ -741,13 +757,13 @@ impl MothershipDaemon {
             // Don't fail the entire operation if WebSocket fails
         }
         
-        info!("✅ Successfully registered project '{}' for tracking", project_name);
+        info!("Successfully registered project '{}' for tracking", project_name);
         Ok(())
     }
     
     /// Remove a project from tracking (called via IPC from CLI/GUI)
     pub async fn remove_project(&self, project_id: Uuid) -> Result<()> {
-        info!("🗑️ Unregistering project from tracking: {}", project_id);
+        info!("Unregistering project from tracking: {}", project_id);
         
         // Get project name for logging
         let project_name = {
@@ -767,7 +783,7 @@ impl MothershipDaemon {
         {
             let mut watchers = self.project_watchers.write().await;
             if watchers.remove(&project_id).is_some() {
-                info!("✅ Stopped file watching for project '{}'", project_name);
+                info!("Stopped file watching for project '{}'", project_name);
             } else {
                 warn!("Project '{}' was not being watched", project_name);
             }
@@ -778,7 +794,7 @@ impl MothershipDaemon {
             let mut listeners = self.websocket_listeners.write().await;
             if let Some(handle) = listeners.remove(&project_id) {
                 handle.abort();
-                info!("✅ Stopped persistent WebSocket for project '{}'", project_name);
+                info!("Stopped persistent WebSocket for project '{}'", project_name);
             } else {
                 warn!("Project '{}' had no persistent WebSocket", project_name);
             }
@@ -796,7 +812,7 @@ impl MothershipDaemon {
             status.projects_tracked = self.tracked_projects.read().await.len();
         }
         
-        info!("✅ Successfully unregistered project '{}' from tracking", project_name);
+        info!("Successfully unregistered project '{}' from tracking", project_name);
         Ok(())
     }
     
@@ -818,13 +834,13 @@ impl MothershipDaemon {
         outgoing_channels: &Arc<RwLock<HashMap<Uuid, mpsc::UnboundedSender<SyncMessage>>>>,
         base_hashes: &BaseHashes,
     ) -> Result<usize> {
-        info!("🔄 Force syncing all tracked projects...");
+        info!("Force syncing all tracked projects...");
         
         let projects = tracked_projects.read().await.clone();
         let mut sync_count = 0;
         
         for (project_id, project) in projects.iter() {
-            info!("🔄 Force syncing project: {} at {}", project.project_name, project.project_path.display());
+            info!("Force syncing project: {} at {}", project.project_name, project.project_path.display());
             
             // Update sync status
             {
@@ -835,11 +851,11 @@ impl MothershipDaemon {
             
             match Self::force_sync_project_static(project_id, project, tracked_projects, outgoing_channels, base_hashes).await {
                 Ok(file_count) => {
-                    info!("✅ Successfully synced {} files for project '{}'", file_count, project.project_name);
+                    info!("Successfully synced {} files for project '{}'", file_count, project.project_name);
                     sync_count += file_count;
                 }
                 Err(e) => {
-                    error!("❌ Failed to sync project '{}': {}", project.project_name, e);
+                    error!("Failed to sync project '{}': {}", project.project_name, e);
                 }
             }
             
@@ -850,7 +866,7 @@ impl MothershipDaemon {
             }
         }
         
-        info!("✅ Force sync completed: {} files synced across {} projects", sync_count, projects.len());
+        info!("Force sync completed: {} files synced across {} projects", sync_count, projects.len());
         Ok(sync_count)
     }
     
@@ -992,19 +1008,19 @@ impl MothershipDaemon {
                 Ok(response) => {
                     let is_ok = response.status().is_success();
                     if is_ok {
-                        info!("✅ Server connectivity check passed");
+                        info!("Server connectivity check passed");
                     } else {
-                        warn!("❌ Server responded with status: {}", response.status());
+                        warn!("Server responded with status: {}", response.status());
                     }
                     is_ok
                 }
                 Err(e) => {
-                    warn!("❌ Server connectivity check failed: {}", e);
+                    warn!("Server connectivity check failed: {}", e);
                     false
                 }
             }
         } else {
-            warn!("❌ No active server URL found");
+            warn!("No active server URL found");
             false
         }
     }
@@ -1047,13 +1063,13 @@ impl MothershipDaemon {
         let auth_token = load_auth_token()
             .ok_or_else(|| anyhow::anyhow!("No authentication token found"))?;
         
-        debug!("🔑 Loaded auth token: {}...", &auth_token.chars().take(10).collect::<String>());
+        debug!("Loaded auth token: {}...", &auth_token.chars().take(10).collect::<String>());
         
         // Get server URL
         let server_url = get_active_server_url()
             .ok_or_else(|| anyhow::anyhow!("No active server connection found"))?;
         
-        debug!("🌐 Active server URL: {}", server_url);
+        debug!("Active server URL: {}", server_url);
         
         // Construct WebSocket URL
         let ws_url = if server_url.starts_with("https://") {
@@ -1066,8 +1082,8 @@ impl MothershipDaemon {
             format!("wss://{}/ws/{}?token={}", server_url, rift_id, urlencoding::encode(&auth_token))
         };
         
-        info!("🔄 Starting persistent WebSocket connection for project {} (rift: {})", project_id, rift_id);
-        info!("📡 WebSocket URL: {}", ws_url.replace(&auth_token, "***TOKEN***"));
+        info!("Starting persistent WebSocket connection for project {} (rift: {})", project_id, rift_id);
+        info!("WebSocket URL: {}", ws_url.replace(&auth_token, "***TOKEN***"));
         
         // Create channel for outgoing messages
         let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded_channel::<SyncMessage>();
@@ -1088,14 +1104,14 @@ impl MothershipDaemon {
                 let mut next_ping = Instant::now() + ping_interval;
                 let mut next_health_log = Instant::now() + health_log_interval;
                 
-                info!("🔌 Connecting to WebSocket: {}", ws_url);
+                info!("Connecting to WebSocket: {}", ws_url);
                 
                 // CRITICAL FIX: Actually connect to the WebSocket server!
                 match tokio_tungstenite::connect_async(&ws_url).await {
                     Ok((ws_stream, response)) => {
-                        info!("✅ WebSocket connected successfully!");
-                        debug!("📋 WebSocket response status: {}", response.status());
-                        debug!("📋 WebSocket response headers: {:?}", response.headers());
+                        info!("WebSocket connected successfully!");
+                        debug!("WebSocket response status: {}", response.status());
+                        debug!("WebSocket response headers: {:?}", response.headers());
                         
                         // Update connection status to connected
                         {
@@ -1111,11 +1127,11 @@ impl MothershipDaemon {
                             last_checkpoint: None 
                         };
                         if let Ok(join_json) = serde_json::to_string(&join_msg) {
-                            debug!("📤 Sending join message: {}", join_json);
+                            debug!("Sending join message: {}", join_json);
                             if let Err(e) = ws_sender.send(tokio_tungstenite::tungstenite::Message::Text(join_json)).await {
                                 error!("Failed to send join message: {}", e);
                             } else {
-                                info!("📡 Sent rift join message");
+                                info!("Sent rift join message");
                             }
                         }
                         
@@ -1132,7 +1148,7 @@ impl MothershipDaemon {
                                                     break;
                                                 } else {
                                                     health.record_message_sent();
-                                                    debug!("📤 Sent sync message to server");
+                                                    debug!("Sent sync message to server");
                                                 }
                                             }
                                         }
@@ -1148,7 +1164,7 @@ impl MothershipDaemon {
                                     match msg {
                                         Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) => {
                                             health.record_message_received();
-                                            debug!("📥 Received WebSocket message: {} chars", text.len());
+                                            debug!("Received WebSocket message: {} chars", text.len());
                                             
                                             // Handle incoming sync message
                                             if let Err(e) = Self::handle_websocket_sync_message(&text, &project_path, &server_write_flags, &base_hashes, project_id).await {
@@ -1167,11 +1183,11 @@ impl MothershipDaemon {
                                                 error!("Failed to send pong: {}", e);
                                                 health.record_error();
                                             } else {
-                                                debug!("🏓 Sent pong response");
+                                                debug!("Sent pong response");
                                             }
                                         }
                                         Some(Ok(tokio_tungstenite::tungstenite::Message::Pong(_))) => {
-                                            debug!("🏓 Received pong");
+                                            debug!("Received pong");
                                             health.record_message_received();
                                         }
                                         Some(Err(e)) => {
@@ -1202,7 +1218,7 @@ impl MothershipDaemon {
                                                 break;
                                             }
                                         } else {
-                                            debug!("🏓 Sent ping");
+                                            debug!("Sent ping");
                                             health.record_message_sent();
                                         }
                                     }
@@ -1211,16 +1227,16 @@ impl MothershipDaemon {
 
                                 // Log connection health periodically
                                 _ = sleep_until(next_health_log) => {
-                                    info!("📊 Connection health: {}", health.get_health_report());
+                                    info!("Connection health: {}", health.get_health_report());
                                     next_health_log = Instant::now() + health_log_interval;
                                 }
                             }
                         }
                         
-                        info!("🔌 WebSocket connection closed");
+                        info!("WebSocket connection closed");
                     }
                     Err(e) => {
-                        error!("❌ Failed to connect to WebSocket: {}", e);
+                        error!("Failed to connect to WebSocket: {}", e);
                         
                         // Log more specific error details based on error string
                         let error_str = e.to_string();
@@ -1247,7 +1263,7 @@ impl MothershipDaemon {
                 }
                 
                 // Wait before reconnecting
-                info!("⏱️  Waiting {} seconds before reconnecting...", reconnect_delay.as_secs());
+                info!(" Waiting {} seconds before reconnecting...", reconnect_delay.as_secs());
                 tokio::time::sleep(reconnect_delay).await;
                 
                 // Reset health on reconnection attempt
@@ -1261,7 +1277,7 @@ impl MothershipDaemon {
             listeners.insert(project_id, listener_handle);
         }
         
-        info!("✅ WebSocket listener started for project {}", project_id);
+        info!("WebSocket listener started for project {}", project_id);
         Ok(())
     }
     
@@ -1272,7 +1288,7 @@ impl MothershipDaemon {
         
         match sync_message {
             SyncMessage::FileChanged { path, content, .. } => {
-                info!("📥 Received file change: {} ({} bytes)", path.display(), content.len());
+                info!("Received file change: {} ({} bytes)", path.display(), content.len());
                 
                 // Write the file to disk
                 let file_path = project_path.join(&path);
@@ -1284,21 +1300,21 @@ impl MothershipDaemon {
                 
                 // Write file content
                 tokio::fs::write(&file_path, &content).await?;
-                info!("💾 Wrote incoming file change: {}", path.display());
+                info!("Wrote incoming file change: {}", path.display());
                 Ok(())
             }
             SyncMessage::FilesChanged { changes, .. } => {
-                info!("📥 Received {} file changes", changes.len());
+                info!("Received {} file changes", changes.len());
                 
                 for change in changes {
                     // For now, we'll need to get the content from the server
                     // This is a simplified implementation
-                    info!("📄 File change: {} ({:?})", change.path.display(), change.change_type);
+                    info!("File change: {} ({:?})", change.path.display(), change.change_type);
                 }
                 Ok(())
             }
             SyncMessage::RiftJoined { current_files, .. } => {
-                info!("📥 Received current rift state with {} files", current_files.len());
+                info!("Received current rift state with {} files", current_files.len());
                 
                 // Write all current files (initial sync)
                 for (path, content) in current_files {
@@ -1311,7 +1327,7 @@ impl MothershipDaemon {
                     
                     // Write file content
                     tokio::fs::write(&file_path, &content).await?;
-                    info!("💾 Wrote initial file: {}", path.display());
+                    info!("Wrote initial file: {}", path.display());
                 }
                 Ok(())
             }
@@ -1326,7 +1342,7 @@ impl MothershipDaemon {
                 conflict: _,
                 suggestions: _,
             } => {
-                info!("🔄 Conflict detected for {}, accepting server version", path.display());
+                info!("Conflict detected for {}, accepting server version", path.display());
                 
                 if let Some(parent) = path.parent() {
                     tokio::fs::create_dir_all(parent).await?;
@@ -1364,7 +1380,7 @@ impl MothershipDaemon {
                 rift_id: _,
                 ..
             } => {
-                info!("📝 Begin transaction from {}: {}", author, description);
+                info!("Begin transaction from {}: {}", author, description);
                 let mut tx_manager = state.transaction_manager.lock().await;
                 let _transaction = tx_manager.create_transaction(author, description);
                 Ok(())
@@ -1464,8 +1480,8 @@ impl MothershipDaemon {
                 new_rift_id: _,
                 conflict_rift_name,
             } => {
-                info!("✨ Conflict rift '{}' created successfully", conflict_rift_name);
-                info!("🔀 Use 'mothership beam \"{}\"' to work on your changes", conflict_rift_name);
+                info!("Conflict rift '{}' created successfully", conflict_rift_name);
+                info!("Use 'mothership beam \"{}\"' to work on your changes", conflict_rift_name);
                 Ok(())
             }
             _ => Ok(()),
@@ -1485,7 +1501,7 @@ impl MothershipDaemon {
         
         match sync_message {
             SyncMessage::FileChanged { path, content, .. } => {
-                info!("📥 Received file change from collaborator: {} ({} bytes)", path.display(), content.len());
+                info!("Received file change from collaborator: {} ({} bytes)", path.display(), content.len());
                 
                 // Set server write flag to prevent file watcher loops
                 {
@@ -1503,7 +1519,7 @@ impl MothershipDaemon {
                 
                 // Write file content
                 tokio::fs::write(&file_path, &content).await?;
-                info!("💾 Applied file change from collaborator: {}", path.display());
+                info!("Applied file change from collaborator: {}", path.display());
                 base_hashes.write().await.insert((project_id, path.to_string_lossy().to_string()), content_hash(&content));
                 
                 // Clear server write flag
@@ -1515,7 +1531,7 @@ impl MothershipDaemon {
                 Ok(())
             }
             SyncMessage::RiftDiffUpdate { diff_changes, .. } => {
-                info!("📥 Received {} diff updates from collaborator", diff_changes.len());
+                info!("Received {} diff updates from collaborator", diff_changes.len());
                 
                 // Set server write flag to prevent file watcher loops
                 {
@@ -1546,7 +1562,7 @@ impl MothershipDaemon {
                             // Write updated content
                             tokio::fs::write(&file_path, &new_content).await?;
                             base_hashes.write().await.insert((project_id, change.path.to_string_lossy().to_string()), content_hash(&new_content));
-                            info!("💾 Applied diff to {}: {} -> {} bytes", 
+                            info!("Applied diff to {}: {} -> {} bytes", 
                                 change.path.display(), current_content.len(), new_content.len());
                         }
                         Err(e) => {
@@ -1564,7 +1580,7 @@ impl MothershipDaemon {
                 Ok(())
             }
             SyncMessage::RiftJoined { current_files, .. } => {
-                info!("📥 Received initial rift state with {} files", current_files.len());
+                info!("Received initial rift state with {} files", current_files.len());
                 
                 // Set server write flag to prevent file watcher loops
                 {
@@ -1587,7 +1603,7 @@ impl MothershipDaemon {
                     // Write file content
                     tokio::fs::write(&file_path, &content).await?;
                     base_hashes.write().await.insert((project_id, path.to_string_lossy().to_string()), content_hash(&content));
-                    info!("💾 Wrote initial file: {}", path.display());
+                    info!("Wrote initial file: {}", path.display());
                 }
                 
                 // Clear server write flag
@@ -1599,12 +1615,12 @@ impl MothershipDaemon {
                 Ok(())
             }
             SyncMessage::ChatMessageReceived { message, .. } => {
-                info!("💬 [{}] {}: {}", message.timestamp.format("%H:%M:%S"), message.author_username, message.content);
+                info!("[{}] {}: {}", message.timestamp.format("%H:%M:%S"), message.author_username, message.content);
                 Ok(())
             }
             SyncMessage::ForceSync { path, server_content, .. } => {
                 // Server replaced our base with its version (e.g. after a stale-edit conflict); adopt it
-                info!("🔄 Force syncing {} from server", path.display());
+                info!("Force syncing {} from server", path.display());
                 {
                     let mut flags = server_write_flags.write().await;
                     flags.insert(project_id, true);
@@ -1623,15 +1639,15 @@ impl MothershipDaemon {
             }
             SyncMessage::ConflictRiftCreated { conflict_rift_name, new_rift_id, .. } => {
                 // The conflict rift is not joined automatically; the user's edit is preserved there
-                info!("⚠️ Edit made against a stale base was saved to conflict rift '{}' ({}); main was kept", conflict_rift_name, new_rift_id);
+                info!("Edit made against a stale base was saved to conflict rift '{}' ({}); main was kept", conflict_rift_name, new_rift_id);
                 Ok(())
             }
             SyncMessage::Heartbeat => {
-                debug!("🏓 Received heartbeat from server");
+                debug!("Received heartbeat from server");
                 Ok(())
             }
             _ => {
-                debug!("📨 Received sync message: {:?} (not handled in WebSocket context)", std::mem::discriminant(&sync_message));
+                debug!("Received sync message: {:?} (not handled in WebSocket context)", std::mem::discriminant(&sync_message));
                 Ok(())
             }
         }
@@ -1646,7 +1662,7 @@ impl MothershipDaemon {
         _auto_created_rift: Option<ConflictRiftInfo>,
     ) -> Result<()> {
         // Always accept server's version in the original rift
-        info!("🔄 Conflict detected for {}, accepting server version", path.display());
+        info!("Conflict detected for {}, accepting server version", path.display());
         
         // Create parent directories if needed
         if let Some(parent) = path.parent() {
@@ -1661,7 +1677,7 @@ impl MothershipDaemon {
 
     /// Force sync a file from the server
     async fn force_sync(path: PathBuf, server_content: String) -> Result<()> {
-        info!("🔄 Force syncing {} from server", path.display());
+        info!("Force syncing {} from server", path.display());
         
         // Create parent directories if needed
         if let Some(parent) = path.parent() {
@@ -1687,7 +1703,7 @@ impl MothershipDaemon {
         websocket_listeners: &Arc<RwLock<HashMap<Uuid, tokio::task::JoinHandle<()>>>>,
         outgoing_channels: &Arc<RwLock<HashMap<Uuid, mpsc::UnboundedSender<SyncMessage>>>>,
     ) {
-        info!("🛑 Stopping all project tracking...");
+        info!("Stopping all project tracking...");
         
         // Clear tracked projects
         let project_count = {
@@ -1701,7 +1717,7 @@ impl MothershipDaemon {
         {
             let mut listeners = websocket_listeners.write().await;
             for (project_id, handle) in listeners.drain() {
-                info!("🔌 Stopping WebSocket listener for project {}", project_id);
+                info!("Stopping WebSocket listener for project {}", project_id);
                 handle.abort();
             }
         }
@@ -1712,7 +1728,7 @@ impl MothershipDaemon {
             channels.clear();
         }
         
-        info!("✅ Stopped tracking {} projects", project_count);
+        info!("Stopped tracking {} projects", project_count);
     }
     
     /// Stop tracking all projects but keep daemon running (instance method)
@@ -1722,13 +1738,13 @@ impl MothershipDaemon {
     
     /// Restart the daemon by spawning a new instance and exiting current one
     pub async fn restart_daemon() -> Result<()> {
-        info!("🔄 Initiating daemon restart...");
+        info!("Initiating daemon restart...");
         
         // Get current executable path
         let current_exe = std::env::current_exe()
             .map_err(|e| anyhow::anyhow!("Failed to get current executable path: {}", e))?;
         
-        info!("🚀 Starting new daemon instance: {}", current_exe.display());
+        info!("Starting new daemon instance: {}", current_exe.display());
         
         // Spawn new daemon instance
         let mut command = std::process::Command::new(&current_exe);
@@ -1750,7 +1766,7 @@ impl MothershipDaemon {
             .spawn()
             .map_err(|e| anyhow::anyhow!("Failed to spawn new daemon instance: {}", e))?;
         
-        info!("✅ New daemon instance started with PID: {}", child.id());
+        info!("New daemon instance started with PID: {}", child.id());
         
         // Give the new instance time to start up
         tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
@@ -1770,7 +1786,7 @@ struct ProjectMetadata {
 }
 
 /// Get the active server URL (prioritize active connection over project metadata)
-fn get_active_server_url() -> Option<String> {
+pub(crate) fn get_active_server_url() -> Option<String> {
     use serde::{Deserialize, Serialize};
     
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1796,7 +1812,7 @@ fn get_active_server_url() -> Option<String> {
                 if let Ok(connections) = serde_json::from_str::<ConnectionsConfig>(&connections_content) {
                     if let Some(active_url) = &connections.active_server {
                         if let Some(server) = connections.servers.get(active_url) {
-                            info!("🌐 Using active server connection: {}", server.url);
+                            info!("Using active server connection: {}", server.url);
                             return Some(server.url.clone());
                         }
                     }
@@ -1809,7 +1825,7 @@ fn get_active_server_url() -> Option<String> {
 }
 
 /// Load stored authentication token for WebSocket connection
-fn load_auth_token() -> Option<String> {
+pub(crate) fn load_auth_token() -> Option<String> {
     use serde::{Deserialize, Serialize};
     
     #[derive(Debug, Clone, Serialize, Deserialize)]

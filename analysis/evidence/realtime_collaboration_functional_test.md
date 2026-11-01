@@ -25,7 +25,7 @@
 // From mothership-server/src/main.rs:2075-2080
 let rift_uuid = uuid::Uuid::parse_str(&rift_id)
     .map_err(|_| {
-        warn!("❌ WebSocket connection rejected: Invalid rift ID format: {}", rift_id);
+        warn!("WebSocket connection rejected: Invalid rift ID format: {}", rift_id);
         StatusCode::BAD_REQUEST
     })?;
 ```
@@ -34,7 +34,7 @@ let rift_uuid = uuid::Uuid::parse_str(&rift_id)
 ```rust
 // From mothership-server/src/main.rs:2086-2089
 if !rift.collaborators.contains(&user_id) {
-    warn!("❌ WebSocket connection rejected: User {} not authorized for rift {}", user_id, rift_id);
+    warn!("WebSocket connection rejected: User {} not authorized for rift {}", user_id, rift_id);
     return Err(StatusCode::FORBIDDEN);
 }
 ```
@@ -42,34 +42,34 @@ if !rift.collaborators.contains(&user_id) {
 ## Test Results
 
 ### Connection Test Results
-- **WebSocket Connection:** ❌ FAILED
+- **WebSocket Connection:** FAILED
 - **Error:** `server rejected WebSocket connection: HTTP 404`
 - **Root Cause:** Missing rift_id parameter in endpoint URL
 - **Secondary Cause:** No authentication token provided
 
 ### Latency Test Results
-- **Status:** ❌ NOT EXECUTED
+- **Status:** NOT EXECUTED
 - **Reason:** Cannot establish WebSocket connection
 - **Expected Latency:** Based on code analysis, 100ms+ due to batching
 
 ### Multiple Connection Test Results
-- **Status:** ❌ NOT EXECUTED  
+- **Status:** NOT EXECUTED  
 - **Reason:** Authentication barrier prevents connection
 - **Attempted Connections:** 3
 - **Successful Connections:** 0
 
 ### Conflict Resolution Test Results
-- **Status:** ❌ NOT EXECUTED
+- **Status:** NOT EXECUTED
 - **Reason:** Requires authenticated WebSocket connections
 - **Note:** Code analysis suggests conflict resolution is not implemented
 
 ## Code Analysis vs Functional Testing
 
 ### Confirmed Through Code Analysis
-1. **WebSocket Infrastructure:** ✅ Present (Axum-based)
-2. **Batching System:** ✅ Implemented (100ms timeout)
-3. **Authentication:** ✅ Comprehensive (JWT + OAuth)
-4. **Authorization:** ✅ Rift-based access control
+1. **WebSocket Infrastructure:** Present (Axum-based)
+2. **Batching System:** Implemented (100ms timeout)
+3. **Authentication:** Comprehensive (JWT + OAuth)
+4. **Authorization:** Rift-based access control
 
 ### Unable to Verify Functionally
 1. **Actual Latency:** Cannot measure without authentication

@@ -37,7 +37,7 @@ class AuthenticationFlowTester:
         }
         self.test_results.append(result)
         
-        status = "✅ PASS" if success else "❌ FAIL"
+        status = "PASS" if success else "FAIL"
         self.logger.info(f"{status}: {test_name}")
         self.logger.info(f"Details: {details}")
         if evidence:
@@ -407,34 +407,34 @@ class AuthenticationFlowTester:
 
     def run_comprehensive_test(self) -> Dict:
         """Run all authentication flow tests"""
-        print("🔐 Starting Authentication Flow Testing...")
+        print("Starting Authentication Flow Testing...")
         print("=" * 60)
         
         # Test server availability first
         if not self.test_server_availability():
-            print("❌ Server not available - skipping authentication tests")
+            print("Server not available - skipping authentication tests")
             return self.generate_report()
         
         # Run all authentication tests
-        print("\n📋 Testing OAuth Initiation...")
+        print("\nTesting OAuth Initiation...")
         oauth_results = self.test_oauth_initiation_endpoints()
         
-        print("\n📋 Testing OAuth Callback Handling...")
+        print("\nTesting OAuth Callback Handling...")
         self.test_oauth_callback_handling()
         
-        print("\n📋 Testing Protected Resource Access...")
+        print("\nTesting Protected Resource Access...")
         protected_results = self.test_protected_resource_access()
         
-        print("\n📋 Testing JWT Token Validation...")
+        print("\nTesting JWT Token Validation...")
         self.test_jwt_token_validation()
         
-        print("\n📋 Testing Session Management...")
+        print("\nTesting Session Management...")
         self.test_session_management()
         
-        print("\n📋 Testing User Creation Endpoints...")
+        print("\nTesting User Creation Endpoints...")
         self.test_user_creation_endpoints()
         
-        print("\n📋 Testing Role-Based Access Control...")
+        print("\nTesting Role-Based Access Control...")
         rbac_results = self.test_role_based_access()
         
         return self.generate_report()
@@ -457,7 +457,7 @@ class AuthenticationFlowTester:
         }
         
         print("\n" + "=" * 60)
-        print("🔐 AUTHENTICATION FLOW TEST RESULTS")
+        print("AUTHENTICATION FLOW TEST RESULTS")
         print("=" * 60)
         print(f"Total Tests: {total_tests}")
         print(f"Passed: {passed_tests}")
@@ -465,7 +465,7 @@ class AuthenticationFlowTester:
         print(f"Success Rate: {report['summary']['success_rate']:.1f}%")
         
         if failed_tests > 0:
-            print(f"\n❌ Failed Tests:")
+            print(f"\nFailed Tests:")
             for result in self.test_results:
                 if not result['success']:
                     print(f"  - {result['test']}: {result['details']}")
@@ -489,7 +489,7 @@ def main():
     if args.output:
         with open(args.output, 'w') as f:
             json.dump(results, f, indent=2)
-        print(f"\n📄 Results saved to: {args.output}")
+        print(f"\nResults saved to: {args.output}")
     
     # Return exit code based on test results
     return 0 if results['summary']['failed'] == 0 else 1

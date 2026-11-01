@@ -1,10 +1,10 @@
-# 🚀 CLI Distribution System - Complete Implementation
+# CLI Distribution System - Complete Implementation
 
-## ✅ **What We Built**
+## **What We Built**
 
 A **self-hosted CLI distribution system** that makes your Mothership server the single source of truth for CLI installation and updates.
 
-### **🏗️ Core Components**
+### **Core Components**
 
 1. **Server Distribution Endpoints** (`mothership-server/src/cli_distribution.rs`)
    - `/cli/install` - Platform-specific installation scripts
@@ -25,7 +25,7 @@ A **self-hosted CLI distribution system** that makes your Mothership server the 
    - Organizes binaries in `cli-binaries/` directory
    - Ready-to-serve file structure
 
-## 🎯 **User Experience**
+## **User Experience**
 
 ### **Installation (One-liner)**
 ```bash
@@ -45,14 +45,14 @@ mothership update --check-only
 mothership update
 ```
 
-## 🔒 **Security & Control**
+## **Security & Control**
 
-- ✅ **Authentication required** for binary downloads
-- ✅ **Company-controlled** distribution (no external dependencies)
-- ✅ **Platform validation** prevents malicious requests
-- ✅ **Version control** - serve exactly what you want
+- **Authentication required** for binary downloads
+- **Company-controlled** distribution (no external dependencies)
+- **Platform validation** prevents malicious requests
+- **Version control** - serve exactly what you want
 
-## 🌟 **Perfect for Beta Testing**
+## **Perfect for Beta Testing**
 
 ### **Developer Workflow:**
 1. Make CLI changes
@@ -65,24 +65,24 @@ mothership update
 2. Stay updated: `mothership update`
 3. Always have latest features
 
-## 🚀 **Ready to Deploy**
+## **Ready to Deploy**
 
 Everything is implemented and ready for testing:
 
-- ✅ **Cross-platform builds** (Linux, macOS, Windows - x64 & ARM64)
-- ✅ **Installation scripts** (Unix bash & Windows PowerShell)
-- ✅ **Update command** in CLI
-- ✅ **Authentication integration**  
-- ✅ **Build automation**
+- **Cross-platform builds** (Linux, macOS, Windows - x64 & ARM64)
+- **Installation scripts** (Unix bash & Windows PowerShell)
+- **Update command** in CLI
+- **Authentication integration**  
+- **Build automation**
 
-## 📝 **Next Steps for You**
+## **Next Steps for You**
 
 1. **Build binaries:** `./scripts/build-for-distribution.sh`
 2. **Start server:** `./start-docker.sh`  
 3. **Test install:** `curl -sSL http://localhost:7523/cli/install | bash`
 4. **Share with testers:** Send them your server's install URL
 
-## 🎉 **Key Benefits**
+## **Key Benefits**
 
 - **Zero external dependencies** - everything from your server
 - **Instant updates** - push new builds, testers get them immediately  
@@ -91,4 +91,4 @@ Everything is implemented and ready for testing:
 - **Authentication-gated** - only authorized users can download
 - **Simple for users** - one command to install, one command to update
 
-This system transforms your Mothership server into a complete CLI distribution platform! 🔥 
+This system transforms your Mothership server into a complete CLI distribution platform! 

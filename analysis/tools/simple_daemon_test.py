@@ -25,11 +25,11 @@ def test_daemon():
     for path in daemon_paths:
         if os.path.exists(path):
             daemon_path = path
-            print(f"   ✅ Found daemon at: {path}")
+            print(f"   Found daemon at: {path}")
             break
     
     if not daemon_path:
-        print("   ❌ Daemon binary not found")
+        print("   Daemon binary not found")
         return
     
     # Test 2: Start daemon
@@ -41,20 +41,20 @@ def test_daemon():
             stderr=subprocess.PIPE,
             text=True
         )
-        print(f"   ✅ Daemon started with PID: {daemon_process.pid}")
+        print(f"   Daemon started with PID: {daemon_process.pid}")
         
         # Wait for startup
         time.sleep(3)
         
         if daemon_process.poll() is not None:
             stdout, stderr = daemon_process.communicate()
-            print(f"   ❌ Daemon exited immediately")
+            print(f"   Daemon exited immediately")
             print(f"   STDOUT: {stdout}")
             print(f"   STDERR: {stderr}")
             return
             
     except Exception as e:
-        print(f"   ❌ Failed to start daemon: {e}")
+        print(f"   Failed to start daemon: {e}")
         return
     
     # Test 3: Test IPC communication
@@ -65,20 +65,20 @@ def test_daemon():
         # Test health endpoint
         response = requests.get(f"{daemon_url}/health", timeout=5)
         if response.status_code == 200:
-            print(f"   ✅ Health check: {response.status_code}")
+            print(f"   Health check: {response.status_code}")
         else:
-            print(f"   ❌ Health check failed: {response.status_code}")
+            print(f"   Health check failed: {response.status_code}")
             
         # Test status endpoint  
         response = requests.get(f"{daemon_url}/status", timeout=5)
         if response.status_code == 200:
-            print(f"   ✅ Status check: {response.status_code}")
+            print(f"   Status check: {response.status_code}")
             print(f"   Response: {response.text[:100]}...")
         else:
-            print(f"   ❌ Status check failed: {response.status_code}")
+            print(f"   Status check failed: {response.status_code}")
             
     except requests.exceptions.RequestException as e:
-        print(f"   ❌ IPC communication failed: {e}")
+        print(f"   IPC communication failed: {e}")
     
     # Test 4: Shutdown
     print("\n4. Shutting down daemon...")
@@ -87,14 +87,14 @@ def test_daemon():
         time.sleep(2)
         
         if daemon_process.poll() is not None:
-            print(f"   ✅ Daemon shut down gracefully")
+            print(f"   Daemon shut down gracefully")
         else:
-            print(f"   ❌ Daemon did not shut down, terminating...")
+            print(f"   Daemon did not shut down, terminating...")
             daemon_process.terminate()
             daemon_process.wait(timeout=5)
             
     except Exception as e:
-        print(f"   ❌ Shutdown failed: {e}")
+        print(f"   Shutdown failed: {e}")
         try:
             daemon_process.terminate()
             daemon_process.wait(timeout=5)

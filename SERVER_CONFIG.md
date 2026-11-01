@@ -323,10 +323,10 @@ The server validates configuration on startup and will:
 
 Watch the server startup logs for configuration messages:
 ```
-📋 Server config loaded from: server.config
-✅ Server configuration loaded
-✅ User whitelist loaded and active
-🔐 OAuth endpoints enabled
-🔄 WebSocket sync enabled
-📦 CLI distribution endpoints enabled
+Server config loaded from: server.config
+Server configuration loaded
+User whitelist loaded and active
+OAuth endpoints enabled
+WebSocket sync enabled
+CLI distribution endpoints enabled
 ``` 

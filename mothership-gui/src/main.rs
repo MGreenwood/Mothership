@@ -26,6 +26,7 @@ fn main() {
             hub::hub_ensure_daemon,
             hub::hub_list_projects,
             hub::hub_beam,
+            hub::hub_active_rift,
             hub::hub_create_project,
             hub::hub_delete_project,
             hub::hub_list_rifts,

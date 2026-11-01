@@ -21,32 +21,32 @@ Mothership is an experimental version control system that eliminates the complex
 - **Merge Uncertainty**: You don't know if your merge will work until after you've committed to it
 - **Lost Context**: Development decisions and conversations disappear into Slack/Discord, disconnected from the code
 
-## 🌌 **Project Scope: Real-Time Collaborative Development**
+## **Project Scope: Real-Time Collaborative Development**
 
 > **Mothership: What if version control felt like Google Docs, but for code, with context and conversations preserved forever?**
 
 ### **Core Features We're Building**
 
-#### 🚀 **Real-Time Collaboration Within Rifts** ✅ *Working Now*
+#### **Real-Time Collaboration Within Rifts** *Working Now*
 - **Live editing**: Multiple developers see each other's changes instantly
 - **WebSocket sync**: Millisecond-latency file synchronization 
 - **Conflict detection**: Built-in collision handling
 - **Perfect isolation**: Each rift has its own collaboration space
 
-#### 💬 **Contextual Chat Integration** 🎯 *Next Priority*
+#### **Contextual Chat Integration** *Next Priority*
 - **Chat lives in rifts**: Conversations tied to specific development contexts
 - **Persistent history**: All discussions preserved as part of the project timeline
 - **File/line discussions**: Chat about specific code with context preserved
 - **Decision trails**: Why changes were made, captured forever
 - **Smart notifications**: Know when teammates discuss your code
 
-#### 🌌 **Wormholes: Preview Merge System** 🚀 *The Cool Experiment*
+#### **Wormholes: Preview Merge System** *The Cool Experiment*
 - **Live merge preview**: See how different rifts will combine before committing
 - **Collaborative resolution**: Teams resolve conflicts together in real-time
 - **Non-destructive testing**: Try integrations without affecting source rifts
 - **Zero-surprise convergence**: Know exactly how the merge will work
 
-#### ⚡ **Background Intelligence** ✅ *Working Now*
+#### **Background Intelligence** *Working Now*
 - **Automatic checkpointing**: Every meaningful change preserved
 - **Smart daemon**: Background sync without console blocking
 - **Zero-ceremony beaming**: Join projects instantly, leave gracefully
@@ -139,7 +139,7 @@ mothership beam "My Awesome App" --rift="alice/new-feature"
 # - Preserve all decisions as part of project history
 ```
 
-#### **Contextual Conversations** 🎯 *The Innovation*
+#### **Contextual Conversations** *The Innovation*
 ```bash
 # Chat is integrated into the development flow
 mothership chat
@@ -305,7 +305,7 @@ enum SyncMessage {
 
 ## Implementation Phases
 
-### Phase 1: Foundation ✅ **COMPLETED - January 2025**
+### Phase 1: Foundation **COMPLETED - January 2025**
 - [x] **Server Architecture** - Rust + Tokio + Axum running on port 7523
 - [x] **Authentication System** - OAuth + JWT with PostgreSQL persistence
 - [x] **CLI Tools** - Complete command set with intuitive UX
@@ -314,14 +314,14 @@ enum SyncMessage {
 - [x] **Docker Deployment** - One-click development environment
 - [x] **Cross-platform Support** - Windows, macOS, Linux compatibility
 
-### Phase 2: Real-Time Collaboration ✅ **COMPLETED - January 2025**
+### Phase 2: Real-Time Collaboration **COMPLETED - January 2025**
 - [x] **WebSocket Infrastructure** - Real-time sync engine
 - [x] **Multi-user Editing** - Live collaboration within rifts
 - [x] **Background Daemon** - Non-blocking file watching and sync
 - [x] **Conflict Detection** - Built-in collision handling framework
 - [x] **Perfect Isolation** - Rift-specific broadcast channels
 
-### Phase 3: Chat Integration & Context 🎯 **CURRENT FOCUS**
+### Phase 3: Chat Integration & Context **CURRENT FOCUS**
 **Goal: Make conversations part of the development history**
 - [ ] **Chat Engine** - Real-time messaging within rifts
 - [ ] **Context Preservation** - Link conversations to code, files, and changes
@@ -330,7 +330,7 @@ enum SyncMessage {
 - [ ] **Code References** - Share and discuss specific lines/files in chat
 - [ ] **Decision Trails** - Capture why changes were made, not just what changed
 
-### Phase 4: Wormhole System 🌌 **THE EXPERIMENT**
+### Phase 4: Wormhole System **THE EXPERIMENT**
 **Goal: Preview merges with collaborative resolution**
 - [ ] **Wormhole Creation** - Connect rifts for integration testing
 - [ ] **Live Merge Preview** - See combined state in real-time
@@ -358,7 +358,7 @@ enum SyncMessage {
 
 ## Current Status (January 2025)
 
-### ✅ **What's Working Now**
+### **What's Working Now**
 - **Real-time collaboration**: Multiple developers can edit the same rift simultaneously
 - **Background sync**: File changes detected and synced automatically
 - **Zero-friction beaming**: Join projects instantly with automatic daemon management
@@ -366,13 +366,13 @@ enum SyncMessage {
 - **Cross-platform CLI**: Works on Windows, macOS, Linux
 - **OAuth authentication**: Seamless login with Google integration
 
-### 🎯 **What We're Building Next**
+### **What We're Building Next**
 - **Chat integration**: Real-time messaging within rifts
 - **Context preservation**: Link conversations to specific code and changes
 - **Smart notifications**: Know when teammates discuss your code
 - **Wormhole preview**: Test how different rifts will merge together
 
-### 🚀 **The Big Dream**
+### **The Big Dream**
 A development environment where:
 - Code changes happen in real-time with your team
 - Conversations about the code are preserved forever as context
@@ -405,4 +405,4 @@ We're building a development environment where the conversations, decisions, and
 
 **This is a fun project exploring the future of collaborative development.** If it works well, maybe it becomes something bigger. If not, we'll have learned a lot and built some cool tech along the way.
 
-*The revolution might be coming, but first we're just trying to make development more collaborative and less lonely.* 🚀 
+*The revolution might be coming, but first we're just trying to make development more collaborative and less lonely.* 

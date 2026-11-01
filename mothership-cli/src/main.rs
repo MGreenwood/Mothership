@@ -1,5 +1,7 @@
 use mothership_common::ClientConfig;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::{CompleteEnv, engine::ArgValueCandidates};
+use clap_complete::env::{Bash, Elvish, EnvCompleter, Fish, Shells, Zsh};
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
@@ -13,6 +15,8 @@ use colored::Colorize;
 
 mod auth;
 mod beam;
+mod completion;
+mod completion_shell;
 mod config;
 mod connections;
 mod gateway;
@@ -52,7 +56,7 @@ enum Commands {
     /// Beam into a project for development
     Beam {
         /// Project name or ID to beam into (optional if in project directory)
-        #[arg(default_value = "")]
+        #[arg(default_value = "", add = ArgValueCandidates::new(completion::beam_project_candidates))]
         project: String,
         
         /// Optional rift ID to join
@@ -287,6 +291,18 @@ struct ApiResponse<T> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Answers shell completion requests and exits; otherwise a no-op
+    let shells: &[&dyn EnvCompleter] = &[
+        &Bash,
+        &Elvish,
+        &Fish,
+        &completion_shell::PowerShellCompleter,
+        &Zsh,
+    ];
+    CompleteEnv::with_factory(Cli::command)
+        .shells(Shells(shells))
+        .complete();
+
     // Load environment variables
     dotenvy::dotenv().ok();
     
@@ -302,7 +318,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Auth { method: _ } => {
-            println!("{}", "🔐 Starting Mothership authentication...".cyan().bold());
+            println!("{}", "Starting Mothership authentication...".cyan().bold());
             auth::authenticate(&config_manager).await?;
         }
         Commands::Gateway { action } => {
@@ -314,15 +330,15 @@ async fn main() -> Result<()> {
 
             match action {
                 GatewayAction::List { include_inactive } => {
-                    println!("{}", "🌌 Accessing your development gateway...".cyan().bold());
+                    println!("{}", "Accessing your development gateway...".cyan().bold());
                     gateway::handle_gateway(&config_manager, include_inactive).await?;
                 }
                 GatewayAction::Create { name, dir } => {
-                    println!("{}", format!("🏗️  Creating new gateway: {}...", name).cyan().bold());
+                    println!("{}", format!(" Creating new gateway: {}...", name).cyan().bold());
                     gateway::handle_gateway_create(&config_manager, name, dir).await?;
                 }
                 GatewayAction::Disconnect { project } => {
-                    println!("{}", "🔌 Disconnecting from project...".cyan().bold());
+                    println!("{}", "Disconnecting from project...".cyan().bold());
                     beam::handle_disconnect(&config_manager, project).await?;
                 }
             }
@@ -342,13 +358,13 @@ async fn main() -> Result<()> {
                     .to_string()
             });
 
-            println!("{}", format!("🚀 Initializing {}...", project_name).cyan().bold());
+            println!("{}", format!("Initializing {}...", project_name).cyan().bold());
             
             // Create the gateway/project (CRITICAL FIX: Properly handle errors)
             match gateway::handle_gateway_create(&config_manager, project_name.clone(), current_dir).await {
                 Ok(_project) => {
                     // Automatically beam into the newly created project
-                    println!("\n{}", "🎯 Automatically beaming into your new project...".cyan().bold());
+                    println!("\n{}", "Automatically beaming into your new project...".cyan().bold());
                     if let Err(e) = beam::handle_beam(&config_manager, project_name, None, None, false).await {
                         print_api_error(&format!("Failed to beam into project: {}", e));
                         print_info("You can manually beam into your project later.");
@@ -367,7 +383,7 @@ async fn main() -> Result<()> {
                 return Ok(());
             }
 
-            println!("{}", format!("🚀 Beaming into {}...", project).cyan().bold());
+            println!("{}", format!("Beaming into {}...", project).cyan().bold());
             beam::handle_beam(&config_manager, project, rift, local_dir, false).await?;
         }
         Commands::Status => {
@@ -377,7 +393,7 @@ async fn main() -> Result<()> {
                 return Ok(());
             }
 
-            println!("{}", "📊 Checking sync status...".cyan().bold());
+            println!("{}", "Checking sync status...".cyan().bold());
             sync::handle_status(&config_manager).await?;
         }
         Commands::Checkpoint { message } => {
@@ -387,11 +403,11 @@ async fn main() -> Result<()> {
                 return Ok(());
             }
 
-            println!("{}", "📸 Creating checkpoint...".cyan().bold());
+            println!("{}", "Creating checkpoint...".cyan().bold());
             sync::handle_checkpoint(&config_manager, Some(message)).await?;
         }
         Commands::Sync => {
-            println!("{}", "📦 Syncing with remote Mothership...".cyan().bold());
+            println!("{}", "Syncing with remote Mothership...".cyan().bold());
             handle_sync_internal().await?;
         }
         Commands::History { limit } => {
@@ -401,7 +417,7 @@ async fn main() -> Result<()> {
                 return Ok(());
             }
 
-            println!("{}", "📜 Loading project history...".cyan().bold());
+            println!("{}", "Loading project history...".cyan().bold());
             sync::handle_history(&config_manager, limit).await?;
         }
         Commands::Restore { checkpoint_id, force } => {
@@ -411,7 +427,7 @@ async fn main() -> Result<()> {
                 return Ok(());
             }
 
-            println!("{}", format!("🔄 Restoring to checkpoint {}...", checkpoint_id).cyan().bold());
+            println!("{}", format!("Restoring to checkpoint {}...", checkpoint_id).cyan().bold());
             sync::handle_restore(&config_manager, checkpoint_id, force).await?;
         }
         Commands::Delete { project_name, force } => {
@@ -421,25 +437,25 @@ async fn main() -> Result<()> {
                 return Ok(());
             }
 
-            println!("{}", format!("🗑️  Deleting project {}...", project_name).cyan().bold());
+            println!("{}", format!(" Deleting project {}...", project_name).cyan().bold());
             gateway::handle_delete(&config_manager, project_name, force).await?;
         }
         Commands::Connect { server_url } => {
-            println!("{}", format!("🔗 Connecting to {}...", server_url).cyan().bold());
+            println!("{}", format!("Connecting to {}...", server_url).cyan().bold());
             connections::handle_connect(&config_manager, server_url).await?;
         }
         Commands::Server { action } => {
             match action {
                 ServerAction::Status => {
-                    println!("{}", "📡 Checking server connection status...".cyan().bold());
+                    println!("{}", "Checking server connection status...".cyan().bold());
                     connections::handle_server_status(&config_manager).await?;
                 }
                 ServerAction::Disconnect => {
-                    println!("{}", "🔌 Disconnecting from server...".cyan().bold());
+                    println!("{}", "Disconnecting from server...".cyan().bold());
                     connections::handle_server_disconnect(&config_manager).await?;
                 }
                 ServerAction::List => {
-                    println!("{}", "📋 Listing configured servers...".cyan().bold());
+                    println!("{}", "Listing configured servers...".cyan().bold());
                     connections::handle_server_list(&config_manager).await?;
                 }
             }
@@ -447,21 +463,21 @@ async fn main() -> Result<()> {
         Commands::Daemon { action } => {
             match action {
                 DaemonAction::Status => {
-                    println!("{}", "🤖 Checking daemon status...".cyan().bold());
+                    println!("{}", "Checking daemon status...".cyan().bold());
                     beam::handle_daemon_status().await?;
                 }
                 DaemonAction::Stop => {
-                    println!("{}", "⏹️  Stopping daemon...".cyan().bold());
+                    println!("{}", " Stopping daemon...".cyan().bold());
                     beam::handle_daemon_stop().await?;
                 }
                 DaemonAction::Restart => {
-                    println!("{}", "🔄 Restarting daemon...".cyan().bold());
+                    println!("{}", "Restarting daemon...".cyan().bold());
                     beam::handle_daemon_restart().await?;
                 }
             }
         }
         Commands::Logout => {
-            println!("{}", "🔓 Logging out...".cyan().bold());
+            println!("{}", "Logging out...".cyan().bold());
             auth::handle_logout(&config_manager).await?;
         }
         Commands::Update { args } => {
@@ -600,25 +616,25 @@ fn get_oauth_token() -> Option<String> {
 
 /// Pretty print authentication errors with helpful instructions
 fn print_auth_error(error: &str) {
-    eprintln!("{} {}", "🔒 Authentication Error:".red().bold(), error);
+    eprintln!("{} {}", "Authentication Error:".red().bold(), error);
     eprintln!("{}", "");
-    eprintln!("{} {}", "💡 To fix this:".yellow().bold(), "Run 'mothership auth' to authenticate");
+    eprintln!("{} {}", "To fix this:".yellow().bold(), "Run 'mothership auth' to authenticate");
     eprintln!("{} {}", "   ".dimmed(), "This will open your browser and guide you through the login process");
 }
 
 /// Pretty print API errors
 fn print_api_error(error: &str) {
-    eprintln!("{} {}", "❌ Error:".red().bold(), error);
+    eprintln!("{} {}", "Error:".red().bold(), error);
 }
 
 /// Pretty print success messages
 fn print_success(message: &str) {
-    println!("{} {}", "✅".green().bold(), message);
+    println!("{} {}", "".green().bold(), message);
 }
 
 /// Pretty print info messages
 fn print_info(message: &str) {
-    println!("{} {}", "ℹ️".blue().bold(), message);
+    println!("{} {}", "".blue().bold(), message);
 }
 
 async fn handle_rifts_command(detailed: bool) -> Result<()> {
@@ -642,14 +658,14 @@ async fn handle_rifts_command(detailed: bool) -> Result<()> {
             println!("Author: {}", rift.author);
             println!("Files: {}", rift.file_count);
             if rift.is_conflict_rift {
-                println!("⚠️ This is a conflict resolution rift");
+                println!("This is a conflict resolution rift");
             }
             println!("{:-<50}", "");
         }
     } else {
         println!("\nAvailable Rifts:");
         for rift in rifts {
-            let conflict_marker = if rift.is_conflict_rift { " ⚠️" } else { "" };
+            let conflict_marker = if rift.is_conflict_rift { "" } else { "" };
             let short_id = &rift.id.to_string()[..8];
             println!("- {} ({}){}", rift.name, short_id, conflict_marker);
         }
@@ -665,8 +681,8 @@ async fn handle_create_rift_command(name: String, description: Option<String>) -
     }
 
     let _rift_id = create_rift(&name, description).await?;
-    println!("✨ Created new rift: {}", name);
-    println!("🔀 Switch to it with: mothership rift switch \"{}\"", name);
+    println!("Created new rift: {}", name);
+    println!("Switch to it with: mothership rift switch \"{}\"", name);
 
     Ok(())
 }
@@ -683,7 +699,7 @@ async fn handle_switch_rift_command(rift: String) -> Result<()> {
     }
 
     switch_to_rift(&rift).await?;
-    println!("🔄 Switched to rift: {}", rift);
+    println!("Switched to rift: {}", rift);
     
     // If this is a conflict rift, show the README
     let readme_path = format!(".mothership/rifts/{}/CONFLICT_README.md", rift);
@@ -707,7 +723,7 @@ async fn handle_rift_status_command() -> Result<()> {
             println!("Files: {}", rift.file_count);
             
             if rift.is_conflict_rift {
-                println!("\n⚠️ This is a conflict resolution rift");
+                println!("\nThis is a conflict resolution rift");
                 println!("Use 'mothership rift-diff --to main' to see differences from main rift");
             }
         }
@@ -815,7 +831,7 @@ async fn handle_chat_send_command(rift: &str, content: &str) -> Result<()> {
         return Err(anyhow!("Server error: {}", api_response.error.unwrap_or_else(|| "Unknown error".to_string())));
     }
 
-    println!("✅ Sent to rift {}", rift);
+    println!("Sent to rift {}", rift);
     Ok(())
 }
 
@@ -1176,7 +1192,7 @@ async fn switch_to_rift(rift_name: &str) -> Result<()> {
         let url = format!("http://localhost:7525/projects/{}/reconnect", project_id);
         match reqwest::Client::new().post(&url).send().await {
             Ok(resp) if resp.status().is_success() => {}
-            _ => println!("⚠️ Daemon not reachable; background sync will use '{}' after the next beam", rift_name),
+            _ => println!("Daemon not reachable; background sync will use '{}' after the next beam", rift_name),
         }
     }
     
@@ -1335,7 +1351,7 @@ fn check_verbose_help(args: &[String]) -> bool {
 /// Print verbose help with color-coded command tree
 fn print_verbose_help() {
     println!("{}", "┌─────────────────────────────────────────────────────────┐".bright_cyan());
-    println!("{}", "│                    🚀 MOTHERSHIP CLI                    │".bright_cyan().bold());
+    println!("{}", "│                    MOTHERSHIP CLI                    │".bright_cyan().bold());
     println!("{}", "│              Frictionless Version Control               │".bright_cyan());
     println!("{}", "└─────────────────────────────────────────────────────────┘".bright_cyan());
     println!();
@@ -1350,66 +1366,66 @@ fn print_verbose_help() {
     println!();
     
     println!("{}", "CORE COMMANDS:".bright_yellow().bold());
-    print_command_section("🔐", "auth", "Authentication & Setup", &[
+    print_command_section("", "auth", "Authentication & Setup", &[
         ("google", "Login with Google OAuth", None),
         ("github", "Login with GitHub OAuth", None),
     ]);
     
-    print_command_section("🌌", "gateway", "Project Management", &[
+    print_command_section("", "gateway", "Project Management", &[
         ("list", "List available projects", Some("--include-inactive")),
         ("create", "Create a new project", Some("<name> --dir <path>")),
         ("disconnect", "Stop tracking a project", Some("[project]")),
     ]);
     
-    print_command_section("🚀", "beam", "Project Development", &[]);
+    print_command_section("", "beam", "Project Development", &[]);
     println!("    {} {}", "mothership beam".green().bold(), "<project> [OPTIONS]".white());
     println!("    {} {}", "   --rift".bright_blue(), "<name>                Specify rift to join".dimmed());
     println!("    {} {}", "   --local-dir".bright_blue(), "<path>           Local directory for project".dimmed());
     println!();
     
-    print_command_section("📊", "status", "Project Status", &[]);
+    print_command_section("", "status", "Project Status", &[]);
     println!("    {} {}", "mothership status".green().bold(), "                        Check sync status".dimmed());
     println!();
     
-    print_command_section("📸", "checkpoint", "Version Control", &[]);
+    print_command_section("", "checkpoint", "Version Control", &[]);
     println!("    {} {}", "mothership checkpoint".green().bold(), "<message>        Create a checkpoint".dimmed());
     println!();
     
-    print_command_section("📦", "sync", "Synchronization", &[]);
+    print_command_section("", "sync", "Synchronization", &[]);
     println!("    {} {}", "mothership sync".green().bold(), "                         Sync with remote".dimmed());
     println!();
     
-    print_command_section("📜", "history", "Project History", &[]);
+    print_command_section("", "history", "Project History", &[]);
     println!("    {} {}", "mothership history".green().bold(), "[OPTIONS]            View checkpoints".dimmed());
     println!("    {} {}", "   --limit".bright_blue(), "<num>               Limit results (default: 20)".dimmed());
     println!();
     
-    print_command_section("🔄", "restore", "Time Travel", &[]);
+    print_command_section("", "restore", "Time Travel", &[]);
     println!("    {} {}", "mothership restore".green().bold(), "<checkpoint-id>      Restore to checkpoint".dimmed());
     println!("    {} {}", "   --force".bright_blue(), "                       Skip confirmation".dimmed());
     println!();
     
-    print_command_section("🗑️", "delete", "Project Cleanup", &[]);
+    print_command_section("", "delete", "Project Cleanup", &[]);
     println!("    {} {}", "mothership delete".green().bold(), "<project> [--force]   Delete a project".dimmed());
     println!();
     
-    print_command_section("🔗", "connect", "Server Management", &[]);
+    print_command_section("", "connect", "Server Management", &[]);
     println!("    {} {}", "mothership connect".green().bold(), "<url>               Connect to server".dimmed());
     println!();
     
-    print_command_section("📡", "server", "Server Operations", &[
+    print_command_section("", "server", "Server Operations", &[
         ("status", "Check connection status", None),
         ("disconnect", "Disconnect from server", None),
         ("list", "List configured servers", None),
     ]);
     
-    print_command_section("🤖", "daemon", "Background Service", &[
+    print_command_section("", "daemon", "Background Service", &[
         ("status", "Show daemon status", None),
         ("stop", "Stop background daemon", None),
         ("restart", "Restart background daemon", None),
     ]);
     
-    print_command_section("🌊", "rift", "Collaborative Spaces", &[
+    print_command_section("", "rift", "Collaborative Spaces", &[
         ("list", "List project rifts", Some("--detailed")),
         ("new", "Create a new rift", Some("<name> --description <desc>")),
         ("switch", "Switch to a rift", Some("<name>")),
@@ -1417,7 +1433,7 @@ fn print_verbose_help() {
         ("diff", "Compare rifts", Some("[from] [to]")),
     ]);
     
-    print_command_section("🔀", "wormhole", "Merge Previews", &[
+    print_command_section("", "wormhole", "Merge Previews", &[
         ("create", "Preview merging rifts", Some("<name> <rift> <rift> [rift...]")),
         ("list", "List project wormholes", None),
         ("show", "Show merged state and conflicts", Some("<wormhole>")),
@@ -1428,15 +1444,15 @@ fn print_verbose_help() {
         ("watch", "Report when a wormhole's rifts change", Some("<wormhole>")),
     ]);
     
-    print_command_section("🚀", "init", "Quick Init", &[]);
+    print_command_section("", "init", "Quick Init", &[]);
     println!("    {} {}", "mothership init".green().bold(), "[name]                Initialize current directory".dimmed());
     println!();
     
-    print_command_section("🔓", "logout", "Session Management", &[]);
+    print_command_section("", "logout", "Session Management", &[]);
     println!("    {} {}", "mothership logout".green().bold(), "                       Clear credentials".dimmed());
     println!();
     
-    print_command_section("⬆️", "update", "CLI Maintenance", &[]);
+    print_command_section("⬆", "update", "CLI Maintenance", &[]);
     println!("    {} {}", "mothership update".green().bold(), "[OPTIONS]             Update CLI version".dimmed());
     println!();
     

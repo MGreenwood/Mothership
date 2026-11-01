@@ -103,6 +103,25 @@ pub async fn tracked_projects() -> Result<Vec<TrackedProject>> {
     unwrap(resp)
 }
 
+/// Asks the daemon to delete `folder` once `wormhole_id` is dissolved or converted.
+pub async fn register_snapshot(folder: &std::path::Path, wormhole_id: Uuid) -> Result<()> {
+    #[derive(Serialize)]
+    struct RegisterSnapshotRequest<'a> {
+        folder: &'a std::path::Path,
+        wormhole_id: Uuid,
+    }
+
+    let resp: ApiResponse<()> = http(Duration::from_secs(3))?
+        .post(format!("{DAEMON_URL}/snapshots/register"))
+        .json(&RegisterSnapshotRequest { folder, wormhole_id })
+        .send()
+        .await
+        .context("Daemon is not reachable")?
+        .json()
+        .await?;
+    unwrap(resp)
+}
+
 /// Asks the daemon to exit, then waits up to 5 seconds for it to stop answering.
 pub async fn stop() -> Result<()> {
     let client = http(Duration::from_secs(3))?;

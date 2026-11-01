@@ -39,39 +39,39 @@ pub async fn handle_beam(
     }
 
     // Get or create user's rift for this project
-    info!("🔍 DEBUG: Checking for existing rift for user {} in project {}", user_id, project_id);
+    info!("DEBUG: Checking for existing rift for user {} in project {}", user_id, project_id);
     
     let rift = if let Some(rift_name) = request.rift_name {
-        info!("🔍 DEBUG: Specific rift name requested: {}", rift_name);
+        info!("DEBUG: Specific rift name requested: {}", rift_name);
         // Check if rift with specific name exists for user
         match state.db.get_user_rift(project_id, user_id).await {
             Ok(Some(existing_rift)) => {
-                info!("✅ Found existing rift: {} for user {} in project: {}", existing_rift.id, user_id, project.name);
+                info!("Found existing rift: {} for user {} in project: {}", existing_rift.id, user_id, project.name);
                 existing_rift
             }
             Ok(None) => {
-                info!("❌ No existing rift found, creating new rift with name '{}' for user {} in project: {}", rift_name, user_id, project.name);
+                info!("No existing rift found, creating new rift with name '{}' for user {} in project: {}", rift_name, user_id, project.name);
                 state.db.create_rift(project_id, user_id, Some(rift_name)).await?
             }
             Err(e) => {
-                error!("🚨 Error checking for existing rift: {}", e);
+                error!("Error checking for existing rift: {}", e);
                 return Err(anyhow!("Database error checking for rift: {}", e));
             }
         }
     } else {
-        info!("🔍 DEBUG: No specific rift name, checking for default rift");
+        info!("DEBUG: No specific rift name, checking for default rift");
         // Check if user already has a default rift for this project
         match state.db.get_user_rift(project_id, user_id).await {
             Ok(Some(existing_rift)) => {
-                info!("✅ Found existing default rift: {} for user {} in project: {}", existing_rift.id, user_id, project.name);
+                info!("Found existing default rift: {} for user {} in project: {}", existing_rift.id, user_id, project.name);
                 existing_rift
             }
             Ok(None) => {
-                info!("❌ No existing default rift found, creating new default rift for user {} in project: {}", user_id, project.name);
+                info!("No existing default rift found, creating new default rift for user {} in project: {}", user_id, project.name);
                 state.db.create_rift(project_id, user_id, None).await?
             }
             Err(e) => {
-                error!("🚨 Error checking for existing default rift: {}", e);
+                error!("Error checking for existing default rift: {}", e);
                 return Err(anyhow!("Database error checking for default rift: {}", e));
             }
         }

@@ -16,6 +16,7 @@ use uuid::Uuid;
 
 use crate::daemon::{DaemonStatus, TrackedProject};
 use crate::file_watcher::FileChangeEvent;
+use crate::snapshots::SnapshotRegistry;
 use mothership_common::protocol::SyncMessage;
 
 /// IPC server for communication between CLI/GUI and daemon
@@ -36,12 +37,20 @@ pub struct IpcServer {
     server_write_flags: Arc<RwLock<HashMap<Uuid, bool>>>,
     /// Maps project ID to last-synced content hashes (see daemon::BaseHashes)
     base_hashes: crate::daemon::BaseHashes,
+    /// Beamed wormhole snapshot folders awaiting cleanup
+    snapshots: Arc<SnapshotRegistry>,
 }
 #[derive(Debug, Deserialize)]
 pub struct AddProjectRequest {
     pub project_id: Uuid,
     pub project_name: String,
     pub project_path: PathBuf,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RegisterSnapshotRequest {
+    pub folder: PathBuf,
+    pub wormhole_id: Uuid,
 }
 
 /// Health check response
@@ -88,6 +97,7 @@ impl IpcServer {
         outgoing_channels: Arc<RwLock<HashMap<Uuid, mpsc::UnboundedSender<SyncMessage>>>>,
         server_write_flags: Arc<RwLock<HashMap<Uuid, bool>>>,
         base_hashes: crate::daemon::BaseHashes,
+        snapshots: Arc<SnapshotRegistry>,
     ) -> Result<Self> {
         Ok(Self {
             status,
@@ -98,12 +108,13 @@ impl IpcServer {
             outgoing_channels,
             server_write_flags,
             base_hashes,
+            snapshots,
         })
     }
 
     /// Start the IPC server
     pub async fn start(self) -> Result<()> {
-        info!("🌐 Starting Mothership Daemon IPC server on port 7525...");
+        info!("Starting Mothership Daemon IPC server on port 7525...");
 
         let app = Router::new()
             .route("/health", get(health_check))
@@ -112,11 +123,12 @@ impl IpcServer {
             .route("/projects/add", post(add_project))
             .route("/projects/:id/remove", post(remove_project))
             .route("/projects/:id/reconnect", post(reconnect_project))
+            .route("/snapshots/register", post(register_snapshot))
             .route("/shutdown", post(shutdown_daemon))
             .with_state(Arc::new(self));
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:7525").await?;
-        info!("✅ IPC server listening on http://127.0.0.1:7525");
+        info!("IPC server listening on http://127.0.0.1:7525");
 
         axum::serve(listener, app).await?;
         Ok(())
@@ -152,7 +164,7 @@ async fn add_project(
     State(server): State<Arc<IpcServer>>,
     Json(req): Json<AddProjectRequest>,
 ) -> Result<Json<ApiResponse<String>>, StatusCode> {
-    info!("📁 Adding project for tracking: {} at {}", req.project_name, req.project_path.display());
+    info!("Adding project for tracking: {} at {}", req.project_name, req.project_path.display());
 
     // Validate project path exists
     if !req.project_path.exists() {
@@ -206,7 +218,7 @@ async fn add_project(
         watchers.insert(req.project_id, file_watcher);
     }
     
-    info!("🔍 File watcher started and stored for project '{}'", req.project_name);
+    info!("File watcher started and stored for project '{}'", req.project_name);
 
     // CRITICAL FIX: Start WebSocket listener for real-time sync
     let websocket_handle = {
@@ -219,7 +231,7 @@ async fn add_project(
         let base_hashes = server.base_hashes.clone();
         
         tokio::spawn(async move {
-            info!("🔄 Starting WebSocket listener for project {}", project_id);
+            info!("Starting WebSocket listener for project {}", project_id);
             if let Err(e) = crate::daemon::MothershipDaemon::start_websocket_listener(
                 project_id,
                 tracked_projects,
@@ -234,15 +246,18 @@ async fn add_project(
         })
     };
     
-    // Store the WebSocket listener handle
+    // Store the WebSocket listener handle. Re-adding a tracked project (e.g. after a rift
+    // switch) must stop the previous listener, or it keeps syncing the old rift.
     {
         let mut listeners = server.websocket_listeners.write().await;
-        listeners.insert(req.project_id, websocket_handle);
+        if let Some(previous) = listeners.insert(req.project_id, websocket_handle) {
+            previous.abort();
+        }
     }
     
-    info!("🔄 WebSocket listener started for project '{}'", req.project_name);
+    info!("WebSocket listener started for project '{}'", req.project_name);
 
-    info!("✅ Project '{}' added for tracking with active file watcher and WebSocket sync", req.project_name);
+    info!("Project '{}' added for tracking with active file watcher and WebSocket sync", req.project_name);
     Ok(Json(ApiResponse::success(format!(
         "Project '{}' successfully added for tracking",
         req.project_name
@@ -277,7 +292,7 @@ async fn reconnect_project(
     .await
     {
         Ok(()) => {
-            info!("🔁 Reconnected WebSocket for project {}", project_id);
+            info!("Reconnected WebSocket for project {}", project_id);
             Json(ApiResponse::success(format!("Reconnected project {}", project_id)))
         }
         Err(e) => {
@@ -287,12 +302,29 @@ async fn reconnect_project(
     }
 }
 
+/// Record a beamed wormhole snapshot folder so the daemon can clean it up later
+async fn register_snapshot(
+    State(server): State<Arc<IpcServer>>,
+    Json(req): Json<RegisterSnapshotRequest>,
+) -> Json<ApiResponse<String>> {
+    match server.snapshots.register(req.folder.clone(), req.wormhole_id) {
+        Ok(()) => Json(ApiResponse::success(format!(
+            "Registered snapshot {}",
+            req.folder.display()
+        ))),
+        Err(e) => {
+            error!("Failed to register snapshot {}: {}", req.folder.display(), e);
+            Json(ApiResponse::error(format!("Failed to register snapshot: {}", e)))
+        }
+    }
+}
+
 /// Remove a project from tracking
 async fn remove_project(
     State(server): State<Arc<IpcServer>>,
     Path(project_id): Path<Uuid>,
 ) -> Json<ApiResponse<String>> {
-    info!("🗑️ Removing project from tracking: {}", project_id);
+    info!("Removing project from tracking: {}", project_id);
 
     let project_name = {
         let mut projects = server.tracked_projects.write().await;
@@ -313,7 +345,7 @@ async fn remove_project(
     {
         let mut watchers = server.file_watchers.write().await;
         if watchers.remove(&project_id).is_some() {
-            info!("🔍 Stopped file watcher for project '{}'", project_name);
+            info!("Stopped file watcher for project '{}'", project_name);
         }
     }
 
@@ -322,20 +354,20 @@ async fn remove_project(
         let mut listeners = server.websocket_listeners.write().await;
         if let Some(handle) = listeners.remove(&project_id) {
             handle.abort();
-            info!("🔄 Stopped WebSocket listener for project '{}'", project_name);
+            info!("Stopped WebSocket listener for project '{}'", project_name);
         }
     }
 
-    info!("✅ Project '{}' removed from tracking", project_name);
+    info!("Project '{}' removed from tracking", project_name);
     
     // If no projects remain, automatically shutdown the daemon
     if projects_remaining == 0 {
-        info!("🔄 No projects remaining - initiating automatic daemon shutdown...");
+        info!("No projects remaining - initiating automatic daemon shutdown...");
         
         // Schedule shutdown after a brief delay to allow response to be sent
         tokio::spawn(async {
             tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-            info!("💤 Auto-shutdown: No projects to track - daemon stopping...");
+            info!("Auto-shutdown: No projects to track - daemon stopping...");
             std::process::exit(0);
         });
         
@@ -353,12 +385,12 @@ async fn remove_project(
 
 /// Shutdown the daemon gracefully
 async fn shutdown_daemon(State(_server): State<Arc<IpcServer>>) -> Json<ApiResponse<String>> {
-    info!("🛑 Received shutdown request from CLI");
+    info!("Received shutdown request from CLI");
     
     // Schedule shutdown after a brief delay to allow response to be sent
     tokio::spawn(async {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        info!("🔄 Initiating graceful shutdown...");
+        info!("Initiating graceful shutdown...");
         std::process::exit(0);
     });
     

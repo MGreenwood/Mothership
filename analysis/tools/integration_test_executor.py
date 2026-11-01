@@ -33,7 +33,7 @@ class IntegrationTestExecutor:
         
     def execute_integration_test(self):
         """Execute the PowerShell integration test script"""
-        print("🚀 Starting integration test execution...")
+        print("Starting integration test execution...")
         
         if not self.script_path.exists():
             raise FileNotFoundError(f"Integration test script not found: {self.script_path}")
@@ -62,19 +62,19 @@ class IntegrationTestExecutor:
             self.results["stdout"] = stdout
             self.results["stderr"] = stderr
             
-            print(f"✅ Integration test completed in {self.results['execution_time']:.2f} seconds")
-            print(f"📊 Exit code: {self.results['exit_code']}")
+            print(f"Integration test completed in {self.results['execution_time']:.2f} seconds")
+            print(f"Exit code: {self.results['exit_code']}")
             
             return self.results
             
         except Exception as e:
-            print(f"❌ Error executing integration test: {e}")
+            print(f"Error executing integration test: {e}")
             self.results["error"] = str(e)
             return self.results
     
     def parse_test_output(self):
         """Parse the test output to extract test steps and results"""
-        print("🔍 Parsing test output...")
+        print("Parsing test output...")
         
         stdout = self.results.get("stdout", "")
         stderr = self.results.get("stderr", "")
@@ -101,16 +101,16 @@ class IntegrationTestExecutor:
             features = re.findall(feature_pattern, features_section)
             self.results["features_tested"] = features
         
-        print(f"📋 Found {len(steps)} test steps")
-        print(f"✅ {len(successes)} passed tests")
-        print(f"❌ {len(errors)} failed tests")
-        print(f"🎯 {len(self.results['features_tested'])} features tested")
+        print(f"Found {len(steps)} test steps")
+        print(f"{len(successes)} passed tests")
+        print(f"{len(errors)} failed tests")
+        print(f"{len(self.results['features_tested'])} features tested")
         
         return self.results
     
     def analyze_test_coverage(self):
         """Analyze test coverage against advertised features"""
-        print("📊 Analyzing test coverage...")
+        print("Analyzing test coverage...")
         
         # Define advertised features from requirements
         advertised_features = {
@@ -177,8 +177,8 @@ class IntegrationTestExecutor:
             ]
         }
         
-        print(f"📈 Test coverage: {coverage_percentage:.1f}% ({tested_count}/{total_features})")
-        print(f"🚫 Missing tests: {', '.join(self.results['analysis']['missing_tests'])}")
+        print(f"Test coverage: {coverage_percentage:.1f}% ({tested_count}/{total_features})")
+        print(f"Missing tests: {', '.join(self.results['analysis']['missing_tests'])}")
         
         return self.results
     
@@ -221,14 +221,14 @@ class IntegrationTestExecutor:
             if self.results['passed_tests']:
                 f.write("## Passed Tests\n\n")
                 for test in self.results['passed_tests']:
-                    f.write(f"✅ {test}\n")
+                    f.write(f"{test}\n")
                 f.write("\n")
             
             # Failed Tests
             if self.results['failed_tests']:
                 f.write("## Failed Tests\n\n")
                 for test in self.results['failed_tests']:
-                    f.write(f"❌ {test}\n")
+                    f.write(f"{test}\n")
                 f.write("\n")
             
             # Coverage Analysis
@@ -240,7 +240,7 @@ class IntegrationTestExecutor:
                 
                 f.write("### Features Tested vs Advertised\n\n")
                 for key, feature in analysis['advertised_features'].items():
-                    status = "✅ TESTED" if feature['tested'] else "❌ NOT TESTED"
+                    status = "TESTED" if feature['tested'] else "NOT TESTED"
                     f.write(f"- **{feature['name']}:** {status}\n")
                     for claim in feature['claims']:
                         f.write(f"  - {claim}\n")
@@ -286,14 +286,14 @@ def main():
         output_file.parent.mkdir(parents=True, exist_ok=True)
         executor.save_results(str(output_file))
         
-        print("\n🎉 Integration test analysis complete!")
-        print(f"📊 Results saved to: {output_file}")
+        print("\nIntegration test analysis complete!")
+        print(f"Results saved to: {output_file}")
         
         # Return appropriate exit code
         sys.exit(0 if results['exit_code'] == 0 else 1)
         
     except Exception as e:
-        print(f"💥 Fatal error: {e}")
+        print(f"Fatal error: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":

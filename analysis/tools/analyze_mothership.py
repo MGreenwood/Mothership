@@ -74,9 +74,9 @@ class MothershipAnalyzer:
             analyzer = CodeAnalyzer()
             results = analyzer.analyze_project()
             
-            print(f"  ✓ Analyzed {results['rust_files_analyzed']} Rust files")
-            print(f"  ✓ Found {results['total_issues']} issues")
-            print(f"  ✓ Compilation status: {results['compilation_status']}")
+            print(f"  Analyzed {results['rust_files_analyzed']} Rust files")
+            print(f"  Found {results['total_issues']} issues")
+            print(f"  Compilation status: {results['compilation_status']}")
             
             return results
             
@@ -90,9 +90,9 @@ class MothershipAnalyzer:
             tester = FunctionalTester()
             results = tester.run_all_tests()
             
-            print(f"  ✓ Ran {results['total_tests']} functional tests")
-            print(f"  ✓ Passed: {results['passed_tests']}")
-            print(f"  ✓ Failed: {results['failed_tests']}")
+            print(f"  Ran {results['total_tests']} functional tests")
+            print(f"  Passed: {results['passed_tests']}")
+            print(f"  Failed: {results['failed_tests']}")
             
             return results
             
@@ -106,9 +106,9 @@ class MothershipAnalyzer:
             runner = IntegrationTestRunner()
             results = runner.run_integration_tests()
             
-            print(f"  ✓ Executed {results['executed_scripts']} integration scripts")
-            print(f"  ✓ Passed: {results['passed_scripts']}")
-            print(f"  ✓ Failed: {results['failed_scripts']}")
+            print(f"  Executed {results['executed_scripts']} integration scripts")
+            print(f"  Passed: {results['passed_scripts']}")
+            print(f"  Failed: {results['failed_scripts']}")
             
             return results
             
@@ -122,9 +122,9 @@ class MothershipAnalyzer:
             runner = IntegrationTestRunner()
             results = runner.analyze_docker_deployment()
             
-            print(f"  ✓ Docker compose exists: {results['docker_compose_exists']}")
-            print(f"  ✓ Build successful: {results['docker_build_successful']}")
-            print(f"  ✓ Services started: {results['services_started']}")
+            print(f"  Docker compose exists: {results['docker_compose_exists']}")
+            print(f"  Build successful: {results['docker_build_successful']}")
+            print(f"  Services started: {results['services_started']}")
             
             return results
             

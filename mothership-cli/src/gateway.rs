@@ -114,7 +114,7 @@ pub async fn handle_gateway(config_manager: &ConfigManager, include_inactive: bo
     }
 
     // Display projects
-    println!("\n{}", "🌌 Your Development Gateway".cyan().bold());
+    println!("\n{}", "Your Development Gateway".cyan().bold());
     println!("{}", "Available projects:".white());
 
     for gateway_project in projects {
@@ -123,15 +123,15 @@ pub async fn handle_gateway(config_manager: &ConfigManager, include_inactive: bo
         // Check if project exists locally
         let (local_status, local_info) = check_project_local_status(&project.name);
         let (status_indicator, project_name_colored) = match local_status {
-            LocalStatus::Local => ("📁".green(), project.name.green().bold()),
-            LocalStatus::NotLocal => ("☁️".red(), project.name.red().bold()),
+            LocalStatus::Local => ("".green(), project.name.green().bold()),
+            LocalStatus::NotLocal => ("".red(), project.name.red().bold()),
         };
         
         println!("\n{} {} {}", status_indicator, project_name_colored, local_info.dimmed());
         println!("   {}", project.description.dimmed());
         
         if !gateway_project.your_rifts.is_empty() {
-            println!("   {} Your rifts:", "📂".yellow());
+            println!("   {} Your rifts:", "".yellow());
             for rift in &gateway_project.your_rifts {
                 let collaborators = if rift.collaborators.len() > 1 {
                     format!(" (with {})", rift.collaborators[1..].join(", "))
@@ -143,7 +143,7 @@ pub async fn handle_gateway(config_manager: &ConfigManager, include_inactive: bo
         }
 
         if !gateway_project.active_rifts.is_empty() {
-            println!("   {} Active rifts:", "⚡".yellow());
+            println!("   {} Active rifts:", "".yellow());
             for rift in &gateway_project.active_rifts {
                 let collaborators = rift.collaborators.join(", ");
                 println!("     • {} ({})", rift.name.cyan(), collaborators.dimmed());
@@ -153,11 +153,11 @@ pub async fn handle_gateway(config_manager: &ConfigManager, include_inactive: bo
         // Show beam command based on local status
         match local_status {
             LocalStatus::Local => {
-                println!("   {} Beam into: {}", "🔧".green(), format!("mothership beam \"{}\"", project.name).green());
+                println!("   {} Beam into: {}", "".green(), format!("mothership beam \"{}\"", project.name).green());
             }
             LocalStatus::NotLocal => {
-                println!("   {} Beam into: {}", "🔧".red(), format!("mothership beam \"{}\" --local-dir <path>", project.name).yellow());
-                println!("   {} {}", "💡".yellow(), "Requires --local-dir parameter (creates project directory automatically)".dimmed());
+                println!("   {} Beam into: {}", "".red(), format!("mothership beam \"{}\" --local-dir <path>", project.name).yellow());
+                println!("   {} {}", "".yellow(), "Requires --local-dir parameter (creates project directory automatically)".dimmed());
             }
         }
     }
@@ -294,7 +294,7 @@ pub async fn handle_delete(
 
     // Show warning and confirmation unless forced
     if !force {
-        println!("\n{}", "⚠️  PROJECT DELETION WARNING".red().bold());
+        println!("\n{}", " PROJECT DELETION WARNING".red().bold());
         println!("{}", format!("Project: {}", project.name.yellow().bold()));
         println!("{}", format!("Description: {}", project.description.dimmed()));
         println!("{}", format!("Project ID: {}", project.id.to_string().dimmed()));
@@ -385,7 +385,7 @@ pub async fn handle_delete(
         }
     }
 
-    println!("\n{}", "✨ Project deleted successfully!".green().bold());
+    println!("\n{}", "Project deleted successfully!".green().bold());
     println!("{}", "Your local files are safe and remain on your machine.".dimmed());
 
     Ok(())

@@ -53,7 +53,7 @@ export default function DaemonPanel() {
                 {' · '}
                 server: {status.server_connected ? <span className="ok">connected</span> : <span className="bad">disconnected</span>}
                 {' · '}
-                {status.projects_tracked} project(s) tracked, {status.files_syncing} file(s) syncing
+                {status.projects_tracked} gateway(s) tracked, {status.files_syncing} file(s) syncing
                 {' · '}
                 last sync: {status.last_sync ? new Date(status.last_sync).toLocaleString() : 'never'}
               </>

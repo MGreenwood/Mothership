@@ -328,7 +328,7 @@ class IntegrationTestRunner:
         # Script results
         report.append("## Script Results")
         for result in self.test_results:
-            status = "✓ PASSED" if result.passed else "✗ FAILED"
+            status = "PASSED" if result.passed else "FAILED"
             if not result.executed:
                 status = "- NOT EXECUTED"
                 

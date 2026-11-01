@@ -136,7 +136,7 @@ pub async fn post_chat_message(
         }
     };
 
-    info!("💬 Chat message in rift {} from {}", rift_id, user.username);
+    info!("Chat message in rift {} from {}", rift_id, user.username);
 
     let channel = format!("rift_{}", rift_id);
     let _ = broadcaster.send((

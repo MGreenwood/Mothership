@@ -4,6 +4,7 @@ import { ask, open } from '@tauri-apps/plugin-dialog'
 import TerminalTab from './TerminalTab.jsx'
 import Hub from './Hub.jsx'
 import Explorer from './Explorer.jsx'
+import ActiveRiftBar from './ActiveRiftBar.jsx'
 
 let tabCounter = 0
 const newSessionId = () => `nvim-${Date.now()}-${++tabCounter}`
@@ -16,6 +17,9 @@ export default function App() {
   const [view, setView] = useState('hub')
   const [explorerRoot, setExplorerRoot] = useState(() => localStorage.getItem(EXPLORER_ROOT_KEY))
   const activeFile = tabs.find((t) => t.key === activeKey)?.file ?? null
+  const [gateway, setGateway] = useState(null)
+  const [riftVersion, setRiftVersion] = useState(0)
+  const bumpRift = () => setRiftVersion((v) => v + 1)
 
   const changeExplorerRoot = (path) => {
     localStorage.setItem(EXPLORER_ROOT_KEY, path)
@@ -111,6 +115,8 @@ export default function App() {
         <span className="toolbar-sep" />
         <button onClick={pickFile}>Open file…</button>
         <button onClick={() => addTab({ title: 'nvim' })}>New Neovim</button>
+        <span className="toolbar-sep" />
+        <ActiveRiftBar gateway={gateway} version={riftVersion} />
       </header>
 
       {notice && (
@@ -120,7 +126,13 @@ export default function App() {
         </div>
       )}
 
-      {view === 'hub' && <Hub onOpenInEditor={openProjectFolder} />}
+      {view === 'hub' && (
+        <Hub
+          onOpenInEditor={openProjectFolder}
+          onGatewayChange={setGateway}
+          onRiftChanged={bumpRift}
+        />
+      )}
 
       <div className="editor-view" style={{ display: view === 'editor' ? 'flex' : 'none' }}>
       <Explorer

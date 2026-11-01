@@ -410,44 +410,44 @@ class TargetedAuthTester:
 
     def run_comprehensive_test(self) -> Dict:
         """Run all targeted authentication tests"""
-        print("🔐 Starting Targeted Authentication Flow Testing...")
+        print("Starting Targeted Authentication Flow Testing...")
         print("=" * 60)
         
         # Test server availability first
         try:
             response = self.session.get(f"{self.base_url}/health", timeout=5)
             if response.status_code != 200:
-                print("❌ Server not available - skipping authentication tests")
+                print("Server not available - skipping authentication tests")
                 return self.generate_report()
         except:
-            print("❌ Server not available - skipping authentication tests")
+            print("Server not available - skipping authentication tests")
             return self.generate_report()
         
-        print("✅ Server is available, running authentication tests...")
+        print("Server is available, running authentication tests...")
         
         # Run all authentication tests
-        print("\n📋 Testing Auth Check Endpoint...")
+        print("\nTesting Auth Check Endpoint...")
         self.test_auth_check_endpoint()
         
-        print("\n📋 Testing OAuth Test Endpoint...")
+        print("\nTesting OAuth Test Endpoint...")
         self.test_oauth_test_endpoint()
         
-        print("\n📋 Testing OAuth Start Endpoint...")
+        print("\nTesting OAuth Start Endpoint...")
         self.test_oauth_start_endpoint()
         
-        print("\n📋 Testing OAuth Callback Endpoints...")
+        print("\nTesting OAuth Callback Endpoints...")
         self.test_oauth_callback_endpoints()
         
-        print("\n📋 Testing Auth Finalize Endpoint...")
+        print("\nTesting Auth Finalize Endpoint...")
         self.test_auth_finalize_endpoint()
         
-        print("\n📋 Testing Protected API Endpoints...")
+        print("\nTesting Protected API Endpoints...")
         self.test_protected_api_endpoints()
         
-        print("\n📋 Testing JWT Token Handling...")
+        print("\nTesting JWT Token Handling...")
         self.test_jwt_token_handling()
         
-        print("\n📋 Testing Session Persistence...")
+        print("\nTesting Session Persistence...")
         self.test_session_persistence()
         
         return self.generate_report()
@@ -470,7 +470,7 @@ class TargetedAuthTester:
         }
         
         print("\n" + "=" * 60)
-        print("🔐 TARGETED AUTHENTICATION TEST RESULTS")
+        print("TARGETED AUTHENTICATION TEST RESULTS")
         print("=" * 60)
         print(f"Total Tests: {total_tests}")
         print(f"Passed: {passed_tests}")
@@ -478,7 +478,7 @@ class TargetedAuthTester:
         print(f"Success Rate: {report['summary']['success_rate']:.1f}%")
         
         if failed_tests > 0:
-            print(f"\n❌ Failed Tests:")
+            print(f"\nFailed Tests:")
             for result in self.test_results:
                 if not result['success']:
                     print(f"  - {result['test']}: {result['details']}")
@@ -502,7 +502,7 @@ def main():
     if args.output:
         with open(args.output, 'w') as f:
             json.dump(results, f, indent=2)
-        print(f"\n📄 Results saved to: {args.output}")
+        print(f"\nResults saved to: {args.output}")
     
     # Return exit code based on test results
     return 0 if results['summary']['failed'] == 0 else 1

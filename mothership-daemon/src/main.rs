@@ -6,6 +6,7 @@ mod daemon;
 mod file_watcher;
 mod ipc_server;
 mod project_scanner;
+mod snapshots;
 mod system_tray;
 mod windows_service;
 
@@ -21,7 +22,7 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    info!("🚀 Mothership Daemon starting...");
+    info!("Mothership Daemon starting...");
 
     // Parse command line arguments
     let args: Vec<String> = env::args().collect();
@@ -33,8 +34,8 @@ async fn main() -> Result<()> {
             {
                 info!("Installing Mothership Daemon as Windows service...");
                 windows_service::install_service()?;
-                println!("✅ Mothership Daemon service installed successfully!");
-                println!("💡 Use 'sc start MothershipDaemon' to start the service");
+                println!("Mothership Daemon service installed successfully!");
+                println!("Use 'sc start MothershipDaemon' to start the service");
             }
             #[cfg(not(windows))]
             {
@@ -47,7 +48,7 @@ async fn main() -> Result<()> {
             {
                 info!("Uninstalling Mothership Daemon Windows service...");
                 windows_service::uninstall_service()?;
-                println!("✅ Mothership Daemon service uninstalled successfully!");
+                println!("Mothership Daemon service uninstalled successfully!");
             }
             #[cfg(not(windows))]
             {
@@ -76,9 +77,9 @@ async fn main() -> Result<()> {
             // Create and start the daemon
             let daemon = MothershipDaemon::new().await?;
             
-            info!("✅ Mothership Daemon started successfully!");
-            info!("🔍 Scanning for Mothership projects...");
-            info!("🎯 System tray icon should appear in notification area");
+            info!("Mothership Daemon started successfully!");
+            info!("Scanning for Mothership projects...");
+            info!("System tray icon should appear in notification area");
             
             // Run the daemon
             daemon.run().await?;

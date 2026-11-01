@@ -72,7 +72,7 @@ pub async fn handle_update(args: UpdateArgs) -> Result<()> {
     let current_version = env!("CARGO_PKG_VERSION");
     let platform = detect_platform();
     
-    println!("{}", "🔍 Getting latest version...".blue());
+    println!("{}", "Getting latest version...".blue());
     println!("Current version: {}", current_version.green());
     println!("Platform: {}", platform.cyan());
     println!("Server: {}", server_url.cyan());
@@ -92,32 +92,32 @@ pub async fn handle_update(args: UpdateArgs) -> Result<()> {
     let target_version = args.version.unwrap_or(latest_version.clone());
     
     if !update_available && !args.force && !version_specified {
-        println!("{}", "✅ You're running the latest version!".green());
+        println!("{}", "You're running the latest version!".green());
         return Ok(());
     }
     
     if args.check_only {
         if update_available || version_specified {
-            println!("{}", format!("🆕 Update available: {} → {}", 
+            println!("{}", format!("Update available: {} → {}", 
                 current_version, target_version).yellow());
             
             if target_version == latest_version && !latest_info.changes.is_empty() {
-                println!("\n📝 Changes:");
+                println!("\nChanges:");
                 for change in &latest_info.changes {
                     println!("  • {}", change);
                 }
             }
             
-            println!("\n💡 Run 'mothership update' to install the update");
+            println!("\nRun 'mothership update' to install the update");
         } else {
-            println!("{}", "✅ No updates available".green());
+            println!("{}", "No updates available".green());
         }
         return Ok(());
     }
     
     // Perform update if needed or forced
     if args.force || update_available || version_specified {
-        println!("{}", format!("⬇️  Updating to version {}...", target_version).yellow());
+        println!("{}", format!("⬇ Updating to version {}...", target_version).yellow());
         
 
         
@@ -131,12 +131,12 @@ pub async fn handle_update(args: UpdateArgs) -> Result<()> {
         // A CLI self-update exits the process inside download_and_install_update; its batch script restarts the daemon in that case.
         if restart_daemon {
             if let Err(e) = crate::beam::ensure_daemon_running().await {
-                println!("⚠️  Could not restart daemon: {}", e);
+                println!(" Could not restart daemon: {}", e);
             }
         }
         
-        println!("{}", "✅ Update completed successfully!".green());
-        println!("🔄 Please restart any running mothership processes");
+        println!("{}", "Update completed successfully!".green());
+        println!("Please restart any running mothership processes");
     }
     
     Ok(())
@@ -228,7 +228,7 @@ async fn list_available_versions(server_url: &str) -> Result<()> {
 
     match api_response {
         ApiResponse { success: true, data: Some(versions), .. } => {
-            println!("{}", "📦 Available versions:".blue());
+            println!("{}", "Available versions:".blue());
             println!();
             
             for version in versions.iter().rev() { // Show newest first
@@ -296,10 +296,10 @@ async fn download_and_install_update(
         return Err(anyhow::anyhow!("Daemon binary not found on server for version {} ({})", version, platform));
     }
     
-    println!("⬇️  Downloading CLI...");
+    println!("⬇ Downloading CLI...");
     download_binary_safe(&client, server_url, version, platform, cli_binary, &token).await?;
     
-    println!("⬇️  Downloading daemon...");
+    println!("⬇ Downloading daemon...");
     download_binary_safe(&client, server_url, version, platform, daemon_binary, &token).await?;
     
     // Handle self-update for CLI binary
@@ -324,7 +324,7 @@ fn is_self_update(install_path: &PathBuf) -> Result<bool> {
 
 /// Perform a self-update using a restart script
 async fn perform_self_update(install_path: &PathBuf, daemon_restart_path: Option<PathBuf>) -> Result<()> {
-    println!("🔄 This is a self-update. Creating restart script...");
+    println!("This is a self-update. Creating restart script...");
     
     let temp_dir = std::env::temp_dir();
     let new_binary_path = temp_dir.join("mothership-new.exe");
@@ -368,8 +368,8 @@ pause\r\n",
     file.write_all(restart_script.as_bytes())?;
     file.flush()?;
     
-    println!("✅ Update downloaded successfully!");
-    println!("🔄 Running update script...");
+    println!("Update downloaded successfully!");
+    println!("Running update script...");
 
     // Start the daemon before this process exits; the new binary is already in place.
     if let Some(path) = daemon_restart_path {
@@ -397,7 +397,7 @@ async fn stop_daemon_for_update() -> Result<bool> {
         return Ok(false);
     }
 
-    println!("⏹️  Stopping daemon before update...");
+    println!(" Stopping daemon before update...");
     let _ = client.post("http://localhost:7525/shutdown").send().await;
 
     for _ in 0..30 {
@@ -460,7 +460,7 @@ async fn download_binary_safe(
         
         // Write new binary to temp location
         fs::write(&temp_path, binary_data)?;
-        println!("✅ Downloaded to temp location: {}", temp_path.display());
+        println!("Downloaded to temp location: {}", temp_path.display());
     } else {
         // For non-self-update (like daemon), proceed normally
         // Create backup of current binary
@@ -483,7 +483,7 @@ async fn download_binary_safe(
             fs::set_permissions(&install_path, perms)?;
         }
         
-        println!("✅ Updated: {}", install_path.display());
+        println!("Updated: {}", install_path.display());
     }
     
     Ok(())

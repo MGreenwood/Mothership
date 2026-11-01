@@ -6,7 +6,7 @@ import WormholePanel from './WormholePanel.jsx'
 
 const errText = (e) => (typeof e === 'string' ? e : e?.message ?? String(e))
 
-export default function Hub({ onOpenInEditor }) {
+export default function Hub({ onOpenInEditor, onGatewayChange, onRiftChanged }) {
   const [health, setHealth] = useState(null)
   const [projects, setProjects] = useState([])
   const [selected, setSelected] = useState(null)
@@ -21,6 +21,10 @@ export default function Hub({ onOpenInEditor }) {
   const [auth, setAuth] = useState(null)
   const [authProvider, setAuthProvider] = useState(null)
   const [authToken, setAuthToken] = useState('')
+
+  useEffect(() => {
+    onGatewayChange?.(selected)
+  }, [selected, onGatewayChange])
 
   const run = async (label, fn) => {
     setBusy(true)
@@ -127,7 +131,7 @@ export default function Hub({ onOpenInEditor }) {
       })
     })
 
-  const beamProject = async (project) => {
+  const beamProject = async (project, riftId = null) => {
     let localDir = null
     if (!project.local_path) {
       const parent = await open({ directory: true, multiple: false })
@@ -137,8 +141,9 @@ export default function Hub({ onOpenInEditor }) {
     setBusy(true)
     setMessage(null)
     try {
-      const res = await invoke('hub_beam', { projectId: project.id, localDir })
+      const res = await invoke('hub_beam', { projectId: project.id, localDir, riftId })
       await loadProjects()
+      onRiftChanged?.()
       const parts = [
         `Beamed "${res.project_name}" to ${res.local_path}: ${res.downloaded} file(s) downloaded`,
       ]
@@ -158,7 +163,7 @@ export default function Hub({ onOpenInEditor }) {
   const deleteProject = async (project) => {
     const yes = await ask(
       `Delete "${project.name}" from the server? This removes the server copy only. Local files are not touched.`,
-      { title: 'Delete project', kind: 'warning' },
+      { title: 'Delete gateway', kind: 'warning' },
     )
     if (!yes) return
     await run(`Deleted "${project.name}" from the server`, async () => {
@@ -187,6 +192,7 @@ export default function Hub({ onOpenInEditor }) {
   const switchRift = (rift) =>
     run(`Switched server to rift "${rift.name}". Daemon reconnect is not wired yet.`, async () => {
       await invoke('hub_switch_rift', { projectId: selected.id, riftName: rift.name })
+      onRiftChanged?.()
     })
 
   const createCheckpoint = () =>
@@ -290,8 +296,8 @@ export default function Hub({ onOpenInEditor }) {
       <DaemonPanel />
 
       <section className="card">
-        <h3>Projects</h3>
-        {projects.length === 0 && <p className="muted">No projects on the server.</p>}
+        <h3>Gateways</h3>
+        {projects.length === 0 && <p className="muted">No gateways on the server.</p>}
         <ul className="list">
           {projects.map((p) => (
             <li key={p.id} className={selected?.id === p.id ? 'selected' : ''}>
@@ -311,7 +317,7 @@ export default function Hub({ onOpenInEditor }) {
           ))}
         </ul>
 
-        <h4>New project from folder</h4>
+        <h4>New gateway from folder</h4>
         <div className="form-row">
           <input
             placeholder="Name"
@@ -325,7 +331,7 @@ export default function Hub({ onOpenInEditor }) {
           />
           <button onClick={pickFolder}>Choose folder…</button>
           <span className="muted path">{newProject.folder || 'No folder selected'}</span>
-          <button onClick={createProject} disabled={busy}>Create project</button>
+          <button onClick={createProject} disabled={busy}>Create gateway</button>
         </div>
       </section>
 
@@ -384,7 +390,14 @@ export default function Hub({ onOpenInEditor }) {
             </ul>
           </section>
 
-          <WormholePanel project={selected} rifts={rifts} />
+          <WormholePanel
+            project={selected}
+            rifts={rifts}
+            onBeamRift={(riftId) => {
+              const current = projects.find((p) => p.id === selected.id)
+              if (current) beamProject(current, riftId)
+            }}
+          />
         </>
       )}
     </div>

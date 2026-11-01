@@ -10,12 +10,12 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-echo -e "${BOLD}🔨 Building Mothership CLI for Distribution${NC}"
+echo -e "${BOLD}Building Mothership CLI for Distribution${NC}"
 echo ""
 
 # Get version from Cargo.toml
 VERSION=$(grep '^version = ' mothership-cli/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-echo -e "${BLUE}📦 Building version: ${VERSION}${NC}"
+echo -e "${BLUE}Building version: ${VERSION}${NC}"
 
 # Create distribution directory
 DIST_DIR="cli-binaries/${VERSION}"
@@ -31,14 +31,14 @@ TARGETS=(
 )
 
 # Install cross-compilation targets
-echo -e "${YELLOW}📥 Installing cross-compilation targets...${NC}"
+echo -e "${YELLOW}Installing cross-compilation targets...${NC}"
 for target in "${TARGETS[@]}"; do
     rustup target add "$target" || echo "Target $target may already be installed"
 done
 
 # Install cross for Linux ARM64 builds
 if ! command -v cross &> /dev/null; then
-    echo -e "${YELLOW}📥 Installing cross for cross-compilation...${NC}"
+    echo -e "${YELLOW}Installing cross for cross-compilation...${NC}"
     cargo install cross --git https://github.com/cross-rs/cross
 fi
 
@@ -46,7 +46,7 @@ echo ""
 
 # Build for each target
 for target in "${TARGETS[@]}"; do
-    echo -e "${BLUE}🔨 Building for ${target}...${NC}"
+    echo -e "${BLUE}Building for ${target}...${NC}"
     
     # Create target directory
     mkdir -p "$DIST_DIR/$target"
@@ -82,13 +82,13 @@ for target in "${TARGETS[@]}"; do
     cp "target/$target/release/$CLI_BINARY" "$DIST_DIR/$target/"
     cp "target/$target/release/$DAEMON_BINARY" "$DIST_DIR/$target/"
     
-    echo -e "${GREEN}  ✅ $target complete${NC}"
+    echo -e "${GREEN}  $target complete${NC}"
 done
 
 echo ""
-echo -e "${GREEN}✅ All builds completed!${NC}"
+echo -e "${GREEN}All builds completed!${NC}"
 echo ""
-echo -e "${YELLOW}📁 Distribution directory: ${DIST_DIR}${NC}"
+echo -e "${YELLOW}Distribution directory: ${DIST_DIR}${NC}"
 echo ""
 echo -e "${BLUE}Directory structure:${NC}"
 find "$DIST_DIR" -type f | sort

@@ -10,7 +10,7 @@ pub struct ProjectScanner {
 impl ProjectScanner {
     /// Create a new project scanner
     pub async fn new() -> Result<Self> {
-        info!("📁 Initializing project scanner...");
+        info!("Initializing project scanner...");
         Ok(Self {})
     }
 
@@ -25,7 +25,7 @@ impl ProjectScanner {
         // - Documents
         // And look for .mothership directories or common project patterns
         
-        info!("🔍 Scanning for Mothership projects...");
+        info!("Scanning for Mothership projects...");
         Ok(vec![])
     }
 } 

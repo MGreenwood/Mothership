@@ -61,7 +61,7 @@ impl FileDebouncer {
         
         if let Some(&last_time) = self.last_event_time.get(path) {
             if now.duration_since(last_time) < DEBOUNCE_INTERVAL {
-                debug!("⏳ Debouncing file event for {}", path.display());
+                debug!("Debouncing file event for {}", path.display());
                 return false;
             }
         }
@@ -125,7 +125,7 @@ impl FileWatcher {
         project_id: Uuid,
         change_sender: async_mpsc::UnboundedSender<FileChangeEvent>,
     ) -> Result<Self> {
-        info!("🔍 Setting up file watcher for project {} at {}", 
+        info!("Setting up file watcher for project {} at {}", 
             project_id, project_path.display());
         
         // Validate project path
@@ -146,29 +146,29 @@ impl FileWatcher {
         // Spawn async task to bridge sync -> async channels
         let async_sender = change_sender.clone();
         tokio::spawn(async move {
-            info!("🌉 Starting async/sync bridge for file watcher");
+            info!("Starting async/sync bridge for file watcher");
             // Convert sync receiver to iterator and process events
             while let Ok(event) = sync_rx.recv() {
-                debug!("🔄 Forwarding file change event through async bridge");
+                debug!("Forwarding file change event through async bridge");
                 if let Err(e) = async_sender.send(event) {
                     error!("Failed to forward file change event to daemon: {}", e);
                     break; // Channel closed, stop the bridge
                 }
             }
-            info!("🌉 Async/sync bridge stopped");
+            info!("Async/sync bridge stopped");
         });
         
         // Spawn background task to handle file system events
         let project_path_clone = project_path.clone();
         tokio::task::spawn_blocking(move || {
-            info!("👀 File watcher blocking task started for project {}", project_id);
+            info!("File watcher blocking task started for project {}", project_id);
             let mut debouncer = FileDebouncer::new();
             let mut cleanup_counter = 0;
             
             for res in fs_rx {
                 match res {
                     Ok(event) => {
-                        debug!("🔔 Received file system event: {:?}", event.kind);
+                        debug!("Received file system event: {:?}", event.kind);
                         if let Err(e) = handle_file_event(
                             &event, 
                             &project_path_clone, 
@@ -188,10 +188,10 @@ impl FileWatcher {
                     debouncer.cleanup_old_entries();
                 }
             }
-            info!("🔍 File watcher stopped for project {}", project_id);
+            info!("File watcher stopped for project {}", project_id);
         });
         
-        info!("✅ File watcher started for project {} at {}", 
+        info!("File watcher started for project {} at {}", 
             project_id, project_path.display());
         
         Ok(Self {
@@ -267,7 +267,7 @@ fn handle_file_event(
 
         // DYNAMIC FLOOD DETECTION: Suppress if file is being changed too frequently
         if debouncer.is_flooding(&relative_path) {
-            warn!("🚨 Suppressing file event flood for {} (too many changes in short time)", relative_path.display());
+            warn!("Suppressing file event flood for {} (too many changes in short time)", relative_path.display());
             continue;
         }
         
@@ -282,7 +282,7 @@ fn handle_file_event(
         
         // Check file size and determine sync strategy
         if file_size > STREAMING_THRESHOLD {
-            debug!("📡 File {} ({} bytes) exceeds streaming threshold, will use streaming", 
+            debug!("File {} ({} bytes) exceeds streaming threshold, will use streaming", 
                 path.display(), file_size);
             
             // For now, create event without content - streaming will be handled in daemon
@@ -301,7 +301,7 @@ fn handle_file_event(
             }
             continue;
         } else if file_size > MAX_DIRECT_SYNC_SIZE {
-            debug!("⚠️ Skipping file {} ({} bytes > {} bytes direct sync limit, < {} bytes streaming threshold)", 
+            debug!("Skipping file {} ({} bytes > {} bytes direct sync limit, < {} bytes streaming threshold)", 
                 path.display(), file_size, MAX_DIRECT_SYNC_SIZE, STREAMING_THRESHOLD);
             continue;
         }
@@ -324,7 +324,7 @@ fn handle_file_event(
             }
         };
         
-        info!("📝 File changed in project {}: {} ({} bytes)", 
+        info!("File changed in project {}: {} ({} bytes)", 
             project_id, relative_path.display(), file_size);
         
         let change_event = FileChangeEvent {

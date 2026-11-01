@@ -7,7 +7,7 @@ const errText = (e) => (typeof e === 'string' ? e : e?.message ?? String(e))
 
 const WATCH_INTERVAL_MS = 3000
 
-export default function WormholePanel({ project, rifts }) {
+export default function WormholePanel({ project, rifts, onBeamRift }) {
   const [wormholes, setWormholes] = useState([])
   const [activeId, setActiveId] = useState(null)
   const [detail, setDetail] = useState(null)
@@ -143,10 +143,21 @@ export default function WormholePanel({ project, rifts }) {
         parentDir: parent,
       })
       const unsafe = res.skipped_unsafe.length
-      succeed(
-        `Beamed ${res.written} file(s) to ${res.folder}${unsafe ? `. ${unsafe} unsafe path(s) skipped` : ''}`,
-      )
+      const text = `Beamed ${res.written} file(s) to ${res.folder}${unsafe ? `. ${unsafe} unsafe path(s) skipped` : ''}`
+      if (res.daemon_warning) {
+        setMessage({
+          kind: 'error',
+          text: `${text}. The daemon will not clean this snapshot up automatically: ${res.daemon_warning}`,
+        })
+      } else {
+        succeed(text)
+      }
     })
+
+  const beamConvertedRift = () => {
+    if (!detail?.converted_rift_id) return
+    onBeamRift?.(detail.converted_rift_id)
+  }
 
   const dissolve = () =>
     run(async () => {
@@ -203,7 +214,7 @@ export default function WormholePanel({ project, rifts }) {
     return (
       <section className="card">
         <h3>Wormholes</h3>
-        <p className="muted">Select a project to see its wormholes.</p>
+        <p className="muted">Select a gateway to see its wormholes.</p>
       </section>
     )
   }
@@ -239,7 +250,7 @@ export default function WormholePanel({ project, rifts }) {
         <button onClick={createWormhole} disabled={busy || picked.length < 2}>Create wormhole</button>
       </div>
       <div className="form-row">
-        {rifts.length === 0 && <span className="muted">No rifts in this project.</span>}
+        {rifts.length === 0 && <span className="muted">No rifts in this gateway.</span>}
         {rifts.map((r) => (
           <label key={r.id}>
             <input
@@ -319,9 +330,15 @@ export default function WormholePanel({ project, rifts }) {
 
           <div className="row">
             <button onClick={loadChanges} disabled={busy}>View changes</button>
-            <button onClick={beam} disabled={busy || conflictCount > 0} title={conflictCount ? 'Resolve all conflicts first' : ''}>
-              Beam to folder…
-            </button>
+            {detail.converted_rift_id ? (
+              <button onClick={beamConvertedRift} disabled={busy} title="Joins the rift this wormhole converged into and writes it to the project folder">
+                Beam converted rift
+              </button>
+            ) : (
+              <button onClick={beam} disabled={busy || conflictCount > 0} title={conflictCount ? 'Resolve all conflicts first' : ''}>
+                Beam to folder…
+              </button>
+            )}
             {isActive && !confirmDissolve && (
               <button className="danger" onClick={() => setConfirmDissolve(true)} disabled={busy}>Dissolve</button>
             )}

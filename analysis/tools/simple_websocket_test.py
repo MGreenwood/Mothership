@@ -19,7 +19,7 @@ async def test_websocket_connection():
         uri = "ws://localhost:8080/ws"
         
         async with websockets.connect(uri) as websocket:
-            print(f"✓ Connected to {uri}")
+            print(f"Connected to {uri}")
             
             # Send a test message
             test_message = {
@@ -30,7 +30,7 @@ async def test_websocket_connection():
             
             send_time = time.time()
             await websocket.send(json.dumps(test_message))
-            print("✓ Sent test message")
+            print("Sent test message")
             
             # Try to receive a response
             try:
@@ -38,7 +38,7 @@ async def test_websocket_connection():
                 receive_time = time.time()
                 latency_ms = (receive_time - send_time) * 1000
                 
-                print(f"✓ Received response in {latency_ms:.2f}ms")
+                print(f"Received response in {latency_ms:.2f}ms")
                 print(f"Response: {response[:100]}...")
                 
                 return {
@@ -48,7 +48,7 @@ async def test_websocket_connection():
                 }
                 
             except asyncio.TimeoutError:
-                print("⚠ No response received within 5 seconds")
+                print("No response received within 5 seconds")
                 return {
                     "success": True,  # Connection worked, just no response
                     "latency_ms": None,
@@ -57,7 +57,7 @@ async def test_websocket_connection():
                 }
                 
     except Exception as e:
-        print(f"✗ Connection failed: {e}")
+        print(f"Connection failed: {e}")
         return {
             "success": False,
             "error": str(e)
@@ -122,7 +122,7 @@ async def test_multiple_messages():
                 }
                 
     except Exception as e:
-        print(f"✗ Multiple message test failed: {e}")
+        print(f"Multiple message test failed: {e}")
         return {
             "success": False,
             "error": str(e)
@@ -162,7 +162,7 @@ async def test_simultaneous_connections():
     
     for result in results:
         if isinstance(result, dict):
-            status = "✓" if result.get("success", False) else "✗"
+            status = "" if result.get("success", False) else ""
             print(f"  Client {result.get('client_id', '?')}: {status}")
         else:
             print(f"  Exception: {result}")

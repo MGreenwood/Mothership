@@ -35,9 +35,9 @@ impl OAuthService {
         let google_client_id = std::env::var("GOOGLE_CLIENT_ID");
         let google_client_secret = std::env::var("GOOGLE_CLIENT_SECRET");
         
-        println!("🔍 OAuth Debug - Google Client ID: {:?}", google_client_id.as_ref().map(|s| format!("{}...", &s[..10.min(s.len())])));
-        println!("🔍 OAuth Debug - Google Client Secret: {:?}", google_client_secret.as_ref().map(|s| format!("{}...", &s[..10.min(s.len())])));
-        println!("🔍 OAuth Debug - Base URL: {}", oauth_base_url);
+        println!("OAuth Debug - Google Client ID: {:?}", google_client_id.as_ref().map(|s| format!("{}...", &s[..10.min(s.len())])));
+        println!("OAuth Debug - Google Client Secret: {:?}", google_client_secret.as_ref().map(|s| format!("{}...", &s[..10.min(s.len())])));
+        println!("OAuth Debug - Base URL: {}", oauth_base_url);
         
         if let (Ok(client_id), Ok(client_secret)) = (google_client_id, google_client_secret) {
             let google_config = OAuthConfig {
@@ -52,9 +52,9 @@ impl OAuthService {
                 user_info_url: "https://www.googleapis.com/oauth2/v2/userinfo".to_string(),
             };
             providers.insert(OAuthProvider::Google, google_config);
-            println!("✅ Google OAuth provider configured successfully");
+            println!("Google OAuth provider configured successfully");
         } else {
-            println!("❌ Google OAuth provider not configured - missing environment variables");
+            println!("Google OAuth provider not configured - missing environment variables");
         }
 
         // Configure GitHub OAuth

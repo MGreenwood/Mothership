@@ -15,10 +15,10 @@ def run_command(command, description):
     print(f"Running: {description}")
     try:
         result = subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
-        print(f"✓ {description} completed successfully")
+        print(f"{description} completed successfully")
         return result.stdout
     except subprocess.CalledProcessError as e:
-        print(f"✗ {description} failed: {e}")
+        print(f"{description} failed: {e}")
         print(f"Error output: {e.stderr}")
         return None
 
@@ -27,7 +27,7 @@ def check_python_version():
     if sys.version_info < (3, 8):
         print("Error: Python 3.8 or higher is required")
         sys.exit(1)
-    print(f"✓ Python {sys.version_info.major}.{sys.version_info.minor} detected")
+    print(f"Python {sys.version_info.major}.{sys.version_info.minor} detected")
 
 def install_python_dependencies():
     """Install Python dependencies."""
@@ -49,11 +49,11 @@ def check_rust_toolchain():
     
     rust_version = run_command("rustc --version", "Checking Rust compiler")
     if rust_version:
-        print(f"✓ Rust toolchain available: {rust_version.strip()}")
+        print(f"Rust toolchain available: {rust_version.strip()}")
         
         cargo_version = run_command("cargo --version", "Checking Cargo")
         if cargo_version:
-            print(f"✓ Cargo available: {cargo_version.strip()}")
+            print(f"Cargo available: {cargo_version.strip()}")
     else:
         print("Warning: Rust toolchain not found. Some code analysis features may be limited.")
         print("Install Rust from: https://rustup.rs/")
@@ -64,11 +64,11 @@ def check_docker():
     
     docker_version = run_command("docker --version", "Checking Docker")
     if docker_version:
-        print(f"✓ Docker available: {docker_version.strip()}")
+        print(f"Docker available: {docker_version.strip()}")
         
         compose_version = run_command("docker compose version", "Checking Docker Compose")
         if compose_version:
-            print(f"✓ Docker Compose available: {compose_version.strip()}")
+            print(f"Docker Compose available: {compose_version.strip()}")
     else:
         print("Warning: Docker not found. Deployment testing will be limited.")
 
@@ -83,7 +83,7 @@ def check_powershell():
         ps_version = run_command("powershell -Command '$PSVersionTable.PSVersion'", "Checking Windows PowerShell")
     
     if ps_version:
-        print(f"✓ PowerShell available")
+        print(f"PowerShell available")
     else:
         print("Warning: PowerShell not found. Integration tests may be limited.")
 
@@ -106,7 +106,7 @@ def create_analysis_directories():
     for directory in directories:
         dir_path = base_dir / directory
         dir_path.mkdir(parents=True, exist_ok=True)
-        print(f"✓ Created directory: {directory}")
+        print(f"Created directory: {directory}")
 
 def validate_configuration():
     """Validate configuration files."""
@@ -124,11 +124,11 @@ def validate_configuration():
             try:
                 with open(config_path, 'r') as f:
                     json.load(f)
-                print(f"✓ Configuration file valid: {config_file}")
+                print(f"Configuration file valid: {config_file}")
             except json.JSONDecodeError as e:
-                print(f"✗ Configuration file invalid: {config_file} - {e}")
+                print(f"Configuration file invalid: {config_file} - {e}")
         else:
-            print(f"✗ Configuration file missing: {config_file}")
+            print(f"Configuration file missing: {config_file}")
 
 def setup_git_hooks():
     """Set up git hooks for analysis tracking."""
@@ -137,7 +137,7 @@ def setup_git_hooks():
     # Check if we're in a git repository
     git_dir = Path(__file__).parent.parent / ".git"
     if git_dir.exists():
-        print("✓ Git repository detected")
+        print("Git repository detected")
         # Could add pre-commit hooks here if needed
     else:
         print("Warning: Not in a git repository")

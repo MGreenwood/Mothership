@@ -90,21 +90,21 @@ async fn main() -> anyhow::Result<()> {
 
     // Load server configuration
     let config = ServerConfig::load_from_file("server.config")?;
-    info!("🔧 Loaded server configuration");
+    info!("Loaded server configuration");
 
     // Load whitelist if enabled
     let whitelist = config.load_whitelist()?;
     if let Some(ref whitelist) = whitelist {
-        info!("📋 Loaded whitelist");
+        info!("Loaded whitelist");
     }
 
     // Set up database connection
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://postgres:mothership_dev@db:5432/mothership".to_string());
 
-    info!("🗄️ Connecting to database...");
+    info!("Connecting to database...");
     let db = Database::new(&database_url).await?;
-    info!("✅ Database connected");
+    info!("Database connected");
 
     // Ensure database schema exists with retry/backoff (idempotent)
     {
@@ -115,7 +115,7 @@ async fn main() -> anyhow::Result<()> {
             attempts += 1;
             match db.ensure_schema().await {
                 Ok(_) => {
-                    info!("✅ Database schema ensured");
+                    info!("Database schema ensured");
                     schema_ok = true;
                     break;
                 }
@@ -138,9 +138,9 @@ async fn main() -> anyhow::Result<()> {
     let storage_root = std::env::var("STORAGE_ROOT")
         .unwrap_or_else(|_| "storage".to_string());
 
-    info!("📦 Initializing storage engine at {}", storage_root);
+    info!("Initializing storage engine at {}", storage_root);
     let storage = Arc::new(StorageEngine::new(storage_root.into()).await?);
-    info!("✅ Storage engine initialized");
+    info!("Storage engine initialized");
 
     // Initialize services
     let auth = AuthService::new(
@@ -173,7 +173,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Check if dual port mode is enabled
     if let Some(web_port) = config.server.web_port {
-        info!("🚀 Starting Mothership in dual port mode");
+        info!("Starting Mothership in dual port mode");
         
         // Create API router (no web UI routes)
         let api_router = create_api_router(state.clone());
@@ -183,11 +183,11 @@ async fn main() -> anyhow::Result<()> {
         
         // Start API server
         let api_addr = std::net::SocketAddr::new(host, config.server.port);
-        info!("🔧 API Server listening on {}", api_addr);
+        info!("API Server listening on {}", api_addr);
         
         // Start Web UI server
         let web_addr = std::net::SocketAddr::new(host, web_port);
-        info!("🌐 Web UI Server listening on {}", web_addr);
+        info!("Web UI Server listening on {}", web_addr);
         
         // Start both servers concurrently
         let api_listener = tokio::net::TcpListener::bind(api_addr).await?;
@@ -199,13 +199,13 @@ async fn main() -> anyhow::Result<()> {
         // Run both servers concurrently
         tokio::try_join!(api_server, web_server)?;
     } else {
-        info!("🚀 Starting Mothership in single port mode");
+        info!("Starting Mothership in single port mode");
         
         // Single port mode: create combined router with all routes
         let app = create_combined_router(state);
         let addr = std::net::SocketAddr::new(host, config.server.port);
         
-        info!("🚀 Mothership Server listening on {}", addr);
+        info!("Mothership Server listening on {}", addr);
         
         let listener = tokio::net::TcpListener::bind(addr).await?;
         axum::serve(listener, app).await?;
@@ -492,7 +492,7 @@ async fn auth_check(
                         let email = claims.email.clone().unwrap_or_else(|| format!("{}@oauth.mothership", claims.username));
                         match state.db.create_user_with_id(user_id, claims.username.clone(), email, UserRole::User).await {
                             Ok(recreated_user) => {
-                                info!("✅ Successfully recreated OAuth user: {} (ID: {})", recreated_user.username, recreated_user.id);
+                                info!("Successfully recreated OAuth user: {} (ID: {})", recreated_user.username, recreated_user.id);
                                 
                                 let response = AuthCheckResponse {
                                     authenticated: true,
@@ -505,7 +505,7 @@ async fn auth_check(
                                 Ok(Json(ApiResponse::success(response)))
                             }
                             Err(e) => {
-                                error!("❌ Failed to recreate OAuth user: {}", e);
+                                error!("Failed to recreate OAuth user: {}", e);
                                 Err(StatusCode::INTERNAL_SERVER_ERROR)
                             }
                         }
@@ -553,18 +553,18 @@ async fn oauth_start(
     State(state): State<AppState>,
     Json(req): Json<OAuthRequest>,
 ) -> Result<Json<ApiResponse<OAuthResponse>>, StatusCode> {
-    info!("🔐 OAuth start request for provider: {:?} from {:?} source on machine: {}", req.provider, req.source, req.machine_id);
-    info!("🔐 Callback URL: {:?}", req.callback_url);
+    info!("OAuth start request for provider: {:?} from {:?} source on machine: {}", req.provider, req.source, req.machine_id);
+    info!("Callback URL: {:?}", req.callback_url);
     
     // Check if OAuth is enabled
     if !state.config.features.oauth_enabled {
-        error!("❌ OAuth request received but OAuth is disabled in config");
+        error!("OAuth request received but OAuth is disabled in config");
         return Ok(Json(ApiResponse::error("OAuth is disabled".to_string())));
     }
     
     match state.oauth.get_authorization_url(req.provider, req.source, req.callback_url).await {
         Ok((auth_url, csrf_state)) => {
-            info!("✅ Generated OAuth URL: {}", auth_url);
+            info!("Generated OAuth URL: {}", auth_url);
             let response = OAuthResponse {
                 auth_url,
                 state: csrf_state,
@@ -573,7 +573,7 @@ async fn oauth_start(
             Ok(Json(ApiResponse::success(response)))
         }
         Err(e) => {
-            error!("❌ OAuth start failed: {}", e);
+            error!("OAuth start failed: {}", e);
             Ok(Json(ApiResponse::error(format!("OAuth initialization failed: {}", e))))
         }
     }
@@ -601,24 +601,24 @@ async fn oauth_callback_handler(
     query: axum::extract::Query<std::collections::HashMap<String, String>>,
     provider: OAuthProvider,
 ) -> Result<Response, StatusCode> {
-    info!("🔄 OAuth callback received for {:?}", provider);
-    info!("📋 Callback query params: {:?}", query.iter().map(|(k, v)| (k, if k == "code" { "***" } else { v })).collect::<Vec<_>>());
+    info!("OAuth callback received for {:?}", provider);
+    info!("Callback query params: {:?}", query.iter().map(|(k, v)| (k, if k == "code" { "***" } else { v })).collect::<Vec<_>>());
     
     let code = query.get("code")
         .ok_or_else(|| {
-            error!("❌ OAuth callback missing 'code' parameter");
+            error!("OAuth callback missing 'code' parameter");
             StatusCode::BAD_REQUEST
         })?
         .clone();
     
     let csrf_state = query.get("state")
         .ok_or_else(|| {
-            error!("❌ OAuth callback missing 'state' parameter");
+            error!("OAuth callback missing 'state' parameter");
             StatusCode::BAD_REQUEST
         })?
         .clone();
     
-    info!("✅ OAuth callback has required parameters");
+    info!("OAuth callback has required parameters");
 
     match state.oauth.exchange_code(code, csrf_state).await {
         Ok((profile, source, callback_url)) => {
@@ -634,7 +634,7 @@ async fn oauth_callback_handler(
             // Robust user matching and creation logic
             let user = match find_or_create_oauth_user(&state.db, &profile, &provider).await {
                 Ok(user) => {
-                    info!("✅ Successfully resolved OAuth user: {} ({})", user.username, user.email);
+                    info!("Successfully resolved OAuth user: {} ({})", user.username, user.email);
                     
                     // Check whitelist if enabled
                     if let Some(whitelist) = &state.whitelist {
@@ -650,7 +650,7 @@ async fn oauth_callback_handler(
                     user
                 }
                 Err(e) => {
-                    error!("❌ Failed to resolve OAuth user: {}", e);
+                    error!("Failed to resolve OAuth user: {}", e);
                     let web_ui_url = std::env::var("WEB_UI_BASE_URL")
                         .or_else(|_| std::env::var("OAUTH_BASE_URL"))
                         .unwrap_or_else(|_| "http://localhost:7523".to_string());
@@ -693,8 +693,8 @@ async fn oauth_callback_handler(
                                 temp_tokens.insert(temp_code.clone(), temp_token_data);
                             }
                             
-                            info!("🔄 Stored temporary token with code: {}", temp_code);
-                            info!("🔄 Callback URL from request: {}", callback_url);
+                            info!("Stored temporary token with code: {}", temp_code);
+                            info!("Callback URL from request: {}", callback_url);
                             
                             // Redirect browser to user's server with the code
                             let finalize_url = format!("{}/auth/finalize?code={}", 
@@ -705,8 +705,8 @@ async fn oauth_callback_handler(
                                 temp_code
                             );
                             
-                            info!("🔄 Redirecting browser to: {}", finalize_url);
-                            info!("🔄 This should trigger the /auth/finalize endpoint on the user's server");
+                            info!("Redirecting browser to: {}", finalize_url);
+                            info!("This should trigger the /auth/finalize endpoint on the user's server");
                             Ok(axum::response::Redirect::to(&finalize_url).into_response())
                         }
                         (OAuthSource::CLI | OAuthSource::GUI, _) => {
@@ -769,7 +769,7 @@ async fn oauth_callback_handler(
                                         let parts: Vec<&str> = domain.split('.').collect();
                                         if parts.len() >= 2 {
                                             let base_domain = format!(".{}.{}", parts[parts.len() - 2], parts[parts.len() - 1]);
-                                            info!("🍪 Setting cookie domain to: {}", base_domain);
+                                            info!("Setting cookie domain to: {}", base_domain);
                                             cookie_builder = cookie_builder.domain(base_domain);
                                         }
                                     }
@@ -828,7 +828,7 @@ async fn find_or_create_oauth_user(
 ) -> Result<User, anyhow::Error> {
     // Step 1: Try to find existing user by email (most reliable)
     if let Some(existing_user) = db.get_user_by_email(&profile.email).await? {
-        info!("✅ Found existing user by email: {} ({})", existing_user.username, existing_user.email);
+        info!("Found existing user by email: {} ({})", existing_user.username, existing_user.email);
         return Ok(existing_user);
     }
 
@@ -837,7 +837,7 @@ async fn find_or_create_oauth_user(
     
     // Step 3: Try to find by the candidate username
     if let Some(existing_user) = db.get_user_by_username(&candidate_username).await? {
-        info!("✅ Found existing user by username: {} ({})", existing_user.username, existing_user.email);
+        info!("Found existing user by username: {} ({})", existing_user.username, existing_user.email);
         return Ok(existing_user);
     }
 
@@ -845,11 +845,11 @@ async fn find_or_create_oauth_user(
     let available_username = find_available_username(db, &candidate_username).await?;
     
     // Step 5: Create new user
-    info!("🔄 Creating new OAuth user: {} ({}) via {}", available_username, profile.email, provider_name(provider));
+    info!("Creating new OAuth user: {} ({}) via {}", available_username, profile.email, provider_name(provider));
     
     let user = db.create_user(available_username, profile.email.clone(), UserRole::User).await?;
     
-    info!("✅ Successfully created OAuth user: {} (ID: {})", user.username, user.id);
+    info!("Successfully created OAuth user: {} (ID: {})", user.username, user.id);
     Ok(user)
 }
 
@@ -1007,7 +1007,7 @@ fn generate_cli_success_page(token: &str, username: &str, email: &str) -> String
 </head>
 <body>
     <div class="container">
-        <div class="success-icon">✅</div>
+        <div class="success-icon"></div>
         <h1>Authentication Successful!</h1>
         
         <div class="user-info">
@@ -1020,13 +1020,13 @@ fn generate_cli_success_page(token: &str, username: &str, email: &str) -> String
             <textarea id="token-textarea" readonly class="token-textarea" onclick="this.select()">{}</textarea>
             
             <div class="button-container">
-                <button onclick="selectAllToken()" class="button">📝 Select All</button>
-                <button onclick="copyToken()" class="button copy">📋 Copy Token</button>
+                <button onclick="selectAllToken()" class="button">Select All</button>
+                <button onclick="copyToken()" class="button copy">Copy Token</button>
             </div>
         </div>
         
         <div class="instructions">
-            <h4 style="margin-top: 0; color: #856404;">📝 Instructions:</h4>
+            <h4 style="margin-top: 0; color: #856404;">Instructions:</h4>
             <ol style="margin: 10px 0; padding-left: 20px; font-size: 14px;">
                 <li>Copy the token above using one of the buttons</li>
                 <li>Switch back to your terminal</li>
@@ -1051,9 +1051,9 @@ fn generate_cli_success_page(token: &str, username: &str, email: &str) -> String
             const textarea = document.getElementById('token-textarea');
             try {{
                 await navigator.clipboard.writeText(textarea.value);
-                alert('✅ Token copied to clipboard!');
+                alert('Token copied to clipboard!');
             }} catch (err) {{
-                alert('❌ Failed to copy automatically. Please select and copy the token manually.');
+                alert('Failed to copy automatically. Please select and copy the token manually.');
                 selectAllToken();
             }}
         }}
@@ -1159,7 +1159,7 @@ async fn oauth_success_page(
 </head>
 <body>
     <div class="container">
-        <div class="success-icon">✅</div>
+        <div class="success-icon"></div>
         <h1>Authentication Successful!</h1>
         
         <div class="user-info">
@@ -1172,13 +1172,13 @@ async fn oauth_success_page(
             <textarea id="token-textarea" readonly class="token-textarea" onclick="this.select()">{}</textarea>
             
             <div class="button-container">
-                <button onclick="selectAllToken()" class="button">📝 Select All</button>
-                <button onclick="copyToken()" class="button copy">📋 Copy Token</button>
+                <button onclick="selectAllToken()" class="button">Select All</button>
+                <button onclick="copyToken()" class="button copy">Copy Token</button>
             </div>
         </div>
         
         <div class="instructions">
-            <h4 style="margin-top: 0; color: #856404;">📝 Instructions:</h4>
+            <h4 style="margin-top: 0; color: #856404;">Instructions:</h4>
             <ol style="margin: 10px 0; padding-left: 20px; font-size: 14px;">
                 <li>Copy the token above using one of the buttons</li>
                 <li>Switch back to your terminal</li>
@@ -1203,9 +1203,9 @@ async fn oauth_success_page(
             const textarea = document.getElementById('token-textarea');
             try {{
                 await navigator.clipboard.writeText(textarea.value);
-                alert('✅ Token copied to clipboard!');
+                alert('Token copied to clipboard!');
             }} catch (err) {{
-                alert('❌ Failed to copy automatically. Please select and copy the token manually.');
+                alert('Failed to copy automatically. Please select and copy the token manually.');
                 selectAllToken();
             }}
         }}
@@ -1237,7 +1237,7 @@ async fn oauth_error_page(
     <link rel="icon" type="image/png" href="/static/icon.png">
 </head>
 <body>
-    <h1>❌ Authentication Failed</h1>
+    <h1>Authentication Failed</h1>
     <p><strong>Error:</strong> {}</p>
     <p>Please try again or contact support if the problem persists.</p>
 </body>
@@ -1250,7 +1250,7 @@ async fn oauth_error_page(
 
 /// Complete device authorization (called by auth server)
 /// 
-/// ⚠️ WARNING: This is a DEMO implementation that accepts any username/email without verification!
+/// WARNING: This is a DEMO implementation that accepts any username/email without verification!
 /// In production, this should:
 /// 1. Verify the user's identity through proper authentication (OAuth, SSO, email verification, etc.)
 /// 2. Check if the user is allowed to access the system (whitelist, permissions, etc.)
@@ -1261,7 +1261,7 @@ async fn auth_authorize_device(
 ) -> Result<Json<ApiResponse<String>>, StatusCode> {
     info!("Device authorization request for device code: {}", req.device_code);
     
-    // ⚠️ SECURITY WARNING: This demo implementation trusts the auth server to verify users
+    // SECURITY WARNING: This demo implementation trusts the auth server to verify users
     // In production, add proper authentication here!
     
     // Check whitelist if enabled
@@ -1437,10 +1437,10 @@ async fn gateway(
                 let email = claims.email.clone().unwrap_or_else(|| format!("{}@oauth.mothership", claims.username));
                 match state.db.create_user_with_id(user_id, claims.username.clone(), email, UserRole::User).await {
                     Ok(_) => {
-                        info!("✅ Successfully recreated OAuth user for gateway listing: {} (ID: {})", claims.username, user_id);
+                        info!("Successfully recreated OAuth user for gateway listing: {} (ID: {})", claims.username, user_id);
                     }
                     Err(e) => {
-                        error!("❌ Failed to recreate OAuth user for gateway listing: {}", e);
+                        error!("Failed to recreate OAuth user for gateway listing: {}", e);
                         return Err(StatusCode::INTERNAL_SERVER_ERROR);
                     }
                 }
@@ -1514,11 +1514,11 @@ async fn create_gateway(
                 let email = claims.email.clone().unwrap_or_else(|| format!("{}@oauth.mothership", claims.username));
                 match state.db.create_user_with_id(user_id, claims.username.clone(), email, UserRole::User).await {
                     Ok(recreated_user) => {
-                        info!("✅ Successfully recreated OAuth user for gateway creation: {} (ID: {})", recreated_user.username, recreated_user.id);
+                        info!("Successfully recreated OAuth user for gateway creation: {} (ID: {})", recreated_user.username, recreated_user.id);
                         recreated_user
                     }
                     Err(e) => {
-                        error!("❌ Failed to recreate OAuth user for gateway creation: {}", e);
+                        error!("Failed to recreate OAuth user for gateway creation: {}", e);
                         return Err(StatusCode::INTERNAL_SERVER_ERROR);
                     }
                 }
@@ -1620,7 +1620,7 @@ async fn beam_into_project(
 ) -> Result<Json<ApiResponse<BeamResponse>>, StatusCode> {
     info!("Beam request for project: {}", project_id);
     
-    // 🔥 CRITICAL FIX: Extract user ID from JWT token like other endpoints
+    // CRITICAL FIX: Extract user ID from JWT token like other endpoints
     let auth_header = headers.get("authorization")
         .and_then(|v| v.to_str().ok())
         .ok_or(StatusCode::UNAUTHORIZED)?;
@@ -1649,10 +1649,10 @@ async fn beam_into_project(
                 let email = claims.email.clone().unwrap_or_else(|| format!("{}@oauth.mothership", claims.username));
                 match state.db.create_user_with_id(user_id, claims.username.clone(), email, UserRole::User).await {
                     Ok(_) => {
-                        info!("✅ Successfully recreated OAuth user for beam: {} (ID: {})", claims.username, user_id);
+                        info!("Successfully recreated OAuth user for beam: {} (ID: {})", claims.username, user_id);
                     }
                     Err(e) => {
-                        error!("❌ Failed to recreate OAuth user for beam: {}", e);
+                        error!("Failed to recreate OAuth user for beam: {}", e);
                         return Err(StatusCode::INTERNAL_SERVER_ERROR);
                     }
                 }
@@ -1682,53 +1682,53 @@ async fn upload_initial_files(
     Path(project_id): Path<ProjectId>,
     Json(req): Json<UploadInitialFilesRequest>,
 ) -> Result<Json<ApiResponse<String>>, StatusCode> {
-    info!("🔄 Upload initial files request received for project: {}", project_id);
+    info!("Upload initial files request received for project: {}", project_id);
     
     // Extract user ID from JWT token (same pattern as other endpoints)
     let auth_header = headers.get("authorization")
         .and_then(|v| v.to_str().ok())
         .ok_or_else(|| {
-            error!("❌ Missing or invalid authorization header");
+            error!("Missing or invalid authorization header");
             StatusCode::UNAUTHORIZED
         })?;
 
     if !auth_header.starts_with("Bearer ") {
-        error!("❌ Authorization header does not start with 'Bearer '");
+        error!("Authorization header does not start with 'Bearer '");
         return Err(StatusCode::UNAUTHORIZED);
     }
 
     let token = auth_header.trim_start_matches("Bearer ");
     let claims = match state.auth.verify_token(token) {
         Ok(claims) => {
-            info!("✅ Token verified for user: {}", claims.username);
+            info!("Token verified for user: {}", claims.username);
             claims
         }
         Err(e) => {
-            error!("❌ Token verification failed: {}", e);
+            error!("Token verification failed: {}", e);
             return Err(StatusCode::UNAUTHORIZED);
         }
     };
     
     let user_id = uuid::Uuid::parse_str(&claims.sub)
         .map_err(|e| {
-            error!("❌ Failed to parse user ID from token: {}", e);
+            error!("Failed to parse user ID from token: {}", e);
             StatusCode::UNAUTHORIZED
         })?;
 
-    info!("✅ Upload initial files request for project: {} by user: {} ({})", project_id, user_id, claims.username);
+    info!("Upload initial files request for project: {} by user: {} ({})", project_id, user_id, claims.username);
 
     // Verify project exists and user has access
     let project = match state.db.get_project(project_id).await {
         Ok(Some(project)) => {
-            info!("✅ Found project: {} ({})", project.name, project.id);
+            info!("Found project: {} ({})", project.name, project.id);
             project
         }
         Ok(None) => {
-            error!("❌ Project not found: {}", project_id);
+            error!("Project not found: {}", project_id);
             return Err(StatusCode::NOT_FOUND);
         }
         Err(e) => {
-            error!("❌ Database error getting project {}: {}", project_id, e);
+            error!("Database error getting project {}: {}", project_id, e);
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
@@ -1736,17 +1736,17 @@ async fn upload_initial_files(
     let has_access = match state.db.user_has_project_access(user_id, project_id).await {
         Ok(has_access) => has_access,
         Err(e) => {
-            error!("❌ Database error checking project access: {}", e);
+            error!("Database error checking project access: {}", e);
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
 
     if !has_access {
-        error!("❌ User {} does not have access to project {}", user_id, project_id);
+        error!("User {} does not have access to project {}", user_id, project_id);
         return Err(StatusCode::FORBIDDEN);
     }
 
-    info!("✅ User {} has access to project {}", user_id, project_id);
+    info!("User {} has access to project {}", user_id, project_id);
 
     // Get or create the main rift for this project
     let rift = match state.db.get_user_rift(project_id, user_id).await {
@@ -2086,49 +2086,49 @@ async fn websocket_handler(
     Path(rift_id): Path<String>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Result<Response, StatusCode> {
-    info!("🔐 WebSocket connection request with authentication for rift: {}", rift_id);
+    info!("WebSocket connection request with authentication for rift: {}", rift_id);
     
     // AUTHENTICATION FIX: Extract and validate token from query parameters
     let token = params.get("token")
         .ok_or_else(|| {
-            warn!("❌ WebSocket connection rejected: No authentication token provided");
+            warn!("WebSocket connection rejected: No authentication token provided");
             StatusCode::UNAUTHORIZED
         })?;
     
     // Validate the token
     let claims = state.auth.verify_token(token)
         .map_err(|e| {
-            warn!("❌ WebSocket connection rejected: Invalid token - {}", e);
+            warn!("WebSocket connection rejected: Invalid token - {}", e);
             StatusCode::UNAUTHORIZED
         })?;
     
     let user_id = uuid::Uuid::parse_str(&claims.sub)
         .map_err(|_| {
-            warn!("❌ WebSocket connection rejected: Invalid user ID in token");
+            warn!("WebSocket connection rejected: Invalid user ID in token");
             StatusCode::UNAUTHORIZED
         })?;
     
     // SECURITY: Verify user exists in database
     match state.db.get_user(user_id).await {
         Ok(Some(_user)) => {
-            info!("✅ WebSocket connection authenticated for user: {} ({})", claims.username, user_id);
+            info!("WebSocket connection authenticated for user: {} ({})", claims.username, user_id);
         }
         Ok(None) => {
             // User doesn't exist - try to recreate from OAuth token
             if claims.machine_id == "web-oauth" {
                 let email = claims.email.clone().unwrap_or_else(|| format!("{}@oauth.mothership", claims.username));
                 if let Err(e) = state.db.create_user_with_id(user_id, claims.username.clone(), email, mothership_common::UserRole::User).await {
-                    error!("❌ Failed to recreate OAuth user for WebSocket: {}", e);
+                    error!("Failed to recreate OAuth user for WebSocket: {}", e);
                     return Err(StatusCode::INTERNAL_SERVER_ERROR);
                 }
-                info!("✅ Recreated OAuth user for WebSocket: {} ({})", claims.username, user_id);
+                info!("Recreated OAuth user for WebSocket: {} ({})", claims.username, user_id);
             } else {
-                warn!("❌ WebSocket connection rejected: User not found and not OAuth token");
+                warn!("WebSocket connection rejected: User not found and not OAuth token");
                 return Err(StatusCode::UNAUTHORIZED);
             }
         }
         Err(e) => {
-            error!("❌ Database error during WebSocket auth: {}", e);
+            error!("Database error during WebSocket auth: {}", e);
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
     }
@@ -2136,7 +2136,7 @@ async fn websocket_handler(
     // SECURITY: Parse and validate rift ID
     let rift_uuid = uuid::Uuid::parse_str(&rift_id)
         .map_err(|_| {
-            warn!("❌ WebSocket connection rejected: Invalid rift ID format: {}", rift_id);
+            warn!("WebSocket connection rejected: Invalid rift ID format: {}", rift_id);
             StatusCode::BAD_REQUEST
         })?;
     
@@ -2145,17 +2145,17 @@ async fn websocket_handler(
         Ok(Some(rift)) => {
             // Check if user is a collaborator on this rift
             if !rift.collaborators.contains(&user_id) {
-                warn!("❌ WebSocket connection rejected: User {} not authorized for rift {}", user_id, rift_id);
+                warn!("WebSocket connection rejected: User {} not authorized for rift {}", user_id, rift_id);
                 return Err(StatusCode::FORBIDDEN);
             }
-            info!("✅ User {} authorized for rift: {}", user_id, rift_id);
+            info!("User {} authorized for rift: {}", user_id, rift_id);
         }
         Ok(None) => {
-            warn!("❌ WebSocket connection rejected: Rift not found: {}", rift_id);
+            warn!("WebSocket connection rejected: Rift not found: {}", rift_id);
             return Err(StatusCode::NOT_FOUND);
         }
         Err(e) => {
-            error!("❌ Database error during rift authorization: {}", e);
+            error!("Database error during rift authorization: {}", e);
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
     }
@@ -2167,17 +2167,17 @@ async fn websocket_handler(
             .ok_or(StatusCode::UNAUTHORIZED)?;
             
         if !whitelist.is_user_allowed(&user.username, &user.email) {
-            warn!("❌ WebSocket connection rejected: User {} ({}) not in whitelist", user.username, user.email);
+            warn!("WebSocket connection rejected: User {} ({}) not in whitelist", user.username, user.email);
             return Err(StatusCode::FORBIDDEN);
         }
     }
     
-    info!("✅ WebSocket connection authenticated and authorized for user: {} on rift: {}", claims.username, rift_id);
+    info!("WebSocket connection authenticated and authorized for user: {} on rift: {}", claims.username, rift_id);
     
     Ok(ws.on_upgrade(move |socket| async move {
-        info!("📡 WebSocket connection established for user: {} on rift: {}", claims.username, rift_id);
+        info!("WebSocket connection established for user: {} on rift: {}", claims.username, rift_id);
         sync::handle_websocket(socket, state.sync, rift_id.clone(), user_id).await;
-        info!("📡 WebSocket connection closed for user: {} on rift: {}", claims.username, rift_id);
+        info!("WebSocket connection closed for user: {} on rift: {}", claims.username, rift_id);
     }))
 } 
 

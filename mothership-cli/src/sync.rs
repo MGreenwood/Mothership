@@ -143,8 +143,8 @@ pub async fn handle_checkpoint(config_manager: &ConfigManager, message: Option<S
         anyhow!("No checkpoint data received: {}", checkpoint_response.error.unwrap_or_else(|| "Unknown error".to_string()))
     })?;
 
-    print_success(&format!("✅ Checkpoint {} created", &checkpoint_data.checkpoint_id.to_string()[..8]));
-    print_info(&format!("📸 Captured {} file changes", checkpoint_data.file_count));
+    print_success(&format!("Checkpoint {} created", &checkpoint_data.checkpoint_id.to_string()[..8]));
+    print_info(&format!("Captured {} file changes", checkpoint_data.file_count));
     
     Ok(())
 }
@@ -201,7 +201,7 @@ pub async fn handle_history(config_manager: &ConfigManager, limit: usize) -> Res
     }
 
     // Display checkpoint history
-    println!("\n{}", "📜 Project History".cyan().bold());
+    println!("\n{}", "Project History".cyan().bold());
     println!("{}", format!("Showing {} most recent checkpoints for {}", checkpoints.len(), project_name.blue().bold()));
 
     for (i, checkpoint) in checkpoints.iter().enumerate() {
@@ -238,7 +238,7 @@ pub async fn handle_history(config_manager: &ConfigManager, limit: usize) -> Res
         }
     }
 
-    println!("\n{}", "💡 Use 'mothership restore <checkpoint-id>' to restore to a specific point".dimmed());
+    println!("\n{}", "Use 'mothership restore <checkpoint-id>' to restore to a specific point".dimmed());
     Ok(())
 }
 
@@ -257,7 +257,7 @@ pub async fn handle_restore(config_manager: &ConfigManager, checkpoint_id: Strin
         .map_err(|_| anyhow!("Invalid checkpoint ID format. Use the full checkpoint ID from 'mothership history'"))?;
 
     if !force {
-        println!("\n{}", "⚠️  This will overwrite your current files with the checkpoint state.".yellow().bold());
+        println!("\n{}", " This will overwrite your current files with the checkpoint state.".yellow().bold());
         println!("{}", format!("Project: {}", project_name.blue().bold()));
         println!("{}", format!("Checkpoint: {}", checkpoint_id.yellow()));
         print!("{}", "Are you sure you want to continue? (y/N): ".white().bold());

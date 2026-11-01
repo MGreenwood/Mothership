@@ -29,19 +29,19 @@ class AuthenticatedIntegrationTester:
         
     def verify_authentication(self):
         """Verify the JWT token works with the server"""
-        print("🔐 Verifying authentication with production server...")
+        print("Verifying authentication with production server...")
         
         try:
             # Test the health endpoint first
             health_response = requests.get(f"{self.server_url}/health", timeout=10)
             if health_response.status_code == 200:
                 self.results["server_accessible"] = True
-                print("✅ Server is accessible")
+                print("Server is accessible")
             else:
-                print(f"⚠️  Server health check returned: {health_response.status_code}")
+                print(f" Server health check returned: {health_response.status_code}")
                 
         except Exception as e:
-            print(f"❌ Server health check failed: {e}")
+            print(f"Server health check failed: {e}")
             return False
         
         try:
@@ -67,23 +67,23 @@ class AuthenticatedIntegrationTester:
                     })
                     
                     if response.status_code in [200, 201, 204]:
-                        print(f"✅ Authenticated access to {endpoint} successful")
+                        print(f"Authenticated access to {endpoint} successful")
                         self.results["authentication_verified"] = True
                         return True
                         
                 except Exception as e:
-                    print(f"⚠️  Error testing {endpoint}: {e}")
+                    print(f" Error testing {endpoint}: {e}")
                     
-            print("❌ No authenticated endpoints accessible")
+            print("No authenticated endpoints accessible")
             return False
             
         except Exception as e:
-            print(f"❌ Authentication verification failed: {e}")
+            print(f"Authentication verification failed: {e}")
             return False
     
     def create_authenticated_test_script(self):
         """Create a modified integration test script that uses the JWT token"""
-        print("📝 Creating authenticated test script...")
+        print("Creating authenticated test script...")
         
         # Read the original script
         original_script = self.workspace_root / "scripts" / "integration-test.ps1"
@@ -116,12 +116,12 @@ $env:MOTHERSHIP_TOKEN = "{self.jwt_token}"
         with open(modified_script_path, 'w', encoding='utf-8') as f:
             f.write(modified_script)
             
-        print(f"✅ Created authenticated test script: {modified_script_path}")
+        print(f"Created authenticated test script: {modified_script_path}")
         return modified_script_path
     
     def run_authenticated_integration_test(self):
         """Run the integration test with authentication"""
-        print("🚀 Running authenticated integration test...")
+        print("Running authenticated integration test...")
         
         try:
             # Create the authenticated script
@@ -155,19 +155,19 @@ $env:MOTHERSHIP_TOKEN = "{self.jwt_token}"
                 "success": process.returncode == 0
             }
             
-            print(f"✅ Test completed in {end_time - start_time:.2f} seconds")
-            print(f"📊 Exit code: {process.returncode}")
+            print(f"Test completed in {end_time - start_time:.2f} seconds")
+            print(f"Exit code: {process.returncode}")
             
             return self.results["test_execution"]
             
         except Exception as e:
-            print(f"❌ Error running authenticated test: {e}")
+            print(f"Error running authenticated test: {e}")
             self.results["test_execution"]["error"] = str(e)
             return None
     
     def analyze_authenticated_results(self):
         """Analyze the results of the authenticated test run"""
-        print("🔍 Analyzing authenticated test results...")
+        print("Analyzing authenticated test results...")
         
         execution = self.results.get("test_execution", {})
         stdout = execution.get("stdout", "")
@@ -205,16 +205,16 @@ $env:MOTHERSHIP_TOKEN = "{self.jwt_token}"
             "failed_operations_list": errors
         }
         
-        print(f"📋 Total steps executed: {len(steps)}")
-        print(f"✅ Successful operations: {len(successes)}")
-        print(f"❌ Failed operations: {len(errors)}")
-        print(f"🎯 Features verified: {sum(1 for v in features_verified.values() if v)}/{len(features_verified)}")
+        print(f"Total steps executed: {len(steps)}")
+        print(f"Successful operations: {len(successes)}")
+        print(f"Failed operations: {len(errors)}")
+        print(f"Features verified: {sum(1 for v in features_verified.values() if v)}/{len(features_verified)}")
         
         return self.results["feature_verification"]
     
     def test_specific_api_endpoints(self):
         """Test specific API endpoints to verify functionality"""
-        print("🔌 Testing specific API endpoints...")
+        print("Testing specific API endpoints...")
         
         headers = {"Authorization": f"Bearer {self.jwt_token}"}
         
@@ -259,7 +259,7 @@ $env:MOTHERSHIP_TOKEN = "{self.jwt_token}"
                 
                 api_results.append(result)
                 
-                status_emoji = "✅" if result["success"] else "❌"
+                status_emoji = "" if result["success"] else ""
                 print(f"{status_emoji} {endpoint['path']}: {response.status_code}")
                 
             except Exception as e:
@@ -271,14 +271,14 @@ $env:MOTHERSHIP_TOKEN = "{self.jwt_token}"
                     "auth_required": endpoint["auth_required"]
                 }
                 api_results.append(result)
-                print(f"❌ {endpoint['path']}: Error - {e}")
+                print(f"{endpoint['path']}: Error - {e}")
         
         self.results["api_endpoints_tested"] = api_results
         return api_results
     
     def save_results(self, output_file):
         """Save authenticated test results"""
-        print(f"💾 Saving authenticated test results to {output_file}")
+        print(f"Saving authenticated test results to {output_file}")
         
         with open(output_file, 'w', encoding='utf-8') as f:
             json.dump(self.results, f, indent=2)
@@ -287,7 +287,7 @@ $env:MOTHERSHIP_TOKEN = "{self.jwt_token}"
         report_file = output_file.replace('.json', '_report.md')
         self.generate_report(report_file)
         
-        print(f"📄 Report saved to {report_file}")
+        print(f"Report saved to {report_file}")
     
     def generate_report(self, report_file):
         """Generate human-readable authenticated test report"""
@@ -295,18 +295,18 @@ $env:MOTHERSHIP_TOKEN = "{self.jwt_token}"
             f.write("# Authenticated Integration Test Report\n\n")
             f.write(f"**Test Date:** {datetime.now().isoformat()}\n")
             f.write(f"**Server:** {self.server_url}\n")
-            f.write(f"**Authentication:** {'✅ VERIFIED' if self.results['authentication_verified'] else '❌ FAILED'}\n\n")
+            f.write(f"**Authentication:** {'VERIFIED' if self.results['authentication_verified'] else 'FAILED'}\n\n")
             
             # Server Accessibility
             f.write("## Server Accessibility\n\n")
-            f.write(f"- **Server Accessible:** {'✅ YES' if self.results['server_accessible'] else '❌ NO'}\n")
-            f.write(f"- **Authentication Verified:** {'✅ YES' if self.results['authentication_verified'] else '❌ NO'}\n\n")
+            f.write(f"- **Server Accessible:** {'YES' if self.results['server_accessible'] else 'NO'}\n")
+            f.write(f"- **Authentication Verified:** {'YES' if self.results['authentication_verified'] else 'NO'}\n\n")
             
             # API Endpoint Testing
             if self.results.get("api_endpoints_tested"):
                 f.write("## API Endpoint Testing\n\n")
                 for endpoint in self.results["api_endpoints_tested"]:
-                    status = "✅ SUCCESS" if endpoint.get("success", False) else "❌ FAILED"
+                    status = "SUCCESS" if endpoint.get("success", False) else "FAILED"
                     f.write(f"- **{endpoint['endpoint']}:** {status} ({endpoint.get('status_code', 'N/A')})\n")
                 f.write("\n")
             
@@ -316,7 +316,7 @@ $env:MOTHERSHIP_TOKEN = "{self.jwt_token}"
                 f.write("## Integration Test Execution\n\n")
                 f.write(f"- **Duration:** {execution.get('execution_time', 0):.2f} seconds\n")
                 f.write(f"- **Exit Code:** {execution.get('exit_code', 'N/A')}\n")
-                f.write(f"- **Success:** {'✅ YES' if execution.get('success', False) else '❌ NO'}\n\n")
+                f.write(f"- **Success:** {'YES' if execution.get('success', False) else 'NO'}\n\n")
             
             # Feature Verification
             verification = self.results.get("feature_verification", {})
@@ -330,7 +330,7 @@ $env:MOTHERSHIP_TOKEN = "{self.jwt_token}"
                 # Individual feature verification
                 f.write("### Individual Features\n\n")
                 for feature, verified in verification.get("features_verified", {}).items():
-                    status = "✅ VERIFIED" if verified else "❌ NOT VERIFIED"
+                    status = "VERIFIED" if verified else "NOT VERIFIED"
                     f.write(f"- **{feature.replace('_', ' ').title()}:** {status}\n")
                 f.write("\n")
                 
@@ -338,14 +338,14 @@ $env:MOTHERSHIP_TOKEN = "{self.jwt_token}"
                 if verification.get("successful_operations_list"):
                     f.write("### Successful Operations\n\n")
                     for op in verification["successful_operations_list"]:
-                        f.write(f"- ✅ {op}\n")
+                        f.write(f"- {op}\n")
                     f.write("\n")
                 
                 # Failed operations
                 if verification.get("failed_operations_list"):
                     f.write("### Failed Operations\n\n")
                     for op in verification["failed_operations_list"]:
-                        f.write(f"- ❌ {op}\n")
+                        f.write(f"- {op}\n")
                     f.write("\n")
             
             # Raw output
@@ -368,7 +368,7 @@ def main():
     try:
         # Verify authentication
         if not tester.verify_authentication():
-            print("❌ Authentication verification failed")
+            print("Authentication verification failed")
             sys.exit(1)
         
         # Test API endpoints
@@ -385,11 +385,11 @@ def main():
         output_file.parent.mkdir(parents=True, exist_ok=True)
         tester.save_results(str(output_file))
         
-        print("\n🎉 Authenticated integration test complete!")
-        print(f"📊 Results saved to: {output_file}")
+        print("\nAuthenticated integration test complete!")
+        print(f"Results saved to: {output_file}")
         
     except Exception as e:
-        print(f"💥 Fatal error: {e}")
+        print(f"Fatal error: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":

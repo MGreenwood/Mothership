@@ -45,20 +45,20 @@ fn load_tray_icon() -> Option<Icon> {
             
             match Icon::from_rgba(rgba_data, width, height) {
                 Ok(icon) => {
-                    info!("✅ Loaded embedded tray icon ({}x{} pixels)", width, height);
+                    info!("Loaded embedded tray icon ({}x{} pixels)", width, height);
                     return Some(icon);
                 }
                 Err(e) => {
-                    error!("⚠️ Failed to create icon from embedded data: {}", e);
+                    error!("Failed to create icon from embedded data: {}", e);
                 }
             }
         }
         Err(e) => {
-            error!("⚠️ Failed to load embedded icon data: {}", e);
+            error!("Failed to load embedded icon data: {}", e);
         }
     }
     
-    info!("📋 Using default system tray icon (embedded icon failed to load)");
+    info!("Using default system tray icon (embedded icon failed to load)");
     None
 }
 
@@ -73,15 +73,15 @@ fn open_folder(path: &std::path::Path) -> Result<()> {
 
 #[cfg(windows)]
 fn get_dynamic_tooltip(status: &DaemonStatus) -> String {
-    let connection_status = if status.server_connected { "🟢" } else { "🔴" };
+    let connection_status = if status.server_connected { "" } else { "" };
     let sync_status = if status.files_syncing > 0 { 
-        format!("⏳ {} files syncing", status.files_syncing) 
+        format!("{} files syncing", status.files_syncing) 
     } else { 
-        "✅ All synced".to_string() 
+        "All synced".to_string() 
     };
     
     format!(
-        "Mothership Daemon\n{} Server: {}\n📁 Projects: {}\n{}",
+        "Mothership Daemon\n{} Server: {}\nProjects: {}\n{}",
         connection_status,
         if status.server_connected { "Connected" } else { "Disconnected" },
         status.projects_tracked,
@@ -96,7 +96,7 @@ impl SystemTray {
         tracked_projects: Arc<RwLock<HashMap<Uuid, TrackedProject>>>,
         command_sender: mpsc::UnboundedSender<DaemonCommand>,
     ) -> Result<Self> {
-        info!("🖥️ Initializing enhanced system tray...");
+        info!("Initializing enhanced system tray...");
         Ok(Self { status, tracked_projects, command_sender })
     }
 
@@ -104,7 +104,7 @@ impl SystemTray {
     pub async fn run(self) -> Result<()> {
         #[cfg(windows)]
         {
-            info!("🖥️ Starting enhanced Mothership system tray icon...");
+            info!("Starting enhanced Mothership system tray icon...");
             
             // Clone for thread-safe access
             let status = self.status.clone();
@@ -148,7 +148,7 @@ impl SystemTray {
                     }
                 };
 
-                info!("✅ Enhanced system tray icon created successfully");
+                info!("Enhanced system tray icon created successfully");
 
                 // Track last menu update time and project count to avoid rebuilding too frequently
                 let mut last_menu_update = std::time::Instant::now();
@@ -177,14 +177,14 @@ impl SystemTray {
                         let _ = tray_icon.set_menu(Some(Box::new(updated_menu)));
                         last_menu_update = std::time::Instant::now();
                         last_project_count = current_project_count;
-                        info!("🔄 System tray menu updated (projects: {})", current_project_count);
+                        info!("System tray menu updated (projects: {})", current_project_count);
                     }
 
                     // Handle menu events
                     while let Ok(event) = MenuEvent::receiver().try_recv() {
                         match event.id.as_ref() {
                             "status" => {
-                                info!("📊 Status menu item clicked");
+                                info!("Status menu item clicked");
                                 let status = status.blocking_read();
                                 let _projects = tracked_projects.blocking_read();
                                 
@@ -218,7 +218,7 @@ impl SystemTray {
                                 }
                             }
                             "projects" => {
-                                info!("📁 Projects menu item clicked");
+                                info!("Projects menu item clicked");
                                 let projects = tracked_projects.blocking_read();
                                 
                                 if projects.is_empty() {
@@ -235,7 +235,7 @@ impl SystemTray {
                                     }
                                 } else {
                                     let projects_list = projects.values()
-                                        .map(|p| format!("📁 {} ({})", p.project_name, p.project_path.display()))
+                                        .map(|p| format!("{} ({})", p.project_name, p.project_path.display()))
                                         .collect::<Vec<_>>()
                                         .join("\n");
                                     
@@ -258,7 +258,7 @@ impl SystemTray {
                                 if let Ok(project_id) = uuid::Uuid::parse_str(project_id_str) {
                                     let projects = tracked_projects.blocking_read();
                                     if let Some(project) = projects.get(&project_id) {
-                                        info!("📂 Opening project folder: {}", project.project_path.display());
+                                        info!("Opening project folder: {}", project.project_path.display());
                                         if let Err(e) = open_folder(&project.project_path) {
                                             error!("Failed to open project folder: {}", e);
                                         }
@@ -266,7 +266,7 @@ impl SystemTray {
                                 }
                             }
                             "open_logs" => {
-                                info!("📜 Opening logs folder");
+                                info!("Opening logs folder");
                                 // Try to open the logs directory
                                 let log_paths = vec![
                                     std::env::temp_dir().join("mothership"),
@@ -301,7 +301,7 @@ impl SystemTray {
                                 }
                             }
                             "force_sync" => {
-                                info!("🔄 Force sync requested from system tray");
+                                info!("Force sync requested from system tray");
                                 
                                 // Send force sync command to daemon
                                 if let Err(e) = command_sender.send(DaemonCommand::ForceSync) {
@@ -332,21 +332,21 @@ impl SystemTray {
                                 }
                             }
                             "stop" => {
-                                info!("⏹️ Stop daemon requested from system tray");
+                                info!("Stop daemon requested from system tray");
                                 // Send stop command to daemon
                                 let _ = command_sender.send(DaemonCommand::Stop);
                                 // Also exit the event loop
                                 elwt.exit();
                             }
                             "restart" => {
-                                info!("🔄 Restart daemon requested from system tray");
+                                info!("Restart daemon requested from system tray");
                                 // Send restart command to daemon
                                 let _ = command_sender.send(DaemonCommand::Restart);
                                 // Exit the event loop
                                 elwt.exit();
                             }
                             "exit" => {
-                                info!("❌ Exit daemon requested from system tray");
+                                info!("Exit daemon requested from system tray");
                                 // Send stop command and exit
                                 let _ = command_sender.send(DaemonCommand::Stop);
                                 elwt.exit();
@@ -359,7 +359,7 @@ impl SystemTray {
                     while let Ok(event) = TrayIconEvent::receiver().try_recv() {
                         match event {
                             TrayIconEvent::Click { .. } => {
-                                info!("🖱️ Tray icon clicked");
+                                info!("Tray icon clicked");
                                 // Don't rebuild menu on click - let it display naturally
                                 // Menu is already set and will show on right-click
                             }
@@ -369,8 +369,8 @@ impl SystemTray {
                 });
                 
                 match result {
-                    Ok(_) => info!("📱 System tray event loop exited normally"),
-                    Err(e) => error!("📱 System tray event loop error: {}", e),
+                    Ok(_) => info!("System tray event loop exited normally"),
+                    Err(e) => error!("System tray event loop error: {}", e),
                 }
             });
 
@@ -386,7 +386,7 @@ impl SystemTray {
         
         #[cfg(not(windows))]
         {
-            info!("💡 Enhanced system tray not supported on this platform");
+            info!("Enhanced system tray not supported on this platform");
             
             // Keep the task alive on non-Windows platforms
             loop {
@@ -404,13 +404,13 @@ impl SystemTray {
         
         // Status section
         let status_item = MenuItemBuilder::new()
-            .text("📊 Show Status")
+            .text("Show Status")
             .id("status".into())
             .enabled(true)
             .build();
         
         let projects_item = MenuItemBuilder::new()
-            .text("📁 Show Projects")
+            .text("Show Projects")
             .id("projects".into())
             .enabled(true)
             .build();
@@ -421,11 +421,11 @@ impl SystemTray {
         // Projects submenu (if any projects exist)
         let projects = tracked_projects.blocking_read();
         if !projects.is_empty() {
-            let projects_submenu = Submenu::new("📂 Open Project Folders", true);
+            let projects_submenu = Submenu::new("Open Project Folders", true);
             
             for project in projects.values() {
                 let project_item = MenuItemBuilder::new()
-                    .text(&format!("📁 {}", project.project_name))
+                    .text(&format!("{}", project.project_name))
                     .id(format!("open_project_{}", project.project_id).into())
                     .enabled(true)
                     .build();
@@ -440,13 +440,13 @@ impl SystemTray {
         
         // Actions section
         let force_sync_item = MenuItemBuilder::new()
-            .text("🔄 Force Sync All")
+            .text("Force Sync All")
             .id("force_sync".into())
             .enabled(true)
             .build();
         
         let logs_item = MenuItemBuilder::new()
-            .text("📜 Open Logs")
+            .text("Open Logs")
             .id("open_logs".into())
             .enabled(true)
             .build();
@@ -459,19 +459,19 @@ impl SystemTray {
         
         // Control section
         let stop_item = MenuItemBuilder::new()
-            .text("⏹️ Stop Tracking")
+            .text("Stop Tracking")
             .id("stop".into())
             .enabled(true)
             .build();
         
         let restart_item = MenuItemBuilder::new()
-            .text("🔄 Restart Daemon")
+            .text("Restart Daemon")
             .id("restart".into())
             .enabled(true)
             .build();
         
         let exit_item = MenuItemBuilder::new()
-            .text("❌ Exit")
+            .text("Exit")
             .id("exit".into())
             .enabled(true)
             .build();

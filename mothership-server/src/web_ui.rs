@@ -73,9 +73,9 @@ async fn index_page(State(state): State<crate::AppState>) -> Result<Html<String>
     let auth_required = state.config.cli_distribution.require_auth_for_downloads || state.whitelist.is_some();
     
     let auth_status = if auth_required {
-        "🔐 Authentication Required - CLI downloads require authentication through your authorized account."
+        "Authentication Required - CLI downloads require authentication through your authorized account."
     } else {
-        "🌐 Public Access - CLI downloads are publicly available. Authentication is required for server usage."
+        "Public Access - CLI downloads are publicly available. Authentication is required for server usage."
     };
     
     let download_button = if auth_required {
@@ -129,7 +129,7 @@ async fn login_page(State(state): State<crate::AppState>) -> Result<Html<String>
             ("PAGE_TITLE", "Authentication Disabled"),
             ("PAGE_MESSAGE", "OAuth authentication is not configured on this server"),
             ("AUTH_CONTENT", r#"<div style="background: rgba(255, 255, 255, 0.1); padding: 2rem; border-radius: 10px; margin: 2rem 0;">
-                <h3>⚠️ Configuration Required</h3>
+                <h3>Configuration Required</h3>
                 <p>The server administrator needs to configure OAuth settings to enable authentication features.</p>
             </div>"#),
         ];
@@ -146,7 +146,7 @@ async fn login_page(State(state): State<crate::AppState>) -> Result<Html<String>
     let replacements = [
         ("PAGE_TITLE", "Sign In"),
         ("PAGE_MESSAGE", "Choose your preferred authentication method"),
-        ("AUTH_CONTENT", r#"<a href="/auth/start" class="auth-btn">🚀 Sign in with OAuth</a>
+        ("AUTH_CONTENT", r#"<a href="/auth/start" class="auth-btn">Sign in with OAuth</a>
         <a href="/auth/ghostid" class="auth-btn" style="background: linear-gradient(45deg, #4CAF50, #45a049);">� Sign in with GhostID Wallet</a>"#),
     ];
     
@@ -420,13 +420,13 @@ async fn generate_download_page_html(
 </head>
 <body>
     <div class="container">
-        <h1>📦 Download Mothership CLI</h1>
+        <h1>Download Mothership CLI</h1>
         
         {}
         
         <div class="download-methods">
             <div class="method">
-                <h3>🔑 Your Authentication Token</h3>
+                <h3>Your Authentication Token</h3>
                 <p>Copy this token for use with the installation commands below:</p>
                 <div class="code-block">
                     <button class="copy-btn" onclick="copyToClipboard('auth-token')">Copy</button>
@@ -435,7 +435,7 @@ async fn generate_download_page_html(
             </div>
             
             <div class="method">
-                <h3>🚀 Quick Install (Unix/Linux/macOS)</h3>
+                <h3>Quick Install (Unix/Linux/macOS)</h3>
                 <p>One-liner installation script:</p>
                 <div class="code-block">
                     <button class="copy-btn" onclick="copyToClipboard('unix-install')">Copy</button>
@@ -444,7 +444,7 @@ async fn generate_download_page_html(
             </div>
             
             <div class="method">
-                <h3>🪟 Windows Installation</h3>
+                <h3>Windows Installation</h3>
                 <p>PowerShell installation script:</p>
                 <div class="code-block">
                     <button class="copy-btn" onclick="copyToClipboard('windows-install')">Copy</button>
@@ -454,36 +454,36 @@ async fn generate_download_page_html(
         </div>
         
         <div class="platform-downloads">
-            <h2>💾 Direct Downloads</h2>
+            <h2>Direct Downloads</h2>
             <p>Download specific binaries for your platform:</p>
             
             <div class="platforms">
                 <div class="platform">
-                    <h4>🐧 Linux x64</h4>
+                    <h4>Linux x64</h4>
                     <a href="{}/cli/download/{}/x86_64-unknown-linux-gnu/mothership" class="download-btn">CLI</a>
                     <a href="{}/cli/download/{}/x86_64-unknown-linux-gnu/mothership-daemon" class="download-btn">Daemon</a>
                 </div>
                 
                 <div class="platform">
-                    <h4>🐧 Linux ARM64</h4>
+                    <h4>Linux ARM64</h4>
                     <a href="{}/cli/download/{}/aarch64-unknown-linux-gnu/mothership" class="download-btn">CLI</a>
                     <a href="{}/cli/download/{}/aarch64-unknown-linux-gnu/mothership-daemon" class="download-btn">Daemon</a>
                 </div>
                 
                 <div class="platform">
-                    <h4>🍎 macOS x64</h4>
+                    <h4>macOS x64</h4>
                     <a href="{}/cli/download/{}/x86_64-apple-darwin/mothership" class="download-btn">CLI</a>
                     <a href="{}/cli/download/{}/x86_64-apple-darwin/mothership-daemon" class="download-btn">Daemon</a>
                 </div>
                 
                 <div class="platform">
-                    <h4>🍎 macOS ARM64</h4>
+                    <h4>macOS ARM64</h4>
                     <a href="{}/cli/download/{}/aarch64-apple-darwin/mothership" class="download-btn">CLI</a>
                     <a href="{}/cli/download/{}/aarch64-apple-darwin/mothership-daemon" class="download-btn">Daemon</a>
                 </div>
                 
                 <div class="platform">
-                    <h4>🪟 Windows x64</h4>
+                    <h4>Windows x64</h4>
                     <a href="{}/cli/download/{}/x86_64-pc-windows-msvc/mothership.exe" class="download-btn">CLI</a>
                     <a href="{}/cli/download/{}/x86_64-pc-windows-msvc/mothership-daemon.exe" class="download-btn">Daemon</a>
                 </div>
@@ -491,7 +491,7 @@ async fn generate_download_page_html(
         </div>
         
         <div class="note">
-            <h3>📋 Next Steps</h3>
+            <h3>Next Steps</h3>
             <ol>
                 <li>Download and install the CLI using one of the methods above</li>
                 <li>Run <code>mothership auth</code> to authenticate with this server</li>
@@ -522,7 +522,7 @@ async fn generate_download_page_html(
 "#,
         if is_authenticated {
             format!(r#"<div class="user-info">
-                <h3>✅ Authenticated as {}</h3>
+                <h3>Authenticated as {}</h3>
                 <p>Email: {}</p>
                 <p>You have access to download all CLI tools.</p>
             </div>"#,
@@ -560,12 +560,12 @@ async fn generate_download_page_html(
         server_url, version,
         if is_authenticated {
             r#"<div class="warning">
-                <h3>🔒 Secure Token</h3>
+                <h3>Secure Token</h3>
                 <p>Your authentication token is embedded in the download links above. Keep this page secure and don't share the URLs with others.</p>
             </div>"#
         } else {
             r#"<div class="warning">
-                <h3>🔐 Authentication Required</h3>
+                <h3>Authentication Required</h3>
                 <p>Direct downloads require authentication. Please use the installation scripts above or authenticate first.</p>
             </div>"#
         }
@@ -579,7 +579,7 @@ async fn auth_callback(
     State(state): State<crate::AppState>,
     Json(callback_data): Json<mothership_common::auth::ServerAuthCallback>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    info!("🔄 Received auth callback for user: {} ({})", callback_data.username, callback_data.email);
+    info!("Received auth callback for user: {} ({})", callback_data.username, callback_data.email);
     
     // Validate the token with the API server
     let client = reqwest::Client::new();
@@ -592,12 +592,12 @@ async fn auth_callback(
         .send()
         .await
         .map_err(|e| {
-            error!("❌ Failed to validate token with API server: {}", e);
+            error!("Failed to validate token with API server: {}", e);
             StatusCode::BAD_REQUEST
         })?;
     
     if !validation_response.status().is_success() {
-        error!("❌ Token validation failed: HTTP {}", validation_response.status());
+        error!("Token validation failed: HTTP {}", validation_response.status());
         return Err(StatusCode::UNAUTHORIZED);
     }
     
@@ -618,7 +618,7 @@ async fn auth_callback(
         sessions.insert(session_id.clone(), session_data);
     }
     
-    info!("✅ Created local session for user: {} ({})", callback_data.username, callback_data.email);
+    info!("Created local session for user: {} ({})", callback_data.username, callback_data.email);
     
     Ok(Json(serde_json::json!({
         "success": true,
@@ -637,12 +637,12 @@ pub async fn auth_finalize(
 
     let code = query.get("code")
         .ok_or_else(|| {
-            error!("❌ Auth finalize missing 'code' parameter");
+            error!("Auth finalize missing 'code' parameter");
             StatusCode::BAD_REQUEST
         })?
         .clone();
     
-    info!("🔄 Processing auth finalize with code: {}", code);
+    info!("Processing auth finalize with code: {}", code);
     
     // Retrieve and validate temporary token
     let temp_token_data = {
@@ -654,18 +654,18 @@ pub async fn auth_finalize(
         Some(data) => {
             // Check if token is expired
             if chrono::Utc::now() > data.expires_at {
-                error!("❌ Temporary token expired: {}", code);
+                error!("Temporary token expired: {}", code);
                 return Ok(axum::response::Redirect::to("/auth/error?message=Authentication code expired. Please try again.").into_response());
             }
             data
         }
         None => {
-            error!("❌ Invalid or missing temporary token for code: {}", code);
+            error!("Invalid or missing temporary token for code: {}", code);
             return Ok(axum::response::Redirect::to("/auth/error?message=Invalid authentication code. Please try again.").into_response());
         }
     };
     
-    info!("✅ Validated temporary token for user: {} ({})", temp_token_data.username, temp_token_data.email);
+    info!("Validated temporary token for user: {} ({})", temp_token_data.username, temp_token_data.email);
     
     // Create session
     let session_id = uuid::Uuid::new_v4().to_string();
@@ -685,7 +685,7 @@ pub async fn auth_finalize(
         sessions.insert(session_id.clone(), session_data);
     }
     
-    info!("✅ Created session for user: {} ({})", temp_token_data.username, temp_token_data.email);
+    info!("Created session for user: {} ({})", temp_token_data.username, temp_token_data.email);
     
     // Get the web UI URL
     let web_ui_url = std::env::var("WEB_UI_BASE_URL")
@@ -711,7 +711,7 @@ pub async fn auth_finalize(
                 let parts: Vec<&str> = domain.split('.').collect();
                 if parts.len() >= 2 {
                     let base_domain = format!(".{}.{}", parts[parts.len() - 2], parts[parts.len() - 1]);
-                    info!("🍪 Setting cookie domain to: {}", base_domain);
+                    info!("Setting cookie domain to: {}", base_domain);
                     cookie_builder = cookie_builder.domain(base_domain);
                 }
             }
@@ -900,7 +900,7 @@ async fn ghostid_poll_status(
                         sessions.insert(session_id.clone(), session_data);
                     }
                     
-                    info!("✅ Created ghostid wallet session for user: {} ({})", username, email);
+                    info!("Created ghostid wallet session for user: {} ({})", username, email);
                     
                     // Get the web UI URL for cookie domain
                     let web_ui_url = std::env::var("WEB_UI_BASE_URL")
@@ -926,7 +926,7 @@ async fn ghostid_poll_status(
                                 let parts: Vec<&str> = domain.split('.').collect();
                                 if parts.len() >= 2 {
                                     let base_domain = format!(".{}.{}", parts[parts.len() - 2], parts[parts.len() - 1]);
-                                    info!("🍪 Setting session cookie domain to: {}", base_domain);
+                                    info!("Setting session cookie domain to: {}", base_domain);
                                     cookie_builder = cookie_builder.domain(base_domain);
                                 }
                             }
@@ -935,7 +935,7 @@ async fn ghostid_poll_status(
                     
                     let cookie = cookie_builder.build();
                     
-              info!("🍪 GhostID session cookie created - secure: {}, localhost: {}, domain: {:?}", 
+              info!("GhostID session cookie created - secure: {}, localhost: {}, domain: {:?}", 
                   is_secure, is_localhost, cookie.domain());
                     
                     // Return success status with cookie
@@ -965,86 +965,86 @@ async fn ghostid_auth_callback(
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
     Json(callback_data): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    info!("🎯 GhostID AUTH CALLBACK ENDPOINT HIT!");
-    info!("🔄 Received GhostID Chain callback: {:?}", callback_data);
-    info!("📝 Query parameters: {:?}", params);
+    info!("GhostID AUTH CALLBACK ENDPOINT HIT!");
+    info!("Received GhostID Chain callback: {:?}", callback_data);
+    info!("Query parameters: {:?}", params);
     
     // Extract challengeId, publicKey, signature, and tokenId from mobile app callback data
-    info!("🔍 Extracting fields from callback data...");
+    info!("Extracting fields from callback data...");
     let challenge_id_from_payload = callback_data.get("challengeId")
         .and_then(|v| v.as_str())
         .ok_or_else(|| {
-            error!("❌ Missing 'challengeId' field in callback data");
+            error!("Missing 'challengeId' field in callback data");
             StatusCode::BAD_REQUEST
         })?;
     
     let public_key = callback_data.get("publicKey")
         .and_then(|v| v.as_str())
         .ok_or_else(|| {
-            error!("❌ Missing 'publicKey' field in callback data");
+            error!("Missing 'publicKey' field in callback data");
             StatusCode::BAD_REQUEST
         })?;
     
     let signature = callback_data.get("signature")
         .and_then(|v| v.as_str())
         .ok_or_else(|| {
-            error!("❌ Missing 'signature' field in callback data");
+            error!("Missing 'signature' field in callback data");
             StatusCode::BAD_REQUEST
         })?;
     
     let token_id = callback_data.get("tokenId")
         .and_then(|v| v.as_str())
         .ok_or_else(|| {
-            error!("❌ Missing 'tokenId' field in callback data");
+            error!("Missing 'tokenId' field in callback data");
             StatusCode::BAD_REQUEST
         })?;
     
-    info!("✅ Successfully extracted fields - challengeId: {}, tokenId: {}, publicKey: {}...", 
+    info!("Successfully extracted fields - challengeId: {}, tokenId: {}, publicKey: {}...", 
           challenge_id_from_payload, token_id, &public_key[..std::cmp::min(8, public_key.len())]);
     
     // Extract challenge_id from query parameters (should match challengeId from payload)
-    info!("🔍 Extracting challenge_id from query parameters...");
+    info!("Extracting challenge_id from query parameters...");
     let challenge_id = params.get("challenge_id")
         .ok_or_else(|| {
-            error!("❌ Missing 'challenge_id' query parameter");
+            error!("Missing 'challenge_id' query parameter");
             StatusCode::BAD_REQUEST
         })?;
     
     // Verify challenge IDs match
-    info!("🔍 Verifying challenge IDs match...");
+    info!("Verifying challenge IDs match...");
     if challenge_id != challenge_id_from_payload {
-        error!("❌ Challenge ID mismatch: URL param '{}' != payload '{}'", challenge_id, challenge_id_from_payload);
+        error!("Challenge ID mismatch: URL param '{}' != payload '{}'", challenge_id, challenge_id_from_payload);
         return Err(StatusCode::BAD_REQUEST);
     }
-    info!("✅ Challenge IDs match: {}", challenge_id);
+    info!("Challenge IDs match: {}", challenge_id);
     
-    info!("🔍 Processing callback for challenge_id: {}, token_id: {}, public_key: {}...", 
+    info!("Processing callback for challenge_id: {}, token_id: {}, public_key: {}...", 
           challenge_id, token_id, &public_key[..std::cmp::min(8, public_key.len())]);
     
     // Verify the challenge exists
-    info!("🔍 Looking up challenge in database...");
+    info!("Looking up challenge in database...");
     let challenge = crate::qr_auth::get_qr_challenge(challenge_id).await;
     
     if let Some(challenge) = challenge {
-        info!("✅ Challenge found for domain: {}", challenge.domain);
+        info!("Challenge found for domain: {}", challenge.domain);
         
     // For mobile wallet authentication, we don't need to verify domain since 
     // the mobile app already validated the auth token on-chain
-    info!("🔍 Creating user address from public key...");
+    info!("Creating user address from public key...");
         
     // Create a user address from the public key for identification
     let user_address = format!("ghostid_wallet_{}", &public_key[..std::cmp::min(12, public_key.len())]);
-    info!("✅ Generated user address: {}", user_address);
+    info!("Generated user address: {}", user_address);
         
         // Update the QR result to verified
-        info!("🔍 Updating QR challenge status to verified...");
+        info!("Updating QR challenge status to verified...");
         crate::qr_auth::update_qr_result(challenge_id.to_string(), crate::qr_auth::QrResult {
             status: "verified".to_string(),
             user_address: Some(user_address),
             verified_at: Some(chrono::Utc::now()),
         }).await;
         
-        info!("✅ Updated QR challenge {} status to verified", challenge_id);
+        info!("Updated QR challenge {} status to verified", challenge_id);
         
         let response = serde_json::json!({
             "success": true,
@@ -1052,19 +1052,19 @@ async fn ghostid_auth_callback(
             "challenge_id": challenge_id,
             "token_id": token_id
         });
-        info!("🎉 Sending success response: {:?}", response);
+        info!("Sending success response: {:?}", response);
         return Ok(Json(response));
     } else {
-        error!("❌ Challenge not found: {}", challenge_id);
+        error!("Challenge not found: {}", challenge_id);
     }
     
-    error!("❌ Failed to process callback: invalid challenge");
+    error!("Failed to process callback: invalid challenge");
     Err(StatusCode::BAD_REQUEST)
 }
 
 /// Test endpoint to verify the callback route is accessible
 async fn ghostid_callback_test() -> Json<serde_json::Value> {
-    info!("🧪 GhostID callback test endpoint hit!");
+    info!("GhostID callback test endpoint hit!");
     Json(serde_json::json!({
         "status": "ok",
         "message": "GhostID callback endpoint is accessible",

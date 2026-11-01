@@ -1,24 +1,24 @@
-# 🔌 Mothership Disconnect & Daemon Management Guide
+# Mothership Disconnect & Daemon Management Guide
 
 ## **Complete Daemon Lifecycle Management**
 
 Mothership now provides **complete graceful disconnection** from projects and **full daemon lifecycle management**. No more orphaned daemons or manual process killing!
 
-## 🎯 **The Problem We Solved**
+## **The Problem We Solved**
 
 **Before (Missing):**
-- ❌ No way to disconnect from projects
-- ❌ Daemon ran forever once started
-- ❌ No graceful shutdown
-- ❌ Manual process killing required
+- No way to disconnect from projects
+- Daemon ran forever once started
+- No graceful shutdown
+- Manual process killing required
 
 **After (Complete):**
-- ✅ Graceful project disconnection
-- ✅ Full daemon lifecycle management
-- ✅ Automatic "last one out" handling
-- ✅ Clean shutdown and restart
+- Graceful project disconnection
+- Full daemon lifecycle management
+- Automatic "last one out" handling
+- Clean shutdown and restart
 
-## 📋 **New Commands**
+## **New Commands**
 
 ### **1. Project Disconnection**
 ```bash
@@ -45,7 +45,7 @@ mothership daemon stop
 mothership daemon restart
 ```
 
-## 🔄 **Complete Lifecycle Example**
+## **Complete Lifecycle Example**
 
 ```bash
 # 1. Start tracking projects
@@ -76,24 +76,24 @@ mothership daemon restart
 # Starts new daemon, no projects tracked
 ```
 
-## 🎛️ **Daemon Behavior**
+## **Daemon Behavior**
 
 ### **Individual Disconnect:**
-- ✅ Removes project from tracking
-- ✅ Stops file watcher for that project
-- ✅ **Keeps daemon running** for other projects
+- Removes project from tracking
+- Stops file watcher for that project
+- **Keeps daemon running** for other projects
 
 ### **Last One Out:**
-- ✅ Daemon stays alive but idle
-- ✅ Ready to accept new projects instantly
-- ✅ No overhead when no projects tracked
+- Daemon stays alive but idle
+- Ready to accept new projects instantly
+- No overhead when no projects tracked
 
 ### **Graceful Shutdown:**
-- ✅ Stops all file watchers
-- ✅ Cleans up resources
-- ✅ Sends confirmation before exit
+- Stops all file watchers
+- Cleans up resources
+- Sends confirmation before exit
 
-## 💡 **Smart Features**
+## **Smart Features**
 
 ### **Auto-Detection:**
 ```bash
@@ -113,12 +113,12 @@ mothership daemon stop
 ### **Helpful Messages:**
 ```bash
 mothership disconnect "my-project"
-# ✅ Successfully disconnected from project 'my-project'
-# ℹ️  The project is no longer being tracked by the background daemon
-# ℹ️  Files will not sync automatically until you beam back in
+# Successfully disconnected from project 'my-project'
+#  The project is no longer being tracked by the background daemon
+#  Files will not sync automatically until you beam back in
 ```
 
-## 🚀 **Zero-Friction Philosophy**
+## **Zero-Friction Philosophy**
 
 The disconnect functionality maintains Mothership's **Zero Fear, Zero Ceremony, Zero Friction** philosophy:
 
@@ -126,7 +126,7 @@ The disconnect functionality maintains Mothership's **Zero Fear, Zero Ceremony, 
 - **Zero Ceremony**: Simple commands, helpful feedback
 - **Zero Friction**: Smart auto-detection, no manual process management
 
-## 🧪 **Testing**
+## **Testing**
 
 Run our comprehensive test:
 ```bash
@@ -137,4 +137,4 @@ This tests the complete lifecycle from daemon startup through disconnection to s
 
 ---
 
-**🎉 Result: Complete daemon lifecycle management with zero manual intervention required!** 
+**Result: Complete daemon lifecycle management with zero manual intervention required!** 

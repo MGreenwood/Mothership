@@ -37,18 +37,18 @@ pub struct Database {
 impl Database {
     /// Create a new database connection pool
     pub async fn new(database_url: &str) -> Result<Self> {
-        tracing::info!("🔗 Connecting to PostgreSQL database...");
+        tracing::info!("Connecting to PostgreSQL database...");
         
         let pool = PgPool::connect(database_url).await?;
         
-        tracing::info!("✅ Successfully connected to PostgreSQL database");
+        tracing::info!("Successfully connected to PostgreSQL database");
         
         Ok(Self { pool })
     }
 
     /// Run database migrations manually (since we can't use sqlx migrate in Docker build)
     pub async fn ensure_schema(&self) -> Result<()> {
-        tracing::info!("🔄 Ensuring database schema exists...");
+        tracing::info!("Ensuring database schema exists...");
         
         // Create the schema manually using runtime queries
         sqlx::query("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\"")
@@ -151,7 +151,7 @@ impl Database {
             )
         "#).execute(&self.pool).await?;
 
-        tracing::info!("✅ Database schema ready!");
+        tracing::info!("Database schema ready!");
         Ok(())
     }
 
@@ -745,7 +745,7 @@ impl Database {
 
     /// Create a new user with a specific user ID (for OAuth user recreation)
     pub async fn create_user_with_id(&self, user_id: UserId, username: String, email: String, role: UserRole) -> Result<User> {
-        tracing::info!("🔄 Creating user with ID: {}, username: {}, email: {}", user_id, username, email);
+        tracing::info!("Creating user with ID: {}, username: {}, email: {}", user_id, username, email);
         
         // First try to find existing user by email or username
         if let Some(existing_user) = self.get_user_by_email(&email).await? {
@@ -772,7 +772,7 @@ impl Database {
         .fetch_one(&self.pool)
         .await?;
 
-        tracing::info!("✅ Successfully created/updated user: {} ({})", user.username, user.id);
+        tracing::info!("Successfully created/updated user: {} ({})", user.username, user.id);
 
         Ok(User {
             id: user.id,

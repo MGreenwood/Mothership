@@ -199,6 +199,21 @@ button:hover {
   background: #3c3c3c;
 }
 
+.active-rift {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  align-self: center;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.active-rift-sep {
+  color: #6a6a6a;
+}
+
 .notice.ok {
   background: #1d3a1d;
   color: #89d185;

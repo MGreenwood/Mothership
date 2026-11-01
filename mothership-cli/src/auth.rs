@@ -30,13 +30,13 @@ struct StoredCredentials {
 fn get_server_url(config_manager: &ConfigManager) -> Result<String> {
     // First, check if there's an active server connection
     if let Some(server_url) = connections::get_active_server_url() {
-        println!("{}", format!("🌐 Using connected server: {}", server_url).dimmed());
+        println!("{}", format!("Using connected server: {}", server_url).dimmed());
         return Ok(server_url);
     }
     
     // Fallback to config file
     let config = config_manager.load_config()?;
-    println!("{}", format!("🌐 Using config server: {}", config.mothership_url).dimmed());
+    println!("{}", format!("Using config server: {}", config.mothership_url).dimmed());
     Ok(config.mothership_url)
 }
 
@@ -84,17 +84,17 @@ async fn handle_oauth_auth(config_manager: &ConfigManager, provider: OAuthProvid
     let oauth_data = oauth_response.data.unwrap();
 
     // Open browser for OAuth flow
-    println!("🔐 Opening browser for authentication...");
+    println!("Opening browser for authentication...");
     if let Err(e) = open::that(&oauth_data.auth_url) {
-        println!("❌ Failed to open browser automatically: {}", e);
+        println!("Failed to open browser automatically: {}", e);
         println!("Please open this URL manually:");
         println!("{}", oauth_data.auth_url);
     }
 
-    println!("{}", "⏳ Please complete the login process in your browser".yellow());
+    println!("{}", "Please complete the login process in your browser".yellow());
     println!("{}", "   After logging in, you'll see a success page with your token".dimmed());
     println!();
-    println!("{}", "📋 Copy the token from the success page and paste it here:".cyan().bold());
+    println!("{}", "Copy the token from the success page and paste it here:".cyan().bold());
     print!("{}", "Token: ".cyan());
 
     // Read token from user input
@@ -112,7 +112,7 @@ async fn handle_oauth_auth(config_manager: &ConfigManager, provider: OAuthProvid
         return Err(anyhow::anyhow!("Token seems too short. Please make sure you copied the full token."));
     }
 
-    println!("{}", "🔍 Validating token with server...".dimmed());
+    println!("{}", "Validating token with server...".dimmed());
 
     // Validate the token before saving
     let client = reqwest::Client::new();
@@ -129,7 +129,7 @@ async fn handle_oauth_auth(config_manager: &ConfigManager, provider: OAuthProvid
     // Save credentials in the same format as the GUI
     save_credentials(config_manager, access_token, None, None).await?;
 
-    println!("{}", "✅ Authentication successful!".green().bold());
+    println!("{}", "Authentication successful!".green().bold());
     println!("{}", format!("   Logged in via {}", provider_name).dimmed());
     println!("{}", "   Credentials saved for future use".dimmed());
 
@@ -205,12 +205,12 @@ fn get_machine_info() -> OAuthRequest {
 
 /// Handle logout (clear stored credentials)
 pub async fn handle_logout(config_manager: &ConfigManager) -> Result<()> {
-    println!("{}", "🗑️  Clearing stored credentials...".dimmed());
+    println!("{}", " Clearing stored credentials...".dimmed());
     
     // Clear stored credentials
     clear_stored_credentials(config_manager).await?;
     
-    println!("{}", "✅ Logged out successfully!".green().bold());
+    println!("{}", "Logged out successfully!".green().bold());
     println!("{}", "   All stored credentials have been removed".dimmed());
     println!("{}", "   Use 'mothership auth' to sign in again".dimmed());
     

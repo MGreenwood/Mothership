@@ -465,7 +465,7 @@ pub async fn handle_beam(
     // If no project specified (empty string), try to detect from current directory
     let (project_name, project_path) = if project.is_empty() {
         if let Some(metadata) = get_current_project_metadata() {
-            print_info("📍 Detected Mothership project in current directory");
+            print_info("Detected Mothership project in current directory");
             (metadata.project_name, std::env::current_dir()?)
         } else {
             return Err(anyhow!("No project specified and not in a Mothership project directory.\nPlease specify a project name or run this command from a project directory."));
@@ -680,12 +680,12 @@ pub async fn handle_beam(
         }
     }
     
-    println!("\n{}", "🎉 Successfully beamed into project!".green().bold());
-    println!("{}", format!("📁 Project location: {}", project_path.display()).dimmed());
-    println!("{}", "🚀 Mothership daemon is now running in the background".dimmed());
-    println!("{}", "💡 Files will sync automatically - edit and save to see real-time sync".dimmed());
-    println!("{}", "🔧 Use 'mothership status' to check sync status".dimmed());
-    println!("{}", "⏹️  The daemon will continue running until you restart your computer".dimmed());
+    println!("\n{}", "Successfully beamed into project!".green().bold());
+    println!("{}", format!("Project location: {}", project_path.display()).dimmed());
+    println!("{}", "Mothership daemon is now running in the background".dimmed());
+    println!("{}", "Files will sync automatically - edit and save to see real-time sync".dimmed());
+    println!("{}", "Use 'mothership status' to check sync status".dimmed());
+    println!("{}", " The daemon will continue running until you restart your computer".dimmed());
 
     Ok(())
 }

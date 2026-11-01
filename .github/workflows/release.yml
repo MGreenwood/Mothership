@@ -110,7 +110,7 @@ jobs:
         files: artifacts/*/*
         generate_release_notes: true
         body: |
-          ## 🚀 Installation
+          ## Installation
           
           ### One-liner install (Recommended)
           
@@ -133,7 +133,7 @@ jobs:
           ### Download binaries
           Download the appropriate package for your platform from the assets below.
           
-          ## 🎯 Quick Start
+          ## Quick Start
           
           ```bash
           # Authenticate
@@ -147,7 +147,7 @@ jobs:
           mothership beam "your-project"
           ```
           
-          ## 📚 Documentation
+          ## Documentation
           
           - [GitHub Repository](https://github.com/your-org/mothership)
           - [Full Documentation](https://docs.mothership.dev)

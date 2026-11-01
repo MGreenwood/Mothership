@@ -143,9 +143,9 @@ Status: **UNKNOWN**
 Return code: 0
 Output preview:
 ```
-🤖 Checking daemon status...
-✅ Mothership daemon is running
-ℹ️ Daemon Status:
+Checking daemon status...
+Mothership daemon is running
+Daemon Status:
 {"status":"success","data":{"is_running":true,"projects_tracked":0,"files_syncing":0,"last_sync":null,"server_connected":fa...
 ```
 
@@ -171,7 +171,7 @@ Status: **UNKNOWN**
 Return code: 0
 Output preview:
 ```
-📦 Syncing with remote Mothership...
+Syncing with remote Mothership...
 
 ```
 
@@ -198,10 +198,10 @@ Status: **UNKNOWN**
 Return code: 0
 Output preview:
 ```
-📡 Checking server connection status...
-ℹ️ Not connected to any server
-ℹ️ Operating in local-only mode
-ℹ️ Use 'mothership connect <server-url>' to connect to a server
+Checking server connection status...
+Not connected to any server
+Operating in local-only mode
+Use 'mothership connect <server-url>' to connect to a server
 
 ```
 

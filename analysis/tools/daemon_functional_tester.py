@@ -441,7 +441,7 @@ def main():
     print()
     
     for test in results['test_results']:
-        status = "✅ PASS" if test['passed'] else "❌ FAIL"
+        status = "PASS" if test['passed'] else "FAIL"
         print(f"{status} {test['test_name']}: {test['description']}")
         if test['details']:
             for key, value in test['details'].items():
