@@ -445,19 +445,14 @@ fn create_project_metadata(
 /// Check if the current directory is a Mothership project and return its metadata
 fn get_current_project_metadata() -> Option<ProjectMetadata> {
     let current_dir = std::env::current_dir().ok()?;
-    let mothership_dir = current_dir.join(".mothership");
-    
-    if mothership_dir.exists() && mothership_dir.is_dir() {
-        let metadata_path = mothership_dir.join("project.json");
-        if metadata_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&metadata_path) {
-                if let Ok(metadata) = serde_json::from_str::<ProjectMetadata>(&content) {
-                    return Some(metadata);
-                }
-            }
-        }
-    }
-    None
+    project_metadata_at(&current_dir)
+}
+
+/// Reads `.mothership/project.json` from a project directory, if present.
+fn project_metadata_at(dir: &std::path::Path) -> Option<ProjectMetadata> {
+    let metadata_path = dir.join(".mothership").join("project.json");
+    let content = std::fs::read_to_string(&metadata_path).ok()?;
+    serde_json::from_str::<ProjectMetadata>(&content).ok()
 }
 
 /// Handle beam command - either with explicit project name or auto-detect from current directory
@@ -485,9 +480,16 @@ pub async fn handle_beam(
             if !dir.exists() {
                 return Err(anyhow!("Specified directory does not exist: {}", dir.display()));
             }
-            // Create a subdirectory for the project when using --local-dir
-            let project_dir = dir.join(&project);
-            project_dir
+            // If the directory already is this project, use it directly;
+            // otherwise create a subdirectory named after the project.
+            let already_project = project_metadata_at(dir)
+                .map(|m| m.project_id == project || m.project_name == project)
+                .unwrap_or(false);
+            if already_project {
+                dir.clone()
+            } else {
+                dir.join(&project)
+            }
         } else if is_local {
             // If project exists locally, find its actual path
             let search_paths = vec![

@@ -249,6 +249,7 @@ fn create_api_router(state: AppState) -> Router {
         .route("/gateway/create", post(create_gateway))
         // Rift routes
         .route("/api/rifts", get(handlers::list_rifts).post(handlers::create_rift))
+        .route("/api/rifts/switch", post(handlers::switch_rift))
         .route("/api/rifts/:id/chat", get(chat::get_chat_history).post(chat::post_chat))
         .route("/api/wormholes", get(wormhole::list_wormholes).post(wormhole::create_wormhole))
         .route("/api/wormholes/:id", get(wormhole::get_wormhole))

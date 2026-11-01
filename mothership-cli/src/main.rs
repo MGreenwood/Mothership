@@ -1161,8 +1161,13 @@ async fn switch_to_rift(rift_name: &str) -> Result<()> {
         return Err(anyhow!("Server error: {}", error_msg));
     }
     
-    // Update local project metadata with new rift
-    update_local_rift_metadata(rift_name)?;
+    // Update local project metadata with the new rift (name for display, id for sync)
+    let rift_id = get_rifts()
+        .await?
+        .into_iter()
+        .find(|r| r.name == rift_name && in_project(r, local_project_id()))
+        .map(|r| r.id);
+    update_local_rift_metadata(rift_name, rift_id)?;
     
     Ok(())
 }
@@ -1235,8 +1240,8 @@ async fn response_error_message(response: reqwest::Response) -> String {
         .unwrap_or(body)
 }
 
-/// Helper function to update local rift metadata
-fn update_local_rift_metadata(rift_name: &str) -> Result<()> {
+/// Helper function to update local rift metadata. `rift_id` is what the daemon syncs to.
+fn update_local_rift_metadata(rift_name: &str, rift_id: Option<uuid::Uuid>) -> Result<()> {
     let current_dir = std::env::current_dir()?;
     let mothership_dir = current_dir.join(".mothership");
     let project_file = mothership_dir.join("project.json");
@@ -1250,6 +1255,9 @@ fn update_local_rift_metadata(rift_name: &str) -> Result<()> {
     
     // Update the current rift in metadata
     project_metadata.current_rift = Some(rift_name.to_string());
+    if let Some(id) = rift_id {
+        project_metadata.rift_id = Some(id.to_string());
+    }
     
     // Write back to file
     let updated_content = serde_json::to_string_pretty(&project_metadata)?;
