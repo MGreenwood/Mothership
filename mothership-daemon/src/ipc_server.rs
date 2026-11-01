@@ -111,6 +111,7 @@ impl IpcServer {
             .route("/projects", get(list_projects))
             .route("/projects/add", post(add_project))
             .route("/projects/:id/remove", post(remove_project))
+            .route("/projects/:id/reconnect", post(reconnect_project))
             .route("/shutdown", post(shutdown_daemon))
             .with_state(Arc::new(self));
 
@@ -246,6 +247,44 @@ async fn add_project(
         "Project '{}' successfully added for tracking",
         req.project_name
     ))))
+}
+
+/// Restart a project's WebSocket so it picks up a changed rift_id from project.json
+async fn reconnect_project(
+    State(server): State<Arc<IpcServer>>,
+    Path(project_id): Path<Uuid>,
+) -> Json<ApiResponse<String>> {
+    if !server.tracked_projects.read().await.contains_key(&project_id) {
+        return Json(ApiResponse::error(format!("Project {} is not tracked by the daemon", project_id)));
+    }
+
+    {
+        let mut listeners = server.websocket_listeners.write().await;
+        if let Some(handle) = listeners.remove(&project_id) {
+            handle.abort();
+        }
+    }
+
+    match crate::daemon::MothershipDaemon::start_websocket_listener(
+        project_id,
+        server.tracked_projects.clone(),
+        server.status.clone(),
+        server.websocket_listeners.clone(),
+        server.outgoing_channels.clone(),
+        server.server_write_flags.clone(),
+        server.base_hashes.clone(),
+    )
+    .await
+    {
+        Ok(()) => {
+            info!("🔁 Reconnected WebSocket for project {}", project_id);
+            Json(ApiResponse::success(format!("Reconnected project {}", project_id)))
+        }
+        Err(e) => {
+            error!("Failed to reconnect WebSocket for project {}: {}", project_id, e);
+            Json(ApiResponse::error(format!("Failed to reconnect: {}", e)))
+        }
+    }
 }
 
 /// Remove a project from tracking

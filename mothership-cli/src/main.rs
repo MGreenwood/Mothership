@@ -1168,6 +1168,15 @@ async fn switch_to_rift(rift_name: &str) -> Result<()> {
         .find(|r| r.name == rift_name && in_project(r, local_project_id()))
         .map(|r| r.id);
     update_local_rift_metadata(rift_name, rift_id)?;
+
+    // The daemon keeps its WebSocket on the rift it opened, so point it at the new one
+    if let Some(project_id) = local_project_id() {
+        let url = format!("http://localhost:7525/projects/{}/reconnect", project_id);
+        match reqwest::Client::new().post(&url).send().await {
+            Ok(resp) if resp.status().is_success() => {}
+            _ => println!("⚠️ Daemon not reachable; background sync will use '{}' after the next beam", rift_name),
+        }
+    }
     
     Ok(())
 }

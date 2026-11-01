@@ -1570,6 +1570,9 @@ impl MothershipDaemon {
                     flags.insert(project_id, true);
                 }
                 
+                // Base hashes belong to the rift we were on before; drop them so only this rift's files set bases
+                base_hashes.write().await.retain(|(id, _), _| *id != project_id);
+
                 // Write all current files (initial sync)
                 for (path, content) in current_files {
                     let file_path = project_path.join(&path);
