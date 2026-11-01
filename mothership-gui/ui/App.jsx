@@ -98,9 +98,8 @@ export default function App() {
       if (!discard) return
     }
     try {
-      const ended = await invoke('nvim_close', { id: tab.key, force: unsaved > 0 })
-      if (ended) removeTab(tab.key)
-      else setNotice(`Neovim in "${tab.title}" is still running. Finish or quit it in the terminal.`)
+      await invoke('nvim_close', { id: tab.key, force: unsaved > 0 })
+      removeTab(tab.key)
     } catch (err) {
       setNotice(String(err))
     }

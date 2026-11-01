@@ -355,37 +355,24 @@ pub async fn nvim_unsaved_buffers(sessions: State<'_, NvimSessions>, id: String)
     .map_err(|e| e.to_string())?
 }
 
-/// Asks nvim to quit (`:qa`, or `:qa!` when `force` is set). Returns `true` once the
-/// session has ended, or `false` if nvim is still running after a short wait
-/// (for example because of unsaved changes). The process is never killed here.
+/// Asks nvim to quit (`:qa`, or `:qa!` when `force` is set). Returns immediately; the
+/// session is removed by the reader thread once the process exits. The process is
+/// never killed here.
 #[tauri::command]
-pub async fn nvim_close(
-    sessions: State<'_, NvimSessions>,
-    id: String,
-    force: bool,
-) -> Result<bool, String> {
+pub fn nvim_close(sessions: State<'_, NvimSessions>, id: String, force: bool) -> Result<(), String> {
     let session = match sessions.get(&id) {
         Ok(s) => s,
-        Err(_) => return Ok(true),
+        Err(_) => return Ok(()),
     };
     let pipe = session.pipe.clone();
-    let map = sessions.sessions.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    std::thread::spawn(move || {
         let keys = if force { r"<C-\><C-n>:qa!<CR>" } else { r"<C-\><C-n>:qa<CR>" };
         let _ = helper_command(&nvim_program())
             .args(["--server", &pipe, "--remote-send", keys])
             .stdin(std::process::Stdio::null())
             .output();
-        for _ in 0..40 {
-            if !map.lock().unwrap().contains_key(&id) {
-                return Ok(true);
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        Ok(false)
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    });
+    Ok(())
 }
 
 #[tauri::command]
