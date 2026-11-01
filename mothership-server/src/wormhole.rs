@@ -141,10 +141,33 @@ pub struct FileView {
 }
 
 #[derive(Debug, Serialize)]
+pub struct SideView {
+    /// Index used by `Choice::Side` and by each conflict's `sides` list
+    pub index: usize,
+    pub rift_id: Uuid,
+    pub rift_name: String,
+}
+
+#[derive(Debug, Serialize)]
 pub struct WormholeDetail {
     #[serde(flatten)]
     pub summary: WormholeSummary,
+    pub sides: Vec<SideView>,
     pub files: Vec<FileView>,
+}
+
+async fn side_views(state: &AppState, wormhole: &WormholeRecord) -> Result<Vec<SideView>, ApiError> {
+    let mut sides = Vec::with_capacity(wormhole.rift_ids.len());
+    for (index, rift_id) in wormhole.rift_ids.iter().enumerate() {
+        let rift = state
+            .db
+            .get_rift(*rift_id)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| internal(format!("rift {rift_id} missing")))?;
+        sides.push(SideView { index, rift_id: *rift_id, rift_name: rift.name });
+    }
+    Ok(sides)
 }
 
 #[derive(Debug, Serialize)]
@@ -179,7 +202,7 @@ fn summarize(wormhole: &WormholeRecord, computed: &Computed) -> WormholeSummary 
     }
 }
 
-fn detail(wormhole: &WormholeRecord, computed: &Computed) -> WormholeDetail {
+fn detail(wormhole: &WormholeRecord, computed: &Computed, sides: Vec<SideView>) -> WormholeDetail {
     let files = computed
         .merges
         .iter()
@@ -207,6 +230,7 @@ fn detail(wormhole: &WormholeRecord, computed: &Computed) -> WormholeDetail {
 
     WormholeDetail {
         summary: summarize(wormhole, computed),
+        sides,
         files,
     }
 }
@@ -309,7 +333,8 @@ pub async fn get_wormhole(
     let user_id = current_user(&state, &headers)?;
     let wormhole = load_wormhole(&state, user_id, wormhole_id).await?;
     let computed = compute(&state, &wormhole).await?;
-    Ok(Json(ApiResponse::success(detail(&wormhole, &computed))))
+    let sides = side_views(&state, &wormhole).await?;
+    Ok(Json(ApiResponse::success(detail(&wormhole, &computed, sides))))
 }
 
 #[derive(Debug, Deserialize)]
@@ -356,7 +381,8 @@ pub async fn resolve_conflict(
         .map_err(internal)?;
 
     let computed = compute(&state, &wormhole).await?;
-    Ok(Json(ApiResponse::success(detail(&wormhole, &computed))))
+    let sides = side_views(&state, &wormhole).await?;
+    Ok(Json(ApiResponse::success(detail(&wormhole, &computed, sides))))
 }
 
 #[derive(Debug, Default, Deserialize)]

@@ -1398,6 +1398,15 @@ fn print_verbose_help() {
         ("diff", "Compare rifts", Some("[from] [to]")),
     ]);
     
+    print_command_section("🔀", "wormhole", "Merge Previews", &[
+        ("create", "Preview merging rifts", Some("<name> <rift> <rift> [rift...]")),
+        ("list", "List project wormholes", None),
+        ("show", "Show merged state and conflicts", Some("<wormhole>")),
+        ("resolve", "Resolve a conflict", Some("<wormhole> <path> <conflict> --side <rift> | --text <t> | --file <f>")),
+        ("converge", "Turn a wormhole into a rift", Some("<wormhole> [--name <rift>]")),
+        ("dissolve", "Archive a wormhole", Some("<wormhole>")),
+    ]);
+    
     print_command_section("🚀", "init", "Quick Init", &[]);
     println!("    {} {}", "mothership init".green().bold(), "[name]                Initialize current directory".dimmed());
     println!();

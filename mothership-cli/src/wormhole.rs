@@ -32,7 +32,7 @@ pub enum WormholeAction {
         /// Wormhole ID or name
         wormhole: String,
     },
-    /// Resolve a conflict by taking one of its sides
+    /// Resolve a conflict by taking one of its sides or by writing custom text
     Resolve {
         /// Wormhole ID or name
         wormhole: String,
@@ -40,9 +40,15 @@ pub enum WormholeAction {
         path: String,
         /// Conflict ID, as shown by `wormhole show`
         conflict: String,
-        /// Side index, as shown by `wormhole show`
-        #[arg(long)]
-        side: usize,
+        /// Rift name to take (or its side number, as shown by `wormhole show`)
+        #[arg(long, conflicts_with_all = ["text", "file"], required_unless_present_any = ["text", "file"])]
+        side: Option<String>,
+        /// Custom replacement text for the conflict
+        #[arg(long, conflicts_with = "file")]
+        text: Option<String>,
+        /// Read custom replacement text from a file
+        #[arg(long, conflicts_with = "text")]
+        file: Option<std::path::PathBuf>,
     },
     /// Create a new rift from the merged result (blocked while conflicts remain)
     Converge {
@@ -88,9 +94,18 @@ struct FileView {
 }
 
 #[derive(Deserialize)]
+struct SideView {
+    index: usize,
+    #[allow(dead_code)]
+    rift_id: Uuid,
+    rift_name: String,
+}
+
+#[derive(Deserialize)]
 struct WormholeDetail {
     #[serde(flatten)]
     summary: WormholeSummary,
+    sides: Vec<SideView>,
     files: Vec<FileView>,
 }
 
@@ -169,9 +184,15 @@ pub async fn run(action: WormholeAction) -> Result<()> {
             let id = resolve_wormhole_id(&session, project_id, &wormhole).await?;
             show(&session, id).await
         }
-        WormholeAction::Resolve { wormhole, path, conflict, side } => {
+        WormholeAction::Resolve { wormhole, path, conflict, side, text, file } => {
             let id = resolve_wormhole_id(&session, project_id, &wormhole).await?;
-            resolve(&session, id, &path, &conflict, side).await
+            let choice = match (side, text, file) {
+                (Some(side), None, None) => ResolveChoice::Side(side),
+                (None, Some(text), None) => ResolveChoice::Custom(text),
+                (None, None, Some(path)) => ResolveChoice::Custom(std::fs::read_to_string(&path)?),
+                _ => bail!("Pass exactly one of --side, --text, or --file"),
+            };
+            resolve(&session, id, &path, &conflict, choice).await
         }
         WormholeAction::Converge { wormhole, name } => {
             let id = resolve_wormhole_id(&session, project_id, &wormhole).await?;
@@ -279,13 +300,21 @@ async fn show(session: &Session, id: Uuid) -> Result<()> {
     }
 
     println!("\nUnresolved conflicts: {}", summary.unresolved_conflicts);
+    let side_name = |index: usize| {
+        detail
+            .sides
+            .iter()
+            .find(|side| side.index == index)
+            .map(|side| side.rift_name.clone())
+            .unwrap_or_else(|| index.to_string())
+    };
     for file in &detail.files {
         println!("\n{}", file.path.bold());
         for conflict in &file.conflicts {
             let state = if conflict.resolved { "resolved".green() } else { "unresolved".yellow() };
             println!("  conflict {} ({}) {}", conflict.id, describe_base(conflict.base_start, conflict.base_end), state);
             for (index, side) in conflict.sides.iter().enumerate() {
-                println!("    side {}:", index);
+                println!("    side {} ({}):", index, side_name(index));
                 if side.is_empty() {
                     println!("      (deleted)");
                 }
@@ -294,12 +323,12 @@ async fn show(session: &Session, id: Uuid) -> Result<()> {
                 }
             }
             if let Some(choice) = &conflict.choice {
-                println!("    chosen: {}", describe_choice(choice));
+                println!("    chosen: {}", describe_choice(choice, &side_name));
             }
         }
     }
     println!(
-        "\nResolve with: mothership wormhole resolve {} <path> <conflict> --side <n>",
+        "\nResolve with: mothership wormhole resolve {} <path> <conflict> --side <rift-name>\n           or --text \"...\" / --file <path> for custom text",
         summary.name
     );
     Ok(())
@@ -313,30 +342,59 @@ fn describe_base(start: usize, end: usize) -> String {
     }
 }
 
-fn describe_choice(choice: &Choice) -> String {
+fn describe_choice(choice: &Choice, side_name: &dyn Fn(usize) -> String) -> String {
     match choice {
-        Choice::Side(index) => format!("side {}", index),
+        Choice::Side(index) => format!("side {} ({})", index, side_name(*index)),
         Choice::Custom(_) => "custom text".to_string(),
     }
 }
 
-async fn resolve(session: &Session, id: Uuid, path: &str, conflict: &str, side: usize) -> Result<()> {
+async fn resolve(session: &Session, id: Uuid, path: &str, conflict: &str, choice: ResolveChoice) -> Result<()> {
+    let (choice_json, described) = match choice {
+        ResolveChoice::Side(side) => {
+            let detail: WormholeDetail = session.get(&format!("/api/wormholes/{}", id)).await?;
+            let index = side_index(&detail.sides, &side)?;
+            let name = detail.sides[index].rift_name.clone();
+            (Choice::Side(index), format!("side {} ({})", index, name))
+        }
+        ResolveChoice::Custom(text) => {
+            let lines: Vec<String> = text.lines().map(str::to_string).collect();
+            (Choice::Custom(lines), "custom text".to_string())
+        }
+    };
     let body = json!({
         "path": path,
         "conflict_id": conflict,
-        "choice": Choice::Side(side),
+        "choice": choice_json,
     });
     let detail: WormholeDetail = session.post(&format!("/api/wormholes/{}/resolve", id), &body).await?;
-    println!(
-        "{} conflict {} in {} with side {}.",
-        "Resolved".green(),
-        conflict,
-        path,
-        side
-    );
+    println!("{} conflict {} in {} with {}.", "Resolved".green(), conflict, path, described);
     println!("Unresolved conflicts remaining: {}", detail.summary.unresolved_conflicts);
     Ok(())
 }
+
+enum ResolveChoice {
+    Side(String),
+    Custom(String),
+}
+
+/// Accepts a rift name, or a numeric side index as a fallback.
+fn side_index(sides: &[SideView], reference: &str) -> Result<usize> {
+    let matches: Vec<&SideView> = sides.iter().filter(|side| side.rift_name == reference).collect();
+    match matches.as_slice() {
+        [one] => return Ok(one.index),
+        [] => {}
+        _ => bail!("More than one side is named '{}'; use its side number", reference),
+    }
+    if let Ok(index) = reference.parse::<usize>() {
+        if sides.iter().any(|side| side.index == index) {
+            return Ok(index);
+        }
+    }
+    let names: Vec<&str> = sides.iter().map(|side| side.rift_name.as_str()).collect();
+    bail!("No side named '{}'. Sides: {}", reference, names.join(", "))
+}
+
 
 async fn converge(session: &Session, id: Uuid, name: Option<String>) -> Result<()> {
     let body = json!({ "name": name });

@@ -13,6 +13,8 @@ use std::path::PathBuf;
 /// Upper bound on LCS table cells. Larger changed regions are treated as one block
 /// so memory stays bounded.
 const MAX_LCS_CELLS: usize = 16_000_000;
+/// Hex characters of the fingerprint used as a conflict id. Short enough to type.
+const CONFLICT_ID_LEN: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Hunk {
@@ -304,12 +306,14 @@ fn build_conflict(start: usize, end: usize, base: &[&str], sides: Vec<Vec<String
             hasher.update(b"\n");
         }
     }
+    let fingerprint = format!("{:x}", hasher.finalize());
     Conflict {
-        id: format!("{}-{}", start, end),
+        // Derived from content, not position, so the id survives edits elsewhere in the file
+        id: fingerprint[..CONFLICT_ID_LEN].to_string(),
         base_start: start,
         base_end: end,
         sides,
-        fingerprint: format!("{:x}", hasher.finalize()),
+        fingerprint,
     }
 }
 
