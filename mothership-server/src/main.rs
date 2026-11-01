@@ -1,8 +1,8 @@
 use axum::{
-    extract::{Path, State, WebSocketUpgrade},
+    extract::{DefaultBodyLimit, Path, State, WebSocketUpgrade},
     http::{HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Json, Response},
-    routing::{delete, get, post},
+    routing::{delete, get, post, MethodRouter},
     Router,
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar};
@@ -216,6 +216,7 @@ async fn main() -> anyhow::Result<()> {
 
 /// Create API-only router for dual port mode
 fn create_api_router(state: AppState) -> Router {
+    let max_request_bytes = state.config.limits.max_request_bytes;
     Router::new()
         // Health check (always available)
         .route("/health", get(health_check))
@@ -239,7 +240,10 @@ fn create_api_router(state: AppState) -> Router {
         .route("/projects/:id", get(get_project))
         .route("/projects/name/:name", get(get_project_by_name))
         .route("/projects/:id/beam", post(beam_into_project))
-        .route("/projects/:id/files", post(upload_initial_files))
+        .route(
+            "/projects/:id/files",
+            post(upload_initial_files).layer(DefaultBodyLimit::max(max_request_bytes)),
+        )
         .route("/projects/:id/checkpoints", post(create_checkpoint))
         .route("/projects/:id/history", get(get_project_history))
         .route("/projects/:id/checkpoints/:checkpoint_id/restore", post(restore_checkpoint))
@@ -288,14 +292,13 @@ fn create_api_router(state: AppState) -> Router {
 }
 
 // Returns the max allowed upload size in bytes for a single file (for CLI and GUI clients)
-async fn max_upload_size() -> Json<ApiResponse<u64>> {
-    // For now, hardcode to 5 MB. Make configurable if needed.
-    let max_size_bytes = 5 * 1024 * 1024;
-    Json(ApiResponse::success(max_size_bytes))
+async fn max_upload_size(State(state): State<AppState>) -> Json<ApiResponse<u64>> {
+    Json(ApiResponse::success(state.config.limits.max_file_bytes))
 }
 
 /// Create combined router for single port mode (legacy compatibility)
 fn create_combined_router(state: AppState) -> Router {
+    let max_request_bytes = state.config.limits.max_request_bytes;
     Router::new()
         // Health check (always available)
         .route("/health", get(health_check))
@@ -324,7 +327,10 @@ fn create_combined_router(state: AppState) -> Router {
         .route("/projects/:id", get(get_project))
         .route("/projects/name/:name", get(get_project_by_name))
         .route("/projects/:id/beam", post(beam_into_project))
-        .route("/projects/:id/files", post(upload_initial_files))
+        .route(
+            "/projects/:id/files",
+            post(upload_initial_files).layer(DefaultBodyLimit::max(max_request_bytes)),
+        )
         .route("/projects/:id/checkpoints", post(create_checkpoint))
         .route("/projects/:id/history", get(get_project_history))
         .route("/projects/:id/checkpoints/:checkpoint_id/restore", post(restore_checkpoint))
@@ -1772,6 +1778,15 @@ async fn upload_initial_files(
     };
 
     let file_count = req.files.len();
+    let limits = &state.config.limits;
+    if file_count > limits.max_files_per_request {
+        error!("Upload of {} files exceeds limit of {}", file_count, limits.max_files_per_request);
+        return Err(StatusCode::PAYLOAD_TOO_LARGE);
+    }
+    if let Some((path, _)) = req.files.iter().find(|(_, content)| content.len() as u64 > limits.max_file_bytes) {
+        error!("File {} exceeds per-file limit of {} bytes", path.display(), limits.max_file_bytes);
+        return Err(StatusCode::PAYLOAD_TOO_LARGE);
+    }
     info!("Uploading {} initial files to rift: {}", file_count, rift.id);
 
     // Store each file in the storage engine

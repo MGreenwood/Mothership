@@ -129,6 +129,29 @@ cat > ~/.config/mothership/config.json << EOF
 }}
 EOF
 
+# Enable tab completion. A failure here does not fail the install.
+COMPLETION_DIR="$HOME/.config/mothership/completions"
+mkdir -p "$COMPLETION_DIR"
+add_rc_line() {{
+    grep -qF "$2" "$1" 2>/dev/null || printf '\n%s\n' "$2" >> "$1"
+}}
+if COMPLETE=bash mothership > "$COMPLETION_DIR/mothership.bash" 2>/dev/null; then
+    BASH_RC="$HOME/.bashrc"
+    [ -f "$BASH_RC" ] || BASH_RC="$HOME/.bash_profile"
+    if [ -f "$BASH_RC" ]; then
+        add_rc_line "$BASH_RC" "[ -f \"$COMPLETION_DIR/mothership.bash\" ] && . \"$COMPLETION_DIR/mothership.bash\""
+    fi
+fi
+if COMPLETE=zsh mothership > "$COMPLETION_DIR/mothership.zsh" 2>/dev/null; then
+    if [ -f "$HOME/.zshrc" ]; then
+        add_rc_line "$HOME/.zshrc" "[ -f \"$COMPLETION_DIR/mothership.zsh\" ] && . \"$COMPLETION_DIR/mothership.zsh\""
+    fi
+fi
+if [ -d "$HOME/.config/fish" ]; then
+    mkdir -p "$HOME/.config/fish/completions"
+    COMPLETE=fish mothership > "$HOME/.config/fish/completions/mothership.fish" 2>/dev/null || true
+fi
+
 echo ""
 echo -e "${{GREEN}}Installation complete!${{NC}}"
 echo ""
@@ -573,8 +596,20 @@ $ConfigJson = @{{
 }} | ConvertTo-Json
 $ConfigJson | Out-File -FilePath "$ConfigDir\config.json" -Encoding UTF8
 
+# Enable tab completion for mothership in PowerShell
+$CompletionScript = "$InstallDir\mothership-completion.ps1"
+$env:COMPLETE = "powershell"
+& "$InstallDir\mothership.exe" | Out-File -FilePath $CompletionScript -Encoding UTF8
+Remove-Item Env:\COMPLETE
+New-Item -ItemType Directory -Force -Path (Split-Path $PROFILE) | Out-Null
+if (-not (Test-Path $PROFILE) -or -not (Select-String -Path $PROFILE -SimpleMatch $CompletionScript -Quiet)) {{
+    Add-Content -Path $PROFILE -Value ""
+    Add-Content -Path $PROFILE -Value ". '$CompletionScript'"
+}}
+
 Write-Host ""
 Write-Host "Installation complete!" -ForegroundColor Green
+Write-Host "Tab completion is enabled in new PowerShell windows." -ForegroundColor Green
 Write-Host ""
 Write-Host "Quick start:" -ForegroundColor Yellow
 Write-Host "  mothership auth           # Authenticate" -ForegroundColor Blue
@@ -641,8 +676,20 @@ $ConfigJson = @{{
 }} | ConvertTo-Json
 $ConfigJson | Out-File -FilePath "$ConfigDir\config.json" -Encoding UTF8
 
+# Enable tab completion for mothership in PowerShell
+$CompletionScript = "$InstallDir\mothership-completion.ps1"
+$env:COMPLETE = "powershell"
+& "$InstallDir\mothership.exe" | Out-File -FilePath $CompletionScript -Encoding UTF8
+Remove-Item Env:\COMPLETE
+New-Item -ItemType Directory -Force -Path (Split-Path $PROFILE) | Out-Null
+if (-not (Test-Path $PROFILE) -or -not (Select-String -Path $PROFILE -SimpleMatch $CompletionScript -Quiet)) {{
+    Add-Content -Path $PROFILE -Value ""
+    Add-Content -Path $PROFILE -Value ". '$CompletionScript'"
+}}
+
 Write-Host ""
 Write-Host "Installation complete!" -ForegroundColor Green
+Write-Host "Tab completion is enabled in new PowerShell windows." -ForegroundColor Green
 Write-Host ""
 Write-Host "Quick start:" -ForegroundColor Yellow
 Write-Host "  mothership auth           # Authenticate" -ForegroundColor Blue

@@ -88,4 +88,15 @@ require_auth_for_downloads = true
 max_downloads_per_hour = 100
 
 # Enable download statistics/analytics
-track_downloads = true 
+# Track download statistics/analytics
+track_downloads = true
+
+[limits]
+# Largest single file accepted on upload, in bytes (5 MiB)
+max_file_bytes = 5242880
+
+# Largest number of files accepted in one upload request
+max_files_per_request = 100
+
+# Largest accepted request body, in bytes (32 MiB)
+max_request_bytes = 33554432

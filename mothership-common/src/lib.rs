@@ -9,6 +9,7 @@ pub mod client;
 pub mod crdt;
 pub mod daemon;
 pub mod diff;
+pub mod ignore;
 pub mod merge;
 pub mod protocol;
 pub mod streaming;

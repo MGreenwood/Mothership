@@ -13,14 +13,18 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::auth::{OAuthProvider, OAuthRequest, OAuthResponse, OAuthSource};
+use crate::ignore::IgnoreRules;
 use crate::merge::Choice;
 use crate::protocol::{ApiResponse, BeamRequest, BeamResponse};
 use crate::{Checkpoint, Project};
 
 /// Fallback when the server does not report its upload limit.
 pub const DEFAULT_MAX_UPLOAD_BYTES: u64 = 5 * 1024 * 1024;
-/// Number of files sent per `POST /projects/:id/files` request.
+/// Maximum number of files sent per `POST /projects/:id/files` request.
 pub const UPLOAD_BATCH_SIZE: usize = 20;
+/// Maximum total file content per upload request. Kept well under the server's
+/// request body limit, even after JSON escaping.
+pub const UPLOAD_BATCH_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RiftInfo {
@@ -221,44 +225,38 @@ pub fn clear_oauth_token() -> Result<()> {
     Ok(())
 }
 
-/// Returns true for paths the initial upload should skip.
-pub fn should_ignore_path(path: &Path) -> bool {
-    let path_str = path.to_string_lossy();
-
-    if path_str.contains(".mothership") {
-        return true;
-    }
-
-    let ignore_patterns = [
-        ".git", ".svn", ".hg",
-        "node_modules", "target", "build", "dist",
-        ".DS_Store", "Thumbs.db",
-        ".env", ".env.local", ".env.production",
-        "*.log", "*.tmp", "*.temp",
-    ];
-
-    for pattern in &ignore_patterns {
-        if pattern.contains('*') {
-            let suffix = pattern.replace('*', "");
-            if path_str.ends_with(&suffix) {
-                return true;
-            }
-        } else if path_str.contains(pattern) {
-            return true;
+/// Splits files into upload batches limited by file count and total content bytes.
+pub fn split_upload_batches(files: Vec<(PathBuf, String)>) -> Vec<Vec<(PathBuf, String)>> {
+    let mut batches = Vec::new();
+    let mut current = Vec::new();
+    let mut current_bytes = 0usize;
+    for (path, content) in files {
+        let size = content.len();
+        let full = current.len() >= UPLOAD_BATCH_SIZE
+            || (!current.is_empty() && current_bytes + size > UPLOAD_BATCH_BYTES);
+        if full {
+            batches.push(std::mem::take(&mut current));
+            current_bytes = 0;
         }
+        current_bytes += size;
+        current.push((path, content));
     }
-
-    false
+    if !current.is_empty() {
+        batches.push(current);
+    }
+    batches
 }
 
 /// Walks `dir` and collects UTF-8 text files no larger than `max_size` bytes.
+/// Paths matching the directory's `.mothershipignore` rules are skipped.
 pub fn scan_text_files(dir: &Path, max_size: u64) -> Result<ScanReport> {
     let mut report = ScanReport::default();
+    let rules = IgnoreRules::load(dir)?;
 
     for entry in walkdir::WalkDir::new(dir)
         .follow_links(false)
         .into_iter()
-        .filter_entry(|e| !should_ignore_path(e.path()))
+        .filter_entry(|e| !rules.is_ignored(e.path(), e.file_type().is_dir()))
     {
         let entry = entry?;
         let path = entry.path();
@@ -288,6 +286,42 @@ pub fn scan_text_files(dir: &Path, max_size: u64) -> Result<ScanReport> {
     }
 
     Ok(report)
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use super::*;
+
+    fn file(name: &str, size: usize) -> (PathBuf, String) {
+        (PathBuf::from(name), "a".repeat(size))
+    }
+
+    #[test]
+    fn batches_split_on_file_count() {
+        let files: Vec<_> = (0..45).map(|i| file(&format!("f{i}"), 1)).collect();
+        let batches = split_upload_batches(files);
+        assert_eq!(batches.iter().map(Vec::len).collect::<Vec<_>>(), vec![20, 20, 5]);
+    }
+
+    #[test]
+    fn batches_split_on_byte_budget() {
+        let half = UPLOAD_BATCH_BYTES / 2 + 1;
+        let files = vec![file("a", half), file("b", half), file("c", 10)];
+        let batches = split_upload_batches(files);
+        assert_eq!(batches.iter().map(Vec::len).collect::<Vec<_>>(), vec![1, 2]);
+    }
+
+    #[test]
+    fn oversized_single_file_gets_its_own_batch() {
+        let files = vec![file("big", UPLOAD_BATCH_BYTES * 2), file("small", 1)];
+        let batches = split_upload_batches(files);
+        assert_eq!(batches.iter().map(Vec::len).collect::<Vec<_>>(), vec![1, 1]);
+    }
+
+    #[test]
+    fn empty_input_gives_no_batches() {
+        assert!(split_upload_batches(Vec::new()).is_empty());
+    }
 }
 
 #[derive(Serialize)]
@@ -455,16 +489,16 @@ impl MothershipClient {
         Ok(())
     }
 
-    /// Uploads files in batches of `UPLOAD_BATCH_SIZE`. Returns the number of files sent.
+    /// Uploads files in size-limited batches. Returns the number of files sent.
     pub async fn upload_files(&self, project_id: Uuid, files: HashMap<PathBuf, String>) -> Result<usize> {
         let entries: Vec<(PathBuf, String)> = files.into_iter().collect();
         let total = entries.len();
         let project_id_str = project_id.to_string();
 
-        for batch in entries.chunks(UPLOAD_BATCH_SIZE) {
+        for batch in split_upload_batches(entries) {
             let body = UploadFilesRequest {
                 project_id,
-                files: batch.iter().cloned().collect(),
+                files: batch.into_iter().collect(),
             };
             let url = self.endpoint(&["projects", &project_id_str, "files"])?;
             let response = self.authed(self.http.post(url).json(&body)).send().await?;

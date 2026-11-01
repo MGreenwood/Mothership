@@ -674,14 +674,16 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
             };
 
             // A diff only applies cleanly to the base it was made against. On a stale base,
-            // the server cannot rebuild the client's content from the diff, so it tells the
-            // editing client to adopt main instead of applying the diff.
+            // the server cannot rebuild the client's content from the diff, so it asks the
+            // client for the full content (see FullContentRequired below).
             if is_stale_base(base_hash.as_deref(), &original_content) {
-                warn!("Stale base for diff on {} in rift {}; forcing client resync", path.display(), msg_rift_id);
-                let _ = state.broadcaster.send((connection_channel.to_string(), SyncMessage::ForceSync {
+                // Do not ForceSync here: that overwrites the client's edit. Ask for the full
+                // content instead, so the FileChanged path can divert the edit to a conflict rift.
+                warn!("Stale base for diff on {} in rift {}; requesting full content", path.display(), msg_rift_id);
+                let _ = state.broadcaster.send((connection_channel.to_string(), SyncMessage::FullContentRequired {
+                    rift_id: msg_rift_id,
                     path: path.clone(),
-                    server_content: original_content,
-                    server_timestamp: chrono::Utc::now(),
+                    base_hash,
                 }));
                 return Ok(());
             }

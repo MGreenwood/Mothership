@@ -1,4 +1,5 @@
 use anyhow::Result;
+use mothership_common::ignore::IgnoreRules;
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -9,12 +10,8 @@ use tokio::sync::mpsc as async_mpsc;
 use tracing::{error, info, warn, debug};
 use uuid::Uuid;
 
-/// File size threshold for streaming (10MB) - files above this size use streaming
-const STREAMING_THRESHOLD: u64 = 10 * 1024 * 1024; // 10MB in bytes
-
-/// Legacy maximum file size for direct sync (1MB limit)
-/// Files above this but below streaming threshold will be skipped
-const MAX_DIRECT_SYNC_SIZE: u64 = 1_048_576; // 1MB in bytes
+/// Files up to this size are read and sent in one message; larger files are streamed in chunks
+pub(crate) const MAX_DIRECT_SYNC_SIZE: u64 = 1_048_576; // 1MB in bytes
 
 /// Minimum debounce interval between file events (100ms)
 const DEBOUNCE_INTERVAL: Duration = Duration::from_millis(100);
@@ -136,6 +133,9 @@ impl FileWatcher {
         // Create sync channel for file system events
         let (fs_tx, fs_rx) = mpsc::channel();
         
+        // Load .mothershipignore once per watcher; restart the watch to pick up edits
+        let ignore = IgnoreRules::load(&project_path)?;
+        
         // Create the file system watcher
         let mut watcher = RecommendedWatcher::new(fs_tx, Config::default())?;
         watcher.watch(&project_path, RecursiveMode::Recursive)?;
@@ -174,7 +174,8 @@ impl FileWatcher {
                             &project_path_clone, 
                             project_id, 
                             &sync_tx,  // Use sync channel here!
-                            &mut debouncer
+                            &mut debouncer,
+                            &ignore,
                         ) {
                             error!("Error handling file event in project {}: {}", project_id, e);
                         }
@@ -209,6 +210,7 @@ fn handle_file_event(
     project_id: Uuid,
     change_sender: &mpsc::Sender<FileChangeEvent>,  // Now using sync channel!
     debouncer: &mut FileDebouncer,
+    ignore: &IgnoreRules,
 ) -> Result<()> {
     // Determine change type and filter events
     let change_type = match event.kind {
@@ -221,23 +223,13 @@ fn handle_file_event(
     };
     
     for path in &event.paths {
-        // Skip hidden files and directories
-        if path.file_name()
-            .and_then(|name| name.to_str())
-            .map(|name| name.starts_with('.'))
-            .unwrap_or(false)
-        {
-            continue;
-        }
-        
         // Skip directories
         if path.is_dir() {
             continue;
         }
         
-        // Skip common build/cache directories and temporary files
-        let path_str = path.to_string_lossy();
-        if should_ignore_file(&path_str) {
+        // Skip anything the project's .mothershipignore excludes
+        if ignore.is_ignored(path, false) {
             continue;
         }
         
@@ -281,9 +273,9 @@ fn handle_file_event(
         };
         
         // Check file size and determine sync strategy
-        if file_size > STREAMING_THRESHOLD {
-            debug!("File {} ({} bytes) exceeds streaming threshold, will use streaming", 
-                path.display(), file_size);
+        if file_size > MAX_DIRECT_SYNC_SIZE {
+            debug!("File {} ({} bytes) exceeds direct sync limit of {} bytes, will use streaming",
+                path.display(), file_size, MAX_DIRECT_SYNC_SIZE);
             
             // For now, create event without content - streaming will be handled in daemon
             let change_event = FileChangeEvent {
@@ -300,10 +292,6 @@ fn handle_file_event(
                 error!("Failed to send file change event: {}", e);
             }
             continue;
-        } else if file_size > MAX_DIRECT_SYNC_SIZE {
-            debug!("Skipping file {} ({} bytes > {} bytes direct sync limit, < {} bytes streaming threshold)", 
-                path.display(), file_size, MAX_DIRECT_SYNC_SIZE, STREAMING_THRESHOLD);
-            continue;
         }
         
         // Editors and shells often truncate before writing; wait briefly so an
@@ -315,7 +303,7 @@ fn handle_file_event(
             file_size
         };
 
-        // Read file content for direct sync (files <= MAX_DIRECT_SYNC_SIZE)
+        // Read file content for direct sync (files <= MAX_DIRECT_SYNC_SIZE; larger files stream above)
         let content = match std::fs::read_to_string(path) {
             Ok(content) => content,
             Err(e) => {
@@ -342,59 +330,6 @@ fn handle_file_event(
     }
     
     Ok(())
-}
-
-/// Check if a file should be ignored during file watching
-fn should_ignore_file(path_str: &str) -> bool {
-    // Normalize Windows separators so the "dir/" patterns match on every platform
-    let path_str = path_str.replace('\\', "/");
-    let path_str = path_str.as_str();
-
-    // Common patterns to ignore
-    let ignore_patterns = [
-        "target/", "node_modules/", ".git/", "dist/", "build/", 
-        ".mothership/", ".vscode/", ".idea/", ".venv/", "__pycache__/",
-        ".lock", "~", ".tmp", ".temp", ".log", ".cache",
-        ".DS_Store", "Thumbs.db", "desktop.ini",
-    ];
-    
-    for pattern in &ignore_patterns {
-        if pattern.ends_with('/') {
-            // Directory pattern
-            if path_str.contains(pattern) {
-                return true;
-            }
-        } else {
-            // File extension or suffix pattern
-            if path_str.ends_with(pattern) || path_str.contains(pattern) {
-                return true;
-            }
-        }
-    }
-    
-    false
-}
-
-#[cfg(test)]
-mod tests {
-    use super::should_ignore_file;
-
-    #[test]
-    fn ignores_mothership_metadata_with_windows_separators() {
-        assert!(should_ignore_file(r"C:\proj\.mothership\project.json"));
-        assert!(should_ignore_file(r"C:\proj\.mothership\rifts\side-a\conflict.txt"));
-    }
-
-    #[test]
-    fn ignores_mothership_metadata_with_unix_separators() {
-        assert!(should_ignore_file("/proj/.mothership/project.json"));
-    }
-
-    #[test]
-    fn keeps_regular_project_files() {
-        assert!(!should_ignore_file(r"C:\proj\src\main.rs"));
-        assert!(!should_ignore_file("/proj/src/main.rs"));
-    }
 }
 
 /// Convert notify EventKind to our FileChangeType

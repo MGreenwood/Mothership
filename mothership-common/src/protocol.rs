@@ -57,6 +57,17 @@ pub enum SyncMessage {
         #[serde(default)]
         base_hash: Option<String>,
     },
+
+    /// Server could not apply a diff because the client's base is stale.
+    /// The client answers with a full `FileChanged` so the server can keep its edit
+    /// (in a conflict rift) instead of discarding it.
+    FullContentRequired {
+        rift_id: RiftId,
+        path: PathBuf,
+        /// Echoed from the rejected diff so the client can resend it as `FileChanged`.
+        #[serde(default)]
+        base_hash: Option<String>,
+    },
     
     /// PERFORMANCE FIX: Client reports multiple file changes as diffs (batched)
     BatchDiffChanges {

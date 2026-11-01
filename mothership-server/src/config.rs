@@ -25,6 +25,34 @@ pub struct ServerConfig {
     
     /// File streaming settings
     pub streaming: StreamingSettings,
+
+    /// Upload size and count limits
+    #[serde(default)]
+    pub limits: UploadLimits,
+}
+
+/// Limits applied to files uploaded to the server. Missing keys use the defaults.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UploadLimits {
+    /// Largest single file accepted, in bytes
+    pub max_file_bytes: u64,
+
+    /// Largest number of files accepted in one upload request
+    pub max_files_per_request: usize,
+
+    /// Largest accepted request body, in bytes (checked before parsing)
+    pub max_request_bytes: usize,
+}
+
+impl Default for UploadLimits {
+    fn default() -> Self {
+        Self {
+            max_file_bytes: 5 * 1024 * 1024,
+            max_files_per_request: 100,
+            max_request_bytes: 32 * 1024 * 1024,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -213,6 +241,7 @@ impl Default for ServerConfig {
                 enable_compression: true,
                 compression_level: 6,
             },
+            limits: UploadLimits::default(),
         }
     }
 }

@@ -19,7 +19,7 @@ use sha2::{Sha256, Digest};
 use flate2;
 
 // Internal imports
-use crate::file_watcher::{FileChangeEvent, FileWatcher};
+use crate::file_watcher::{FileChangeEvent, FileWatcher, MAX_DIRECT_SYNC_SIZE};
 use crate::ipc_server::IpcServer;
 use crate::snapshots::{SnapshotRegistry, SNAPSHOT_SWEEP_INTERVAL_SECS};
 use crate::system_tray::SystemTray;
@@ -55,8 +55,32 @@ pub struct TrackedProject {
     pub added_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// Last-synced content hash per (project ID, relative file path)
-pub type BaseHashes = Arc<RwLock<HashMap<(Uuid, String), String>>>;
+/// Files up to this size keep their synced content in `SyncBase`, so the next save can be sent as a diff.
+/// Larger files keep only the hash, and their saves go as full content or streams.
+const BASE_CONTENT_CACHE_LIMIT: usize = 1024 * 1024;
+
+/// What this client last synced for one file
+#[derive(Debug, Clone)]
+pub struct SyncBase {
+    pub hash: String,
+    pub content: Option<String>,
+}
+
+impl SyncBase {
+    fn from_content(content: &str) -> Self {
+        Self {
+            hash: content_hash(content),
+            content: (content.len() <= BASE_CONTENT_CACHE_LIMIT).then(|| content.to_string()),
+        }
+    }
+
+    fn hash_only(hash: String) -> Self {
+        Self { hash, content: None }
+    }
+}
+
+/// Last-synced base per (project ID, relative file path)
+pub type BaseHashes = Arc<RwLock<HashMap<(Uuid, String), SyncBase>>>;
 
 /// The main Mothership daemon that coordinates all background services
 pub struct MothershipDaemon {
@@ -448,7 +472,8 @@ impl MothershipDaemon {
         
         // Base is the content this client last synced for the path; the server rejects edits made against a stale base
         let base_key = (event.project_id, event.file_path.to_string_lossy().to_string());
-        let base_hash = base_hashes.read().await.get(&base_key).cloned();
+        let base = base_hashes.read().await.get(&base_key).cloned();
+        let base_hash = base.as_ref().map(|b| b.hash.clone());
 
         // Content already matches the last synced base (e.g. a watcher echo of a write we just applied): nothing new to send
         if base_hash.as_deref() == Some(content_hash(&event.content).as_str()) {
@@ -456,13 +481,30 @@ impl MothershipDaemon {
             return Ok(());
         }
 
-        // Create sync message
-        let sync_message = SyncMessage::FileChanged {
-            rift_id,
-            path: event.file_path.clone(),
-            content: event.content.clone(),
-            timestamp: event.timestamp,
-            base_hash,
+        // Send only the changed lines when we still hold the base content. Anything the diff
+        // cannot represent exactly falls back to full content.
+        let line_diff = base
+            .as_ref()
+            .and_then(|b| b.content.as_deref())
+            .map(|old| DiffEngine::new().generate_line_diff(old, &event.content))
+            .filter(|diff| matches!(diff, FileDiff::LineDiff { .. }));
+
+        let sync_message = match line_diff {
+            Some(diff) => SyncMessage::FileDiffChanged {
+                rift_id,
+                path: event.file_path.clone(),
+                diff,
+                file_size: event.content.len() as u64,
+                timestamp: event.timestamp,
+                base_hash,
+            },
+            None => SyncMessage::FileChanged {
+                rift_id,
+                path: event.file_path.clone(),
+                content: event.content.clone(),
+                timestamp: event.timestamp,
+                base_hash,
+            },
         };
         
         // Send via persistent WebSocket channel
@@ -477,7 +519,7 @@ impl MothershipDaemon {
         }
 
         // The local file now matches what we just sent, so it becomes the new base
-        base_hashes.write().await.insert(base_key, content_hash(&event.content));
+        base_hashes.write().await.insert(base_key, SyncBase::from_content(&event.content));
         
         Ok(())
     }
@@ -533,7 +575,7 @@ impl MothershipDaemon {
         
         // Send stream start message
         let base_key = (event.project_id, event.file_path.to_string_lossy().to_string());
-        let base_hash = base_hashes.read().await.get(&base_key).cloned();
+        let base_hash = base_hashes.read().await.get(&base_key).map(|b| b.hash.clone());
         let start_message = SyncMessage::StartFileStream {
             stream_id,
             rift_id,
@@ -587,7 +629,7 @@ impl MothershipDaemon {
             Ok(ref hash) => {
                 info!("File stream completed for {}", event.file_path.display());
                 // The streamed file now matches the server's copy, so it becomes the new base
-                base_hashes.write().await.insert(base_key, hash.clone());
+                base_hashes.write().await.insert(base_key, SyncBase::hash_only(hash.clone()));
             }
             Err(ref e) => error!("File stream failed for {}: {}", event.file_path.display(), e),
         }
@@ -1167,7 +1209,7 @@ impl MothershipDaemon {
                                             debug!("Received WebSocket message: {} chars", text.len());
                                             
                                             // Handle incoming sync message
-                                            if let Err(e) = Self::handle_websocket_sync_message(&text, &project_path, &server_write_flags, &base_hashes, project_id).await {
+                                            if let Err(e) = Self::handle_websocket_sync_message(&text, &project_path, &server_write_flags, &base_hashes, &outgoing_channels, project_id).await {
                                                 error!("Failed to handle incoming sync message: {}", e);
                                             }
                                         }
@@ -1494,6 +1536,7 @@ impl MothershipDaemon {
         project_path: &PathBuf,
         server_write_flags: &Arc<RwLock<HashMap<Uuid, bool>>>,
         base_hashes: &BaseHashes,
+        outgoing_channels: &Arc<RwLock<HashMap<Uuid, mpsc::UnboundedSender<SyncMessage>>>>,
         project_id: Uuid,
     ) -> Result<()> {
         let sync_message: SyncMessage = serde_json::from_str(text)
@@ -1520,9 +1563,7 @@ impl MothershipDaemon {
                 // Write file content
                 tokio::fs::write(&file_path, &content).await?;
                 info!("Applied file change from collaborator: {}", path.display());
-                base_hashes.write().await.insert((project_id, path.to_string_lossy().to_string()), content_hash(&content));
-                
-                // Clear server write flag
+                base_hashes.write().await.insert((project_id, path.to_string_lossy().to_string()), SyncBase::from_content(&content));
                 {
                     let mut flags = server_write_flags.write().await;
                     flags.remove(&project_id);
@@ -1561,7 +1602,7 @@ impl MothershipDaemon {
                             
                             // Write updated content
                             tokio::fs::write(&file_path, &new_content).await?;
-                            base_hashes.write().await.insert((project_id, change.path.to_string_lossy().to_string()), content_hash(&new_content));
+                            base_hashes.write().await.insert((project_id, change.path.to_string_lossy().to_string()), SyncBase::from_content(&new_content));
                             info!("Applied diff to {}: {} -> {} bytes", 
                                 change.path.display(), current_content.len(), new_content.len());
                         }
@@ -1602,7 +1643,7 @@ impl MothershipDaemon {
                     
                     // Write file content
                     tokio::fs::write(&file_path, &content).await?;
-                    base_hashes.write().await.insert((project_id, path.to_string_lossy().to_string()), content_hash(&content));
+                    base_hashes.write().await.insert((project_id, path.to_string_lossy().to_string()), SyncBase::from_content(&content));
                     info!("Wrote initial file: {}", path.display());
                 }
                 
@@ -1618,6 +1659,104 @@ impl MothershipDaemon {
                 info!("[{}] {}: {}", message.timestamp.format("%H:%M:%S"), message.author_username, message.content);
                 Ok(())
             }
+            SyncMessage::FullContentRequired { path, base_hash, .. } => {
+                // Server could not apply our diff (stale base). Resend the whole local file with the
+                // rejected base so the server keeps our edit in a conflict rift instead of discarding it.
+                let file_path = project_path.join(&path);
+                let file_size = match tokio::fs::metadata(&file_path).await {
+                    Ok(meta) => meta.len(),
+                    Err(e) => {
+                        warn!("Cannot send full content for {}: {}", path.display(), e);
+                        return Ok(());
+                    }
+                };
+                info!("Server requested full content for {}; resending", path.display());
+
+                let rift_id = {
+                    let metadata_file = project_path.join(".mothership").join("project.json");
+                    let metadata_content = tokio::fs::read_to_string(&metadata_file).await
+                        .map_err(|e| anyhow!("Failed to read project metadata: {}", e))?;
+                    let metadata: ProjectMetadata = serde_json::from_str(&metadata_content)
+                        .map_err(|e| anyhow!("Failed to parse project metadata: {}", e))?;
+                    match &metadata.rift_id {
+                        Some(id) => Uuid::parse_str(id).map_err(|e| anyhow!("Invalid rift_id in metadata: {}", e))?,
+                        None => project_id,
+                    }
+                };
+
+                let key = (project_id, path.to_string_lossy().to_string());
+
+                // Large files go through the streaming protocol. The server checks the same base_hash on stream start.
+                if file_size > MAX_DIRECT_SYNC_SIZE {
+                    let stream_id = uuid::Uuid::new_v4();
+                    let config = StreamConfig {
+                        chunk_size: 64 * 1024,
+                        max_concurrent_streams: 10,
+                        streaming_threshold: 10 * 1024 * 1024,
+                        compression_threshold: 1024,
+                        timeout_seconds: 300,
+                        temp_dir: std::env::temp_dir(),
+                        compression_enabled: true,
+                        hash_verification: true,
+                    };
+                    let start_message = SyncMessage::StartFileStream {
+                        stream_id,
+                        rift_id,
+                        path: path.clone(),
+                        total_size: file_size,
+                        chunk_size: config.chunk_size,
+                        content_hash: String::new(),
+                        is_binary: !path.to_string_lossy().ends_with(".txt"),
+                        timestamp: chrono::Utc::now(),
+                        base_hash,
+                    };
+                    {
+                        let channels = outgoing_channels.read().await;
+                        let sender = channels.get(&project_id)
+                            .ok_or_else(|| anyhow!("No persistent WebSocket connection found for project {}", project_id))?;
+                        sender.send(start_message).map_err(|e| anyhow!("Failed to send stream start message: {}", e))?;
+                    }
+                    let result = Self::stream_file_chunks(stream_id, &file_path, &config, project_id, outgoing_channels).await;
+                    {
+                        let channels = outgoing_channels.read().await;
+                        if let Some(sender) = channels.get(&project_id) {
+                            let _ = sender.send(SyncMessage::EndFileStream {
+                                stream_id,
+                                final_hash: result.as_ref().map(|h| h.clone()).unwrap_or_default(),
+                                success: result.is_ok(),
+                            });
+                        }
+                    }
+                    if let Ok(hash) = &result {
+                        base_hashes.write().await.insert(key, SyncBase::hash_only(hash.clone()));
+                    }
+                    return result.map(|_| ());
+                }
+
+                let content = match tokio::fs::read_to_string(&file_path).await {
+                    Ok(content) => content,
+                    Err(e) => {
+                        warn!("Cannot send full content for {}: {}", path.display(), e);
+                        return Ok(());
+                    }
+                };
+                let sender_result = {
+                    let channels = outgoing_channels.read().await;
+                    match channels.get(&project_id) {
+                        Some(sender) => sender.send(SyncMessage::FileChanged {
+                            rift_id,
+                            path: path.clone(),
+                            content: content.clone(),
+                            timestamp: chrono::Utc::now(),
+                            base_hash,
+                        }),
+                        None => return Err(anyhow!("No persistent WebSocket connection found for project {}", project_id)),
+                    }
+                };
+                sender_result.map_err(|e| anyhow!("Failed to queue full content: {}", e))?;
+                base_hashes.write().await.insert(key, SyncBase::from_content(&content));
+                Ok(())
+            }
             SyncMessage::ForceSync { path, server_content, .. } => {
                 // Server replaced our base with its version (e.g. after a stale-edit conflict); adopt it
                 info!("Force syncing {} from server", path.display());
@@ -1630,7 +1769,7 @@ impl MothershipDaemon {
                     tokio::fs::create_dir_all(parent).await?;
                 }
                 tokio::fs::write(&file_path, &server_content).await?;
-                base_hashes.write().await.insert((project_id, path.to_string_lossy().to_string()), content_hash(&server_content));
+                base_hashes.write().await.insert((project_id, path.to_string_lossy().to_string()), SyncBase::from_content(&server_content));
                 {
                     let mut flags = server_write_flags.write().await;
                     flags.remove(&project_id);

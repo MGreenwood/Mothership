@@ -1,6 +1,8 @@
 use anyhow::{anyhow, Result};
 use colored::*;
 use mothership_common::{
+    client::split_upload_batches,
+    ignore::write_default_ignore_file,
     protocol::{ApiResponse, GatewayRequest},
     GatewayProject, Project, ClientConfig,
 };
@@ -9,7 +11,6 @@ use std::fs;
 use std::collections::HashMap;
 use std::io::{self, Write};
 use serde::{Serialize, Deserialize};
-use walkdir::WalkDir;
 
 use crate::{config::ConfigManager, get_http_client, print_api_error, print_info, print_success, connections};
 
@@ -243,6 +244,11 @@ pub async fn handle_gateway_create(
     // Upload initial files to the server. A failed upload must fail the command,
     // otherwise the project is created with no files and beaming it gives an empty directory.
     print_info("Scanning directory for initial files...");
+    match write_default_ignore_file(&dir) {
+        Ok(true) => print_info(&format!("Created {} with default ignore rules", mothership_common::ignore::IGNORE_FILE_NAME)),
+        Ok(false) => {}
+        Err(e) => print_api_error(&format!("Warning: could not create .mothershipignore: {}", e)),
+    }
     if let Err(e) = upload_initial_files(&config, &project, &dir, &active_server.url).await {
         return Err(anyhow!(
             "Gateway '{}' was created on the server (Project ID: {}), but uploading its files failed: {}. \
@@ -506,49 +512,27 @@ async fn upload_initial_files(
     let max_size_json: ApiResponse<u64> = max_size_resp.json().await?;
     let max_size = max_size_json.data.unwrap_or(5 * 1024 * 1024); // fallback to 5MB
 
-    let mut files = HashMap::new();
-    let mut file_count = 0;
-    let mut skipped_files = Vec::new();
-    // Scan directory for files (excluding .mothership and common ignore patterns)
-    for entry in WalkDir::new(dir)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|e| !should_ignore_file(e.path()))
-    {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_file() {
-            if let Ok(relative_path) = path.strip_prefix(dir) {
-                match fs::read(path) {
-                    Ok(content_bytes) => {
-                        if content_bytes.len() as u64 > max_size {
-                            skipped_files.push(relative_path.display().to_string());
-                            print_info(&format!("Skipped (too large): {} ({} bytes)", relative_path.display(), content_bytes.len()));
-                            continue;
-                        }
-                        match String::from_utf8(content_bytes) {
-                            Ok(content) => {
-                                files.insert(relative_path.to_path_buf(), content);
-                                file_count += 1;
-                                print_info(&format!("Found: {}", relative_path.display()));
-                            }
-                            Err(_) => {
-                                print_info(&format!("Skipped (binary): {}", relative_path.display()));
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        print_info(&format!("Skipped (unreadable): {}", relative_path.display()));
-                    }
-                }
-            }
-        }
+    let report = mothership_common::client::scan_text_files(dir, max_size)?;
+    for path in &report.skipped_too_large {
+        print_info(&format!("Skipped (too large): {}", path.display()));
+    }
+    for path in &report.skipped_binary {
+        print_info(&format!("Skipped (binary): {}", path.display()));
+    }
+    for path in &report.skipped_unreadable {
+        print_info(&format!("Skipped (unreadable): {}", path.display()));
+    }
+    let skipped_files = report.skipped_too_large.len();
+    let files = report.files;
+    let file_count = files.len();
+    for path in files.keys() {
+        print_info(&format!("Found: {}", path.display()));
     }
 
     if files.is_empty() {
         print_info("No text files found to upload");
-        if !skipped_files.is_empty() {
-            print_info(&format!("{} files were skipped for exceeding the max upload size.", skipped_files.len()));
+        if skipped_files > 0 {
+            print_info(&format!("{} files were skipped for exceeding the max upload size.", skipped_files));
         }
         return Ok(());
     }
@@ -556,13 +540,12 @@ async fn upload_initial_files(
     print_info(&format!("Uploading {} files to server in batches...", file_count));
 
     let upload_url = format!("{}/projects/{}/files", server_url, project.id);
-    let batch_size = 20;
     let mut uploaded = 0;
     let total = files.len();
     let mut batch_num = 1;
 
     let file_vec: Vec<_> = files.into_iter().collect();
-    for batch in file_vec.chunks(batch_size) {
+    for batch in split_upload_batches(file_vec) {
         let batch_map: HashMap<_, _> = batch.iter().cloned().collect();
         let upload_request = UploadInitialFilesRequest {
             project_id: project.id,
@@ -584,43 +567,10 @@ async fn upload_initial_files(
     }
 
     print_success(&format!("Successfully uploaded {} files to server!", total));
-    if !skipped_files.is_empty() {
-        print_info(&format!("{} files were skipped for exceeding the max upload size.", skipped_files.len()));
+    if skipped_files > 0 {
+        print_info(&format!("{} files were skipped for exceeding the max upload size.", skipped_files));
     }
     Ok(())
-}
-
-/// Check if a file should be ignored during initial scan
-fn should_ignore_file(path: &std::path::Path) -> bool {
-    let path_str = path.to_string_lossy();
-    
-    // Ignore .mothership directory
-    if path_str.contains(".mothership") {
-        return true;
-    }
-    
-    // Ignore common patterns
-    let ignore_patterns = [
-        ".git", ".svn", ".hg",
-        "node_modules", "target", "build", "dist", 
-        ".DS_Store", "Thumbs.db",
-        ".env", ".env.local", ".env.production",
-        "*.log", "*.tmp", "*.temp",
-    ];
-    
-    for pattern in &ignore_patterns {
-        if pattern.contains("*") {
-            // Simple wildcard matching
-            let pattern = pattern.replace("*", "");
-            if path_str.ends_with(&pattern) {
-                return true;
-            }
-        } else if path_str.contains(pattern) {
-            return true;
-        }
-    }
-    
-    false
 }
 
 #[derive(Serialize)]
