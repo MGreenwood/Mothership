@@ -15,7 +15,6 @@ fn main() {
             nvim::nvim_open,
             nvim::nvim_write,
             nvim::nvim_resize,
-            nvim::nvim_unsaved_buffers,
             nvim::nvim_close,
             nvim::nvim_check_file,
             nvim::terminal_open,

@@ -83,23 +83,20 @@ export default function App() {
       }
       return
     }
-    let unsaved = 0
     try {
-      unsaved = await invoke('nvim_unsaved_buffers', { id: tab.key })
-    } catch {
-      removeTab(tab.key)
-      return
-    }
-    if (unsaved > 0) {
+      const ended = await invoke('nvim_close', { id: tab.key, force: false })
+      if (ended) {
+        removeTab(tab.key)
+        return
+      }
       const discard = await ask(
-        `"${tab.title}" has ${unsaved} buffer(s) with unsaved changes. Quit Neovim and discard them?`,
-        { title: 'Unsaved changes', kind: 'warning' },
+        `"${tab.title}" has buffers with unsaved changes. Quit Neovim and discard them?`,
+        { title: 'Unsaved changes', kind: 'warning', okLabel: 'OK', cancelLabel: 'Cancel' },
       )
       if (!discard) return
-    }
-    try {
-      await invoke('nvim_close', { id: tab.key, force: unsaved > 0 })
-      removeTab(tab.key)
+      const forced = await invoke('nvim_close', { id: tab.key, force: true })
+      if (forced) removeTab(tab.key)
+      else setNotice(`Neovim in "${tab.title}" is still running. Finish or quit it in the terminal.`)
     } catch (err) {
       setNotice(String(err))
     }
