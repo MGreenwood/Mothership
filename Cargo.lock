@@ -3288,13 +3288,11 @@ name = "mothership-gui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "axum",
  "base64 0.22.1",
  "chrono",
  "dirs 5.0.1",
  "mothership-common",
  "portable-pty",
- "reqwest 0.11.27",
  "serde",
  "serde_json",
  "tauri",
@@ -3303,7 +3301,6 @@ dependencies = [
  "tauri-plugin-opener",
  "tokio",
  "tower 0.4.13",
- "tower-http 0.5.2",
  "url",
  "uuid",
 ]
