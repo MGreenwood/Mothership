@@ -459,6 +459,34 @@ mod tests {
     }
 
     #[test]
+    fn two_separate_conflicts_resolve_independently() {
+        let base = "1\n2\n3\n4\n5\n6\n7\n8\n9\n10";
+        let merged = merge(base, &["1\nA2\n3\n4\n5\n6\n7\nA8\n9\n10", "1\nB2\n3\n4\n5\n6\n7\nB8\n9\n10"]);
+        assert_eq!(conflict_count(&merged), 2);
+
+        let conflicts: Vec<_> = merged.conflicts().cloned().collect();
+        assert_ne!(conflicts[0].id, conflicts[1].id);
+
+        let mut resolutions = HashMap::new();
+        resolutions.insert(
+            conflicts[0].id.clone(),
+            Resolution { fingerprint: conflicts[0].fingerprint.clone(), choice: Choice::Side(0) },
+        );
+        assert_eq!(merged.unresolved(&resolutions).len(), 1);
+        assert!(merged.render(&resolutions).is_none());
+
+        resolutions.insert(
+            conflicts[1].id.clone(),
+            Resolution { fingerprint: conflicts[1].fingerprint.clone(), choice: Choice::Custom(vec!["C8".into()]) },
+        );
+        assert!(merged.unresolved(&resolutions).is_empty());
+        assert_eq!(
+            merged.render(&resolutions).unwrap().join("\n"),
+            "1\nA2\n3\n4\n5\n6\n7\nC8\n9\n10"
+        );
+    }
+
+    #[test]
     fn deleting_all_lines_yields_no_lines() {
         let merged = merge_file(Some("a\nb"), &[None, Some("a\nb")]);
         assert_eq!(conflict_count(&merged), 0);

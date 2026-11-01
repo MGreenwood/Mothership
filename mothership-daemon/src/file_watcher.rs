@@ -346,6 +346,10 @@ fn handle_file_event(
 
 /// Check if a file should be ignored during file watching
 fn should_ignore_file(path_str: &str) -> bool {
+    // Normalize Windows separators so the "dir/" patterns match on every platform
+    let path_str = path_str.replace('\\', "/");
+    let path_str = path_str.as_str();
+
     // Common patterns to ignore
     let ignore_patterns = [
         "target/", "node_modules/", ".git/", "dist/", "build/", 
@@ -369,6 +373,28 @@ fn should_ignore_file(path_str: &str) -> bool {
     }
     
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_ignore_file;
+
+    #[test]
+    fn ignores_mothership_metadata_with_windows_separators() {
+        assert!(should_ignore_file(r"C:\proj\.mothership\project.json"));
+        assert!(should_ignore_file(r"C:\proj\.mothership\rifts\side-a\conflict.txt"));
+    }
+
+    #[test]
+    fn ignores_mothership_metadata_with_unix_separators() {
+        assert!(should_ignore_file("/proj/.mothership/project.json"));
+    }
+
+    #[test]
+    fn keeps_regular_project_files() {
+        assert!(!should_ignore_file(r"C:\proj\src\main.rs"));
+        assert!(!should_ignore_file("/proj/src/main.rs"));
+    }
 }
 
 /// Convert notify EventKind to our FileChangeType

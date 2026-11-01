@@ -666,7 +666,7 @@ async fn handle_create_rift_command(name: String, description: Option<String>) -
 
     let _rift_id = create_rift(&name, description).await?;
     println!("✨ Created new rift: {}", name);
-    println!("🔀 Switch to it with: mothership switch-rift \"{}\"", name);
+    println!("🔀 Switch to it with: mothership rift switch \"{}\"", name);
 
     Ok(())
 }
