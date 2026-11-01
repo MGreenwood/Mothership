@@ -41,9 +41,9 @@ export default function App() {
     })
   }
 
-  const addTab = ({ file = null, cwd = null, title }) => {
+  const addTab = ({ kind = 'nvim', file = null, cwd = null, title }) => {
     const key = newSessionId()
-    setTabs((prev) => [...prev, { key, file, cwd, title }])
+    setTabs((prev) => [...prev, { key, kind, file, cwd, title }])
     setActiveKey(key)
   }
 
@@ -68,7 +68,21 @@ export default function App() {
     if (typeof path === 'string') await openFile(path)
   }
 
+  const openTerminal = () => {
+    const folder = explorerRoot ? explorerRoot.split(/[\\/]/).filter(Boolean).pop() : null
+    addTab({ kind: 'shell', cwd: explorerRoot ?? null, title: folder ? `terminal: ${folder}` : 'terminal' })
+  }
+
   const closeTab = async (tab) => {
+    if (tab.kind === 'shell') {
+      try {
+        await invoke('terminal_close', { id: tab.key })
+        removeTab(tab.key)
+      } catch (err) {
+        setNotice(String(err))
+      }
+      return
+    }
     let unsaved = 0
     try {
       unsaved = await invoke('nvim_unsaved_buffers', { id: tab.key })
@@ -115,6 +129,7 @@ export default function App() {
         <span className="toolbar-sep" />
         <button onClick={pickFile}>Open file…</button>
         <button onClick={() => addTab({ title: 'nvim' })}>New Neovim</button>
+        <button onClick={openTerminal}>New Terminal</button>
         <span className="toolbar-sep" />
         <ActiveRiftBar gateway={gateway} version={riftVersion} />
       </header>
@@ -149,7 +164,7 @@ export default function App() {
             className={`tab${tab.key === activeKey ? ' active' : ''}`}
             onClick={() => setActiveKey(tab.key)}
           >
-            <span className="tab-title" title={tab.file ?? 'nvim'}>{tab.title}</span>
+            <span className="tab-title" title={tab.file ?? tab.cwd ?? 'nvim'}>{tab.title}</span>
             <button
               className="tab-close"
               aria-label={`Close ${tab.title}`}
@@ -166,12 +181,13 @@ export default function App() {
 
       <main className="terminals">
         {tabs.length === 0 && (
-          <p className="empty">Open a file or start a new Neovim session.</p>
+          <p className="empty">Open a file, or start a new Neovim or terminal session.</p>
         )}
         {tabs.map((tab) => (
           <TerminalTab
             key={tab.key}
             id={tab.key}
+            kind={tab.kind}
             file={tab.file}
             cwd={tab.cwd}
             active={tab.key === activeKey}

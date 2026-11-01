@@ -18,6 +18,8 @@ fn main() {
             nvim::nvim_unsaved_buffers,
             nvim::nvim_close,
             nvim::nvim_check_file,
+            nvim::terminal_open,
+            nvim::terminal_close,
             hub::hub_auth_status,
             hub::hub_auth_start,
             hub::hub_auth_complete,

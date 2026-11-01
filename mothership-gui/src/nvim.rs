@@ -11,11 +11,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use base64::Engine;
-use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{native_pty_system, Child, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
 const NVIM_DEFAULT_PATH: &str = r"C:\Program Files\Neovim\bin\nvim.exe";
+const SHELL_PROGRAM: &str = "powershell.exe";
 pub const MAX_OPEN_BYTES: u64 = 500 * 1024;
 const BINARY_SNIFF_BYTES: usize = 8192;
 const BLOCKED_EXTENSIONS: &[&str] = &[
@@ -25,9 +26,11 @@ const BLOCKED_EXTENSIONS: &[&str] = &[
 ];
 
 struct NvimSession {
+    /// Empty for plain shell sessions, which have no Neovim RPC pipe.
     pipe: String,
     writer: Mutex<Box<dyn Write + Send>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
+    killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
 }
 
 #[derive(Default)]
@@ -65,6 +68,52 @@ fn nvim_program() -> PathBuf {
     } else {
         PathBuf::from("nvim")
     }
+}
+
+/// Starts `cmd` in a new ConPTY and streams its output as `nvim-output` events.
+fn start_session(
+    app: AppHandle,
+    sessions: &NvimSessions,
+    id: String,
+    cmd: CommandBuilder,
+    pipe: String,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    if sessions.sessions.lock().unwrap().contains_key(&id) {
+        return Err(format!("session '{id}' already exists"));
+    }
+
+    let pair = native_pty_system()
+        .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+        .map_err(|e| format!("failed to open ConPTY: {e}"))?;
+
+    let child = pair
+        .slave
+        .spawn_command(cmd)
+        .map_err(|e| format!("failed to start process: {e}"))?;
+    drop(pair.slave);
+
+    let reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|e| format!("failed to read process output: {e}"))?;
+    let writer = pair
+        .master
+        .take_writer()
+        .map_err(|e| format!("failed to write to process: {e}"))?;
+    let killer = child.clone_killer();
+
+    let session = Arc::new(NvimSession {
+        pipe,
+        writer: Mutex::new(writer),
+        master: Mutex::new(pair.master),
+        killer: Mutex::new(killer),
+    });
+    sessions.sessions.lock().unwrap().insert(id.clone(), session);
+
+    spawn_reader(app, sessions.sessions.clone(), id, reader, child);
+    Ok(())
 }
 
 /// Runs a short-lived helper process (e.g. `nvim --server`) without a console window.
@@ -135,10 +184,6 @@ pub fn nvim_open(
 
     let pipe = format!(r"\\.\pipe\mothership-{}-{}", std::process::id(), id);
 
-    let pair = native_pty_system()
-        .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
-        .map_err(|e| format!("failed to open ConPTY: {e}"))?;
-
     let mut cmd = CommandBuilder::new(nvim_program());
     cmd.arg("--listen");
     cmd.arg(&pipe);
@@ -149,32 +194,58 @@ pub fn nvim_open(
         cmd.cwd(dir);
     }
 
-    let child = pair
-        .slave
-        .spawn_command(cmd)
-        .map_err(|e| format!("failed to start nvim: {e}"))?;
-    drop(pair.slave);
-
-    let reader = pair
-        .master
-        .try_clone_reader()
-        .map_err(|e| format!("failed to read nvim output: {e}"))?;
-    let writer = pair
-        .master
-        .take_writer()
-        .map_err(|e| format!("failed to write to nvim: {e}"))?;
-
-    let session = Arc::new(NvimSession {
-        pipe,
-        writer: Mutex::new(writer),
-        master: Mutex::new(pair.master),
-    });
-    sessions.sessions.lock().unwrap().insert(id.clone(), session);
-
-    let map = sessions.sessions.clone();
-    spawn_reader(app, map, id.clone(), reader, child);
+    start_session(app, &sessions, id.clone(), cmd, pipe, cols, rows)?;
     Ok(id)
 }
+
+/// Opens an interactive PowerShell in `cwd` (or the user profile when omitted).
+#[tauri::command]
+pub fn terminal_open(
+    app: AppHandle,
+    sessions: State<'_, NvimSessions>,
+    id: String,
+    cwd: Option<String>,
+    cols: u16,
+    rows: u16,
+) -> Result<String, String> {
+    let work_dir = match cwd {
+        Some(dir) => {
+            let path = PathBuf::from(&dir);
+            if !path.is_dir() {
+                return Err(format!("{dir} is not a folder"));
+            }
+            Some(path)
+        }
+        None => None,
+    };
+
+    let mut cmd = CommandBuilder::new(SHELL_PROGRAM);
+    cmd.arg("-NoLogo");
+    if let Some(dir) = &work_dir {
+        cmd.cwd(dir);
+    }
+
+    start_session(app, &sessions, id.clone(), cmd, String::new(), cols, rows)?;
+    Ok(id)
+}
+
+/// Kills a shell started by `terminal_open`. Neovim sessions are refused here
+/// because they must be closed through `nvim_close` so unsaved changes are checked.
+#[tauri::command]
+pub fn terminal_close(sessions: State<'_, NvimSessions>, id: String) -> Result<(), String> {
+    let mut map = sessions.sessions.lock().unwrap();
+    let Some(session) = map.get(&id).cloned() else {
+        return Ok(());
+    };
+    if !session.pipe.is_empty() {
+        return Err(format!("session '{id}' is a Neovim session, not a terminal"));
+    }
+    map.remove(&id);
+    drop(map);
+    let _ = session.killer.lock().unwrap().kill();
+    Ok(())
+}
+
 
 fn spawn_reader(
     app: AppHandle,

@@ -5,6 +5,7 @@ A Tauri 2 desktop hub for Mothership. It runs the real Neovim binary in embedded
 ## Features
 
 - **Embedded Neovim**: Each explorer click or "New Neovim" opens its own `nvim` process in an xterm.js tab, backed by a ConPTY. The user's normal Neovim config loads, and nothing is passed like `-u NONE`.
+- **Embedded terminal**: "New Terminal" opens a PowerShell tab in the explorer's current folder, on the same ConPTY. Closing it kills the shell without an unsaved-changes check.
 - **Tab handling**: Opening a file that is already open switches to its tab. Closing a tab with unsaved buffers asks for confirmation. Closing quits that Neovim process.
 - **Open guards**: Files over 500 KB, binary extensions, and files with NUL bytes in their first 8 KB are refused with a message.
 - **Explorer**: A tree view of the chosen root. Folders come first, and `.git`, `node_modules`, and `target` are skipped.
@@ -55,7 +56,7 @@ cargo build -p mothership-gui   # binary in target\debug\mothership-gui.exe
 2. **Start the app**: run `npm run build` in `mothership-gui`, then `cargo run -p mothership-gui`. No Vite server is needed.
 3. **Sign in**: click Sign in. The browser shows a code. Paste it into the GUI.
 4. **Gateways and rifts**: pick a gateway to see its rifts, checkpoints, and wormholes. Beam downloads a gateway into a local folder. The top bar shows which rift that folder is beamed into.
-5. **Explorer and Neovim**: the explorer starts empty. Open a folder from the explorer to browse it, and the choice is remembered. Click a file to open it in Neovim. Click "New Neovim" to open an empty Neovim tab.
+5. **Explorer and Neovim**: the explorer starts empty. Open a folder from the explorer to browse it, and the choice is remembered. Click a file to open it in Neovim. Click "New Neovim" to open an empty Neovim tab. Click "New Terminal" to open a PowerShell tab starting in the explorer's current folder.
 6. **Wormholes**: create one from two or more rifts. Resolve conflicts with the per-side Use buttons. Converge is disabled while conflicts remain, and the server returns 409 if you try anyway.
 7. **Daemon**: the GUI starts the daemon if it is not running. Stop and restart use the daemon's `/shutdown` route and then start it again.
 
@@ -71,7 +72,7 @@ Backend (`src/`):
 
 - `main.rs`: Tauri setup, plugins, and the `generate_handler!` command list.
 - `hub.rs`: Hub commands for auth, gateways (projects in the API), rifts, checkpoints, server info, daemon control, wormholes, beam, and the active-rift lookup for the top bar.
-- `nvim.rs`: Neovim sessions on ConPTY (`portable-pty`). Guards open. Close polls `try_wait`, because the ConPTY output pipe can stay open after nvim exits.
+- `nvim.rs`: Neovim and shell sessions on ConPTY (`portable-pty`). Guards open. Close polls `try_wait`, because the ConPTY output pipe can stay open after nvim exits. `terminal_open` and `terminal_close` handle shell tabs.
 - `explorer.rs`: `explorer_list_dir`, which returns folders first and skips noise directories.
 
 Frontend (`ui/`):
@@ -82,7 +83,7 @@ Frontend (`ui/`):
 - `DaemonPanel.jsx`: Daemon status, tracked gateways, and start, stop, restart.
 - `WormholePanel.jsx`: Wormhole list, detail, conflicts, watch, converge, beam, and dissolve.
 - `Explorer.jsx`: Tree view.
-- `TerminalTab.jsx`: xterm.js terminal bound to a Neovim session.
+- `TerminalTab.jsx`: xterm.js terminal bound to a Neovim or PowerShell session (`kind`).
 - `styles.css`: Dark theme. Green is `.ok` and red is `.bad`.
 
 ## File Structure
