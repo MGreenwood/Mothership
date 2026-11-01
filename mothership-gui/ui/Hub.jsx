@@ -1,0 +1,242 @@
+import { useCallback, useEffect, useState } from 'react'
+import { invoke } from '@tauri-apps/api/core'
+import { ask, open } from '@tauri-apps/plugin-dialog'
+
+const errText = (e) => (typeof e === 'string' ? e : e?.message ?? String(e))
+
+export default function Hub() {
+  const [health, setHealth] = useState(null)
+  const [projects, setProjects] = useState([])
+  const [selected, setSelected] = useState(null)
+  const [rifts, setRifts] = useState([])
+  const [checkpoints, setCheckpoints] = useState([])
+  const [message, setMessage] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [newProject, setNewProject] = useState({ name: '', description: '', folder: '' })
+  const [newRiftName, setNewRiftName] = useState('')
+  const [checkpointMsg, setCheckpointMsg] = useState('')
+
+  const run = async (label, fn) => {
+    setBusy(true)
+    setMessage(null)
+    try {
+      const result = await fn()
+      if (label) setMessage({ kind: 'ok', text: label })
+      return result
+    } catch (e) {
+      setMessage({ kind: 'error', text: errText(e) })
+      return undefined
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const loadProjects = useCallback(async () => {
+    const list = await invoke('hub_list_projects')
+    setProjects(list)
+    return list
+  }, [])
+
+  const loadHealth = useCallback(async () => {
+    setHealth(await invoke('hub_health'))
+  }, [])
+
+  const loadProjectDetails = useCallback(async (project) => {
+    setSelected(project)
+    const id = project.id
+    const [r, c] = await Promise.all([
+      invoke('hub_list_rifts', { projectId: id }),
+      invoke('hub_checkpoint_history', { projectId: id }),
+    ])
+    setRifts(r)
+    setCheckpoints(c)
+  }, [])
+
+  useEffect(() => {
+    run(null, async () => {
+      await loadHealth()
+      await loadProjects()
+    })
+  }, [loadHealth, loadProjects])
+
+  const refreshAll = () =>
+    run('Refreshed', async () => {
+      await loadHealth()
+      await loadProjects()
+      if (selected) await loadProjectDetails(selected)
+    })
+
+  const pickFolder = async () => {
+    const path = await open({ directory: true, multiple: false })
+    if (typeof path === 'string') setNewProject((p) => ({ ...p, folder: path }))
+  }
+
+  const createProject = () =>
+    run(null, async () => {
+      const { name, description, folder } = newProject
+      if (!name.trim() || !folder) throw new Error('Name and folder are required')
+      const res = await invoke('hub_create_project', {
+        name: name.trim(),
+        description: description.trim(),
+        folder,
+      })
+      setNewProject({ name: '', description: '', folder: '' })
+      await loadProjects()
+      setMessage({
+        kind: 'ok',
+        text: `Created "${res.project.name}": uploaded ${res.uploaded_files} file(s), skipped ${res.skipped_too_large} too large, ${res.skipped_binary} binary, ${res.skipped_unreadable} unreadable.`,
+      })
+    })
+
+  const deleteProject = async (project) => {
+    const yes = await ask(
+      `Delete "${project.name}" from the server? This removes the server copy only. Local files are not touched.`,
+      { title: 'Delete project', kind: 'warning' },
+    )
+    if (!yes) return
+    await run(`Deleted "${project.name}" from the server`, async () => {
+      await invoke('hub_delete_project', { projectId: project.id })
+      if (selected?.id === project.id) {
+        setSelected(null)
+        setRifts([])
+        setCheckpoints([])
+      }
+      await loadProjects()
+    })
+  }
+
+  const createRift = () =>
+    run(`Created rift "${newRiftName.trim()}"`, async () => {
+      if (!newRiftName.trim()) throw new Error('Rift name is required')
+      await invoke('hub_create_rift', {
+        projectId: selected.id,
+        name: newRiftName.trim(),
+        description: null,
+      })
+      setNewRiftName('')
+      setRifts(await invoke('hub_list_rifts', { projectId: selected.id }))
+    })
+
+  const switchRift = (rift) =>
+    run(`Switched server to rift "${rift.name}". Daemon reconnect is not wired yet.`, async () => {
+      await invoke('hub_switch_rift', { projectId: selected.id, riftName: rift.name })
+    })
+
+  const createCheckpoint = () =>
+    run('Checkpoint created', async () => {
+      await invoke('hub_create_checkpoint', {
+        projectId: selected.id,
+        message: checkpointMsg.trim() || null,
+      })
+      setCheckpointMsg('')
+      setCheckpoints(await invoke('hub_checkpoint_history', { projectId: selected.id }))
+    })
+
+  return (
+    <div className="hub">
+      <header className="hub-header">
+        <h2>Mothership hub</h2>
+        <button onClick={refreshAll} disabled={busy}>Refresh</button>
+      </header>
+
+      {message && (
+        <div className={`notice ${message.kind}`} role="status">
+          <span>{message.text}</span>
+          <button onClick={() => setMessage(null)} aria-label="Dismiss">×</button>
+        </div>
+      )}
+
+      <section className="card">
+        <h3>Server</h3>
+        {health ? (
+          <p>
+            <code>{health.server_url}</code>{' '}
+            {health.reachable ? <span className="ok">reachable</span> : <span className="bad">unreachable: {health.error}</span>}
+          </p>
+        ) : (
+          <p>Checking…</p>
+        )}
+        <p className="muted">{projects.length} project(s)</p>
+      </section>
+
+      <section className="card">
+        <h3>Projects</h3>
+        {projects.length === 0 && <p className="muted">No projects on the server.</p>}
+        <ul className="list">
+          {projects.map((p) => (
+            <li key={p.id} className={selected?.id === p.id ? 'selected' : ''}>
+              <button className="link" onClick={() => run(null, () => loadProjectDetails(p))}>
+                {p.name}
+              </button>
+              <button className="danger" onClick={() => deleteProject(p)} disabled={busy}>
+                Delete
+              </button>
+            </li>
+          ))}
+        </ul>
+
+        <h4>New project from folder</h4>
+        <div className="form-row">
+          <input
+            placeholder="Name"
+            value={newProject.name}
+            onChange={(e) => setNewProject({ ...newProject, name: e.target.value })}
+          />
+          <input
+            placeholder="Description"
+            value={newProject.description}
+            onChange={(e) => setNewProject({ ...newProject, description: e.target.value })}
+          />
+          <button onClick={pickFolder}>Choose folder…</button>
+          <span className="muted path">{newProject.folder || 'No folder selected'}</span>
+          <button onClick={createProject} disabled={busy}>Create project</button>
+        </div>
+      </section>
+
+      {selected && (
+        <>
+          <section className="card">
+            <h3>Rifts in {selected.name}</h3>
+            <ul className="list">
+              {rifts.map((r) => (
+                <li key={r.id}>
+                  <span>{r.name}</span>
+                  <span className="muted">{r.file_count} file(s){r.is_conflict_rift ? ' · conflict rift' : ''}</span>
+                  <button onClick={() => switchRift(r)} disabled={busy}>Switch</button>
+                </li>
+              ))}
+            </ul>
+            <div className="form-row">
+              <input
+                placeholder="New rift name"
+                value={newRiftName}
+                onChange={(e) => setNewRiftName(e.target.value)}
+              />
+              <button onClick={createRift} disabled={busy}>New rift</button>
+            </div>
+          </section>
+
+          <section className="card">
+            <h3>Checkpoints</h3>
+            <div className="form-row">
+              <input
+                placeholder="Checkpoint message (optional)"
+                value={checkpointMsg}
+                onChange={(e) => setCheckpointMsg(e.target.value)}
+              />
+              <button onClick={createCheckpoint} disabled={busy}>Create checkpoint</button>
+            </div>
+            <ul className="list">
+              {checkpoints.map((c) => (
+                <li key={c.id}>
+                  <span>{c.message || '(no message)'}</span>
+                  <span className="muted">{c.timestamp}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        </>
+      )}
+    </div>
+  )
+}

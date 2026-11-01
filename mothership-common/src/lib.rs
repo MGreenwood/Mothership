@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 pub mod auth;
+pub mod client;
 pub mod crdt;
 pub mod diff;
 pub mod merge;

@@ -12,6 +12,9 @@ use uuid;
 use axum::{extract::Json as AxumJson, response::Json as AxumResponseJson, routing::post, Router};
 use tower_http::cors::CorsLayer;
 
+mod hub;
+mod nvim;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileItem {
     pub name: String,
@@ -806,7 +809,7 @@ fn main() {
             projects: Vec::new(),
         })),
         auth_token: Arc::new(Mutex::new(None)),
-        server_url: "https://api.mothership.rest".to_string(),
+        server_url: mothership_common::ClientConfig::default().mothership_url,
         app_handle: None,
     };
 
@@ -814,7 +817,23 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(app_state)
+        .manage(nvim::NvimSessions::default())
         .invoke_handler(tauri::generate_handler![
+            nvim::nvim_open,
+            nvim::nvim_write,
+            nvim::nvim_resize,
+            nvim::nvim_unsaved_buffers,
+            nvim::nvim_close,
+            nvim::nvim_check_file,
+            hub::hub_health,
+            hub::hub_list_projects,
+            hub::hub_create_project,
+            hub::hub_delete_project,
+            hub::hub_list_rifts,
+            hub::hub_create_rift,
+            hub::hub_switch_rift,
+            hub::hub_create_checkpoint,
+            hub::hub_checkpoint_history,
             read_file_content,
             write_file_content,
             list_directory,

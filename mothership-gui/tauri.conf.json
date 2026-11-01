@@ -17,6 +17,7 @@
     "windows": [
       {
         "label": "main",
+        "url": "hub.html",
         "fullscreen": false,
         "height": 800,
         "resizable": true,

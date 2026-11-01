@@ -20,6 +20,8 @@
     "core:window:allow-toggle-maximize",
     "core:window:allow-unmaximize",
     "core:window:allow-unminimize",
+    "dialog:allow-open",
+    "dialog:allow-ask",
     "opener:allow-open-url"
   ],
   "platforms": ["linux", "macOS", "windows"]
