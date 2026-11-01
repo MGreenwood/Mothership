@@ -181,8 +181,28 @@ fn spawn_reader(
     map: Arc<Mutex<HashMap<String, Arc<NvimSession>>>>,
     id: String,
     mut reader: Box<dyn Read + Send>,
-    mut child: Box<dyn Child + Send + Sync>,
+    child: Box<dyn Child + Send + Sync>,
 ) {
+    // Exit is detected from the process itself. On Windows the ConPTY output pipe can
+    // stay open after nvim has exited, so EOF on `reader` is not a reliable exit signal.
+    let child = Arc::new(Mutex::new(child));
+    {
+        let app = app.clone();
+        let map = map.clone();
+        let id = id.clone();
+        std::thread::spawn(move || {
+            let code = loop {
+                let status = child.lock().unwrap().try_wait();
+                match status {
+                    Ok(Some(s)) => break Some(s.exit_code()),
+                    Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+                    Err(_) => break None,
+                }
+            };
+            map.lock().unwrap().remove(&id);
+            let _ = app.emit("nvim-exit", ExitPayload { id, code });
+        });
+    }
     std::thread::spawn(move || {
         let engine = base64::engine::general_purpose::STANDARD;
         let mut buf = [0u8; 8192];
@@ -197,9 +217,6 @@ fn spawn_reader(
                 }
             }
         }
-        let code = child.wait().ok().map(|s| s.exit_code());
-        map.lock().unwrap().remove(&id);
-        let _ = app.emit("nvim-exit", ExitPayload { id, code });
     });
 }
 

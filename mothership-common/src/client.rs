@@ -13,7 +13,8 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::auth::{OAuthProvider, OAuthRequest, OAuthResponse, OAuthSource};
-use crate::protocol::ApiResponse;
+use crate::merge::Choice;
+use crate::protocol::{ApiResponse, BeamRequest, BeamResponse};
 use crate::{Checkpoint, Project};
 
 /// Fallback when the server does not report its upload limit.
@@ -38,6 +39,69 @@ pub struct RiftInfo {
 pub struct CheckpointData {
     pub checkpoint_id: Uuid,
     pub file_count: usize,
+}
+
+/// A wormhole as listed by `GET /api/wormholes`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WormholeSummary {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub name: String,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+    pub rift_ids: Vec<Uuid>,
+    pub converted_rift_id: Option<Uuid>,
+    pub unresolved_conflicts: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WormholeSide {
+    /// Index used by `Choice::Side` and by each conflict's `sides` list
+    pub index: usize,
+    pub rift_id: Uuid,
+    pub rift_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WormholeConflict {
+    pub id: String,
+    pub base_start: usize,
+    pub base_end: usize,
+    /// One entry per side; each side holds the lines it contributes
+    pub sides: Vec<Vec<String>>,
+    pub fingerprint: String,
+    pub resolved: bool,
+    pub choice: Option<Choice>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WormholeFileConflicts {
+    pub path: String,
+    pub conflicts: Vec<WormholeConflict>,
+}
+
+/// A wormhole with its sides and current conflicts (`GET /api/wormholes/:id`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WormholeDetail {
+    #[serde(flatten)]
+    pub summary: WormholeSummary,
+    pub sides: Vec<WormholeSide>,
+    pub files: Vec<WormholeFileConflicts>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConvergeResult {
+    pub rift_id: Uuid,
+    pub rift_name: String,
+    pub files_written: usize,
+    pub files_removed: usize,
+}
+
+/// One merged file from `GET /api/wormholes/:id/files`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WormholeFile {
+    pub path: String,
+    pub content: String,
 }
 
 /// Result of scanning a directory for uploadable text files.
@@ -327,8 +391,25 @@ impl MothershipClient {
         Ok(())
     }
 
+    /// The bearer token this client sends, if any. Needed for the sync WebSocket.
+    pub fn token(&self) -> Option<&str> {
+        self.token.as_deref()
+    }
+
     pub async fn list_projects(&self) -> Result<Vec<Project>> {
         let resp: ApiResponse<Vec<Project>> = self.get_api(&["projects"]).await?;
+        Self::unwrap_api(resp)
+    }
+
+    /// Joins a rift for a project (`POST /projects/{id}/beam`). `rift_name: None` uses the default rift.
+    pub async fn beam(&self, project_id: Uuid, rift_name: Option<&str>) -> Result<BeamResponse> {
+        let body = BeamRequest {
+            project_id,
+            rift_name: rift_name.map(str::to_string),
+            force_sync: false,
+        };
+        let id = project_id.to_string();
+        let resp: ApiResponse<BeamResponse> = self.post_api(&["projects", &id, "beam"], &body).await?;
         Self::unwrap_api(resp)
     }
 
@@ -439,4 +520,105 @@ impl MothershipClient {
             .await?;
         Self::unwrap_api(resp)
     }
+
+    /// Lists wormholes for a project, including active and dissolved ones.
+    pub async fn list_wormholes(&self, project_id: Uuid) -> Result<Vec<WormholeSummary>> {
+        let url = self.endpoint(&["api", "wormholes"])?;
+        let query = project_id.to_string();
+        let response = self
+            .authed(self.http.get(url).query(&[("project_id", query.as_str())]))
+            .send()
+            .await?;
+        let response = Self::ensure_success(response).await?;
+        let resp: ApiResponse<Vec<WormholeSummary>> = response.json().await?;
+        Self::unwrap_api(resp)
+    }
+
+    /// Creates a wormhole across at least two rifts in the same project.
+    pub async fn create_wormhole(&self, project_id: Uuid, name: &str, rift_ids: &[Uuid]) -> Result<WormholeSummary> {
+        let body = CreateWormholeRequest {
+            project_id,
+            name,
+            rift_ids,
+        };
+        let resp: ApiResponse<WormholeSummary> = self.post_api(&["api", "wormholes"], &body).await?;
+        Self::unwrap_api(resp)
+    }
+
+    pub async fn get_wormhole(&self, wormhole_id: Uuid) -> Result<WormholeDetail> {
+        let id = wormhole_id.to_string();
+        let resp: ApiResponse<WormholeDetail> = self.get_api(&["api", "wormholes", &id]).await?;
+        Self::unwrap_api(resp)
+    }
+
+    /// Records the choice for one conflict. Returns the updated wormhole.
+    pub async fn resolve_wormhole_conflict(
+        &self,
+        wormhole_id: Uuid,
+        path: &str,
+        conflict_id: &str,
+        choice: Choice,
+    ) -> Result<WormholeDetail> {
+        let body = ResolveWormholeRequest {
+            path,
+            conflict_id,
+            choice,
+        };
+        let id = wormhole_id.to_string();
+        let resp: ApiResponse<WormholeDetail> = self
+            .post_api(&["api", "wormholes", &id, "resolve"], &body)
+            .await?;
+        Self::unwrap_api(resp)
+    }
+
+    /// Creates a new rift from the merged result. Fails with 409 while conflicts remain.
+    pub async fn converge_wormhole(&self, wormhole_id: Uuid, name: Option<&str>) -> Result<ConvergeResult> {
+        let body = ConvergeWormholeRequest { name };
+        let id = wormhole_id.to_string();
+        let resp: ApiResponse<ConvergeResult> = self
+            .post_api(&["api", "wormholes", &id, "converge"], &body)
+            .await?;
+        Self::unwrap_api(resp)
+    }
+
+    /// Returns the merged file contents. Fails with 409 while conflicts remain.
+    pub async fn wormhole_files(&self, wormhole_id: Uuid) -> Result<Vec<WormholeFile>> {
+        let id = wormhole_id.to_string();
+        let resp: ApiResponse<Vec<WormholeFile>> = self
+            .get_api(&["api", "wormholes", &id, "files"])
+            .await?;
+        Self::unwrap_api(resp)
+    }
+
+    pub async fn dissolve_wormhole(&self, wormhole_id: Uuid) -> Result<Uuid> {
+        let id = wormhole_id.to_string();
+        let resp: ApiResponse<WormholeStatusResponse> = self
+            .post_api(&["api", "wormholes", &id, "dissolve"], &serde_json::json!({}))
+            .await?;
+        Ok(Self::unwrap_api(resp)?.id)
+    }
+}
+
+#[derive(Serialize)]
+struct CreateWormholeRequest<'a> {
+    project_id: Uuid,
+    name: &'a str,
+    rift_ids: &'a [Uuid],
+}
+
+#[derive(Serialize)]
+struct ResolveWormholeRequest<'a> {
+    path: &'a str,
+    conflict_id: &'a str,
+    choice: Choice,
+}
+
+#[derive(Serialize)]
+struct ConvergeWormholeRequest<'a> {
+    name: Option<&'a str>,
+}
+
+#[derive(Deserialize)]
+struct WormholeStatusResponse {
+    id: Uuid,
 }

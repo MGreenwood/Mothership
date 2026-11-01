@@ -182,7 +182,6 @@ fn is_project_local(project_name: &str) -> bool {
         std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         PathBuf::from(std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string())).join("mothership"),
         PathBuf::from(std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string())),
-        PathBuf::from("C:\\Users\\craft\\Mothership"), // Common dev location
     ];
     
     for base_path in search_paths {
@@ -496,7 +495,6 @@ pub async fn handle_beam(
                 std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
                 PathBuf::from(std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string())).join("mothership"),
                 PathBuf::from(std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string())),
-                PathBuf::from("C:\\Users\\craft\\Mothership"), // Common dev location
             ];
             
             let mut found_path = None;

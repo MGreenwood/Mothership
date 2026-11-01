@@ -1,6 +1,7 @@
 // Prevents additional console window on Windows in release
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod explorer;
 mod hub;
 mod nvim;
 
@@ -10,6 +11,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(nvim::NvimSessions::default())
         .invoke_handler(tauri::generate_handler![
+            explorer::explorer_list_dir,
             nvim::nvim_open,
             nvim::nvim_write,
             nvim::nvim_resize,
@@ -21,7 +23,9 @@ fn main() {
             hub::hub_auth_complete,
             hub::hub_auth_logout,
             hub::hub_health,
+            hub::hub_ensure_daemon,
             hub::hub_list_projects,
+            hub::hub_beam,
             hub::hub_create_project,
             hub::hub_delete_project,
             hub::hub_list_rifts,
@@ -29,6 +33,18 @@ fn main() {
             hub::hub_switch_rift,
             hub::hub_create_checkpoint,
             hub::hub_checkpoint_history,
+            hub::hub_server_info,
+            hub::hub_daemon_status,
+            hub::hub_daemon_start,
+            hub::hub_daemon_stop,
+            hub::hub_daemon_restart,
+            hub::hub_list_wormholes,
+            hub::hub_create_wormhole,
+            hub::hub_show_wormhole,
+            hub::hub_resolve_conflict,
+            hub::hub_converge_wormhole,
+            hub::hub_dissolve_wormhole,
+            hub::hub_beam_wormhole,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

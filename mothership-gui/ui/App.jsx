@@ -3,15 +3,29 @@ import { invoke } from '@tauri-apps/api/core'
 import { ask, open } from '@tauri-apps/plugin-dialog'
 import TerminalTab from './TerminalTab.jsx'
 import Hub from './Hub.jsx'
+import Explorer from './Explorer.jsx'
 
 let tabCounter = 0
 const newSessionId = () => `nvim-${Date.now()}-${++tabCounter}`
+const EXPLORER_ROOT_KEY = 'mothership-explorer-root'
 
 export default function App() {
   const [tabs, setTabs] = useState([])
   const [activeKey, setActiveKey] = useState(null)
   const [notice, setNotice] = useState(null)
   const [view, setView] = useState('hub')
+  const [explorerRoot, setExplorerRoot] = useState(() => localStorage.getItem(EXPLORER_ROOT_KEY))
+  const activeFile = tabs.find((t) => t.key === activeKey)?.file ?? null
+
+  const changeExplorerRoot = (path) => {
+    localStorage.setItem(EXPLORER_ROOT_KEY, path)
+    setExplorerRoot(path)
+  }
+
+  const openProjectFolder = (path) => {
+    changeExplorerRoot(path)
+    setView('editor')
+  }
 
   const removeTab = (key) => {
     setTabs((prev) => {
@@ -106,9 +120,16 @@ export default function App() {
         </div>
       )}
 
-      {view === 'hub' && <Hub />}
+      {view === 'hub' && <Hub onOpenInEditor={openProjectFolder} />}
 
       <div className="editor-view" style={{ display: view === 'editor' ? 'flex' : 'none' }}>
+      <Explorer
+        root={explorerRoot}
+        onRootChange={changeExplorerRoot}
+        openFile={openFile}
+        activeFile={activeFile}
+      />
+      <div className="editor-main">
       <nav className="tabs">
         {tabs.map((tab) => (
           <div
@@ -147,6 +168,7 @@ export default function App() {
           />
         ))}
       </main>
+      </div>
       </div>
     </div>
   )

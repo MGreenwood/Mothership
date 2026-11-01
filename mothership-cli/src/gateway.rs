@@ -27,7 +27,6 @@ fn check_project_local_status(project_name: &str) -> (LocalStatus, String) {
         std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         PathBuf::from(std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string())).join("mothership"),
         PathBuf::from(std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string())),
-        PathBuf::from("C:\\Users\\craft\\Mothership"), // Common dev location
     ];
     
     for base_path in search_paths {

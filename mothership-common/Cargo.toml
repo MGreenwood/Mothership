@@ -16,3 +16,6 @@ flate2 = "1.0" # PERFORMANCE FIX: Compression for diff batching
 sha2 = "0.10" 
 reqwest = { workspace = true }
 walkdir = { workspace = true }
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }

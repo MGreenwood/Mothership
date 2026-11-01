@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { ask, open } from '@tauri-apps/plugin-dialog'
+import DaemonPanel from './DaemonPanel.jsx'
+import WormholePanel from './WormholePanel.jsx'
 
 const errText = (e) => (typeof e === 'string' ? e : e?.message ?? String(e))
 
-export default function Hub() {
+export default function Hub({ onOpenInEditor }) {
   const [health, setHealth] = useState(null)
   const [projects, setProjects] = useState([])
   const [selected, setSelected] = useState(null)
@@ -41,7 +43,7 @@ export default function Hub() {
   }, [])
 
   const loadHealth = useCallback(async () => {
-    setHealth(await invoke('hub_health'))
+    setHealth(await invoke('hub_server_info'))
   }, [])
 
   const loadProjectDetails = useCallback(async (project) => {
@@ -65,6 +67,9 @@ export default function Hub() {
       await loadHealth()
       await loadProjects()
     })
+    invoke('hub_ensure_daemon').catch((e) =>
+      setMessage({ kind: 'error', text: `Daemon: ${errText(e)}` }),
+    )
   }, [loadAuth, loadHealth, loadProjects])
 
   const signIn = (provider) =>
@@ -120,6 +125,34 @@ export default function Hub() {
         text: `Created "${res.project.name}": uploaded ${res.uploaded_files} file(s), skipped ${res.skipped_too_large} too large, ${res.skipped_binary} binary, ${res.skipped_unreadable} unreadable.`,
       })
     })
+
+  const beamProject = async (project) => {
+    let localDir = null
+    if (!project.local_path) {
+      const parent = await open({ directory: true, multiple: false })
+      if (typeof parent !== 'string') return
+      localDir = parent
+    }
+    setBusy(true)
+    setMessage(null)
+    try {
+      const res = await invoke('hub_beam', { projectId: project.id, localDir })
+      await loadProjects()
+      const parts = [
+        `Beamed "${res.project_name}" to ${res.local_path}: ${res.downloaded} file(s) downloaded`,
+      ]
+      if (res.skipped_unsafe.length) parts.push(`${res.skipped_unsafe.length} unsafe path(s) skipped`)
+      setMessage({
+        kind: res.daemon_warning ? 'error' : 'ok',
+        text: `${parts.join('. ')}.${res.daemon_warning ? ` Daemon: ${res.daemon_warning}` : ''}`,
+      })
+      onOpenInEditor?.(res.local_path)
+    } catch (e) {
+      setMessage({ kind: 'error', text: errText(e) })
+    } finally {
+      setBusy(false)
+    }
+  }
 
   const deleteProject = async (project) => {
     const yes = await ask(
@@ -221,15 +254,23 @@ export default function Hub() {
       <section className="card">
         <h3>Server</h3>
         {health ? (
-          <p>
-            <code>{health.server_url}</code>{' '}
-            {health.reachable ? <span className="ok">reachable</span> : <span className="bad">unreachable: {health.error}</span>}
-          </p>
+          <>
+            <p>
+              <code>{health.server_url}</code>{' '}
+              {health.reachable ? <span className="ok">reachable</span> : <span className="bad">unreachable: {health.error}</span>}
+            </p>
+            {health.reachable && (
+              <p className="muted">
+                {health.projects} project(s) · {health.rifts} rift(s) · {health.active_wormholes} active wormhole(s)
+              </p>
+            )}
+          </>
         ) : (
           <p>Checking…</p>
         )}
-        <p className="muted">{projects.length} project(s)</p>
       </section>
+
+      <DaemonPanel />
 
       <section className="card">
         <h3>Projects</h3>
@@ -240,6 +281,12 @@ export default function Hub() {
               <button className="link" onClick={() => run(null, () => loadProjectDetails(p))}>
                 {p.name}
               </button>
+              {p.local_path ? (
+                <span className="ok" title={p.local_path}>local</span>
+              ) : (
+                <span className="bad">remote</span>
+              )}
+              <button onClick={() => beamProject(p)} disabled={busy}>Beam</button>
               <button className="danger" onClick={() => deleteProject(p)} disabled={busy}>
                 Delete
               </button>
@@ -269,6 +316,9 @@ export default function Hub() {
         <>
           <section className="card">
             <h3>Rifts in {selected.name}</h3>
+            <p className="muted path">
+              {projects.find((p) => p.id === selected.id)?.local_path ?? 'Remote only: not beamed to this machine'}
+            </p>
             <ul className="list">
               {rifts.map((r) => (
                 <li key={r.id}>
@@ -307,6 +357,8 @@ export default function Hub() {
               ))}
             </ul>
           </section>
+
+          <WormholePanel project={selected} rifts={rifts} />
         </>
       )}
     </div>

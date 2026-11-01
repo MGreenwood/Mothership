@@ -4,8 +4,10 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 pub mod auth;
+pub mod beam;
 pub mod client;
 pub mod crdt;
+pub mod daemon;
 pub mod diff;
 pub mod merge;
 pub mod protocol;
