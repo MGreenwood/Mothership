@@ -1556,9 +1556,10 @@ fn print_verbose_help() {
         ("create", "Preview merging rifts", Some("<name> <rift> <rift> [rift...]")),
         ("list", "List project wormholes", None),
         ("show", "Show merged state and conflicts", Some("<wormhole>")),
+        ("toggle", "Toggle a rift on/off in a wormhole", Some("<wormhole> <rift> [--enable|--disable]")),
         ("resolve", "Resolve a conflict", Some("<wormhole> <path> <conflict> --side <rift> | --text <t> | --file <f>")),
         ("converge", "Turn a wormhole into a rift", Some("<wormhole> [--name <rift>]")),
-        ("dissolve", "Archive a wormhole", Some("<wormhole>")),
+        ("dissolve", "Archive or delete a wormhole", Some("<wormhole> [-d|--delete]")),
         ("beam", "Copy merged files to a read-only folder", Some("<wormhole> [--dir <folder>]")),
         ("watch", "Report when a wormhole's rifts change", Some("<wormhole>")),
     ]);

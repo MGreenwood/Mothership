@@ -49,6 +49,8 @@ fn main() {
             hub::hub_resolve_conflict,
             hub::hub_converge_wormhole,
             hub::hub_dissolve_wormhole,
+            hub::hub_delete_wormhole,
+            hub::hub_toggle_wormhole_rift,
             hub::hub_beam_wormhole,
             hub::hub_wormhole_rift_files,
         ])

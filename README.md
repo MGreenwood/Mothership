@@ -299,12 +299,13 @@ mothership restore <checkpoint-id> [--force]          # Restore workspace to a c
 ```bash
 mothership wormhole create <name> <rift1> <rift2>...  # Create a live merge preview across two or more rifts
 mothership wormhole list                              # List wormholes in the current project
-mothership wormhole show <wormhole>                   # Inspect merged state and conflicts
-mothership wormhole resolve <wormhole> <path> <id> --side <rift> # Resolve a conflict by side, --text, or --file
+mothership wormhole show <wormhole>                   # Inspect merged state, active/muted rifts, and conflicts
+mothership wormhole toggle <wormhole> <rift> [--enable|--disable] # Toggle a developer's rift on or off in the wormhole
+mothership wormhole resolve <wormhole> <path> <id> --side <rift>  # Resolve a conflict by side, --text, or --file
 mothership wormhole beam <wormhole> [--dir <path>]    # Materialize merged files locally to build/test
-mothership wormhole watch <wormhole>                  # Stream live updates as source rifts change
+mothership wormhole watch <wormhole>                  # Stream live updates (auto-refreshes beamed folder when clean)
 mothership wormhole converge <wormhole> [--name <n>]  # Create a new rift from the resolved wormhole
-mothership wormhole dissolve <wormhole>               # Archive a wormhole without creating a rift
+mothership wormhole dissolve <wormhole> [-d|--delete] # Archive a wormhole, or permanently delete on server (y/n prompt)
 ```
 
 ### **Daemon, Server & Account Management**
@@ -439,10 +440,7 @@ If you're interested in contributing code or joining our team:
 ## Documentation
 
 - **[Vision Document](MothershipVision.md)**: Complete project vision and philosophy
-- **[API Documentation](docs/api.md)**: REST API and WebSocket protocol reference
-- **[CLI Reference](docs/cli.md)**: Complete command-line interface documentation
-- **[Deployment Guide](docs/deployment.md)**: Production deployment and scaling (License Required)
-- **[Commercial Licensing](https://mothership.dev/licensing)**: Information about commercial licenses
+- **[Documentation Hub](docs/index.html)**: Browsable docs for Mothership: CLI, server, daemon, and test analysis- **[Commercial Licensing](https://mothership.dev/licensing)**: Information about commercial licenses
 
 ## Commercial Support & Licensing
 

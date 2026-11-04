@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mothership Documentation</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #1f2328;
+    --muted: #59636e;
+    --border: #d1d9e0;
+    --accent: #0969da;
+    --sidebar-bg: #f6f8fa;
+    --code-bg: #f6f8fa;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117;
+      --fg: #e6edf3;
+      --muted: #9198a1;
+      --border: #3d444d;
+      --accent: #4493f8;
+      --sidebar-bg: #161b22;
+      --code-bg: #161b22;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    font-size: 16px;
+    line-height: 1.6;
+    color: var(--fg);
+    background: var(--bg);
+    display: flex;
+    min-height: 100vh;
+  }
+  nav.sidebar {
+    width: 260px;
+    flex-shrink: 0;
+    background: var(--sidebar-bg);
+    border-right: 1px solid var(--border);
+    padding: 24px 16px;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+  }
+  nav.sidebar .brand { font-weight: 700; font-size: 18px; margin-bottom: 16px; display: block; color: var(--fg); text-decoration: none; }
+  nav.sidebar h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin: 20px 0 6px; }
+  nav.sidebar ul { list-style: none; padding: 0; margin: 0; }
+  nav.sidebar li { margin: 2px 0; }
+  nav.sidebar a { color: var(--fg); text-decoration: none; display: block; padding: 4px 8px; border-radius: 6px; font-size: 14px; }
+  nav.sidebar a:hover { background: var(--border); }
+  main {
+    flex: 1;
+    max-width: 880px;
+    padding: 40px 48px 80px;
+  }
+  h1 { font-size: 2em; border-bottom: 1px solid var(--border); padding-bottom: 0.3em; margin-top: 0; }
+  h2 { font-size: 1.5em; border-bottom: 1px solid var(--border); padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { font-size: 1.15em; margin-top: 1.5em; }
+  p.lead { font-size: 1.1em; color: var(--muted); }
+  a { color: var(--accent); }
+  code {
+    font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+    font-size: 0.9em;
+    background: var(--code-bg);
+    padding: 0.15em 0.4em;
+    border-radius: 6px;
+  }
+  pre {
+    background: var(--code-bg);
+    padding: 14px 16px;
+    border-radius: 6px;
+    overflow-x: auto;
+    border: 1px solid var(--border);
+  }
+  pre code { background: none; padding: 0; }
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 16px;
+    margin: 16px 0;
+  }
+  .card {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .card h3 { margin: 0 0 6px; font-size: 1.05em; }
+  .card p { margin: 0 0 8px; color: var(--muted); font-size: 14px; }
+  .card a { font-size: 14px; }
+  table { border-collapse: collapse; width: 100%; margin: 16px 0; font-size: 14px; }
+  th, td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--sidebar-bg); }
+  .note {
+    border-left: 4px solid var(--accent);
+    background: var(--sidebar-bg);
+    padding: 10px 14px;
+    margin: 16px 0;
+    border-radius: 4px;
+    font-size: 14px;
+  }
+  footer { margin-top: 60px; color: var(--muted); font-size: 13px; border-top: 1px solid var(--border); padding-top: 16px; }
+  @media (max-width: 800px) {
+    body { flex-direction: column; }
+    nav.sidebar { width: 100%; height: auto; position: static; border-right: none; border-bottom: 1px solid var(--border); }
+    main { padding: 24px 20px 60px; }
+  }
+</style>
+</head>
+<body>
+
+<nav class="sidebar">
+  <a class="brand" href="#top">Mothership Docs</a>
+  <h3>Start</h3>
+  <ul>
+    <li><a href="#overview">Overview</a></li>
+    <li><a href="#quick-start">Quick start</a></li>
+    <li><a href="#architecture">Architecture</a></li>
+  </ul>
+  <h3>Components</h3>
+  <ul>
+    <li><a href="#server">Server</a></li>
+    <li><a href="#cli">CLI</a></li>
+    <li><a href="#daemon">Daemon</a></li>
+    <li><a href="#gui">Desktop GUI</a></li>
+    <li><a href="#common">Common library</a></li>
+    <li><a href="#auth">Authentication</a></li>
+  </ul>
+  <h3>Operations</h3>
+  <ul>
+    <li><a href="#configuration">Configuration</a></li>
+    <li><a href="#deployment">Deployment</a></li>
+    <li><a href="#database">Database</a></li>
+    <li><a href="#testing">Testing &amp; profiling</a></li>
+  </ul>
+  <h3>Reference</h3>
+  <ul>
+    <li><a href="#project-structure">Project structure</a></li>
+    <li><a href="#analysis">Analysis &amp; evidence</a></li>
+    <li><a href="#vision">Vision &amp; roadmap</a></li>
+    <li><a href="#legal">License</a></li>
+  </ul>
+</nav>
+
+<main id="top">
+
+<h1>Mothership Documentation</h1>
+<p class="lead">Mothership is a frictionless, real-time collaborative development system. This hub indexes the documentation for every part of the project.</p>
+
+<section id="overview">
+<h2>Overview</h2>
+<p>Mothership replaces the manual commit, staging, and branching workflow with continuous sync. Developers <em>beam</em> into a project, the background daemon tracks file changes, and collaborators see each other's edits in real time over WebSockets.</p>
+<ul>
+  <li><strong>Zero fear:</strong> changes are preserved automatically; no destructive operations.</li>
+  <li><strong>Zero ceremony:</strong> no manual commits or staging.</li>
+  <li><strong>Zero friction:</strong> authenticate once, discover projects, collaborate live.</li>
+</ul>
+<p>See the <a href="../MothershipVision.md">Vision Document</a> for the full philosophy and terminology.</p>
+</section>
+
+<section id="quick-start">
+<h2>Quick start</h2>
+<p>Local evaluation build (from the repository root):</p>
+<pre><code># Build all components
+cargo build
+
+# Connect to a Mothership server and authenticate
+mothership connect https://your-mothership-server.com
+mothership auth
+
+# Initialize a project in the current directory
+cd your-project
+mothership init
+
+# Start real-time collaboration
+mothership beam "your-project"
+
+# Stay updated with latest features
+mothership update</code></pre>
+<p>Full stack with Docker (PostgreSQL included):</p>
+<pre><code># Windows
+start-docker.bat
+
+# Linux / macOS
+./start-docker.sh</code></pre>
+<p>Full command list: see the <a href="../README.md#cli-commands-reference">CLI commands reference</a> in the README.</p>
+</section>
+
+<section id="architecture">
+<h2>Architecture</h2>
+<p>The stack consists of:</p>
+<table>
+  <thead><tr><th>Component</th><th>Folder</th><th>Role</th></tr></thead>
+  <tbody>
+    <tr><td>Mothership Server</td><td><code>mothership-server/</code></td><td>Axum API server, PostgreSQL persistence, WebSocket broadcasting</td></tr>
+    <tr><td>Daemon</td><td><code>mothership-daemon/</code></td><td>Background file tracking with an IPC server</td></tr>
+    <tr><td>CLI</td><td><code>mothership-cli/</code></td><td><code>init</code>, <code>gateway</code>, <code>beam</code>, <code>rift</code>, <code>wormhole</code> commands</td></tr>
+    <tr><td>Desktop GUI</td><td><code>mothership-gui/</code></td><td>Tauri app for OAuth sign-in and project management</td></tr>
+    <tr><td>Common library</td><td><code>mothership-common/</code></td><td>Shared types, protocols, diff/merge, <code>.mothershipignore</code>, sqlx models</td></tr>
+    <tr><td>Auth pages</td><td><code>content/</code></td><td>Browser login and auth-required pages</td></tr>
+    <tr><td>Database</td><td><code>migrations/</code></td><td>PostgreSQL schema</td></tr>
+  </tbody>
+</table>
+</section>
+
+<section id="server">
+<h2>Server</h2>
+<div class="cards">
+  <div class="card">
+    <h3>Server configuration</h3>
+    <p>Config formats, sections, deployment modes, whitelist, and troubleshooting.</p>
+    <a href="../SERVER_CONFIG.md">SERVER_CONFIG.md</a>
+  </div>
+  <div class="card">
+    <h3>Server source</h3>
+    <p>Axum API server with PostgreSQL and WebSocket collaboration.</p>
+    <a href="../mothership-server/">mothership-server/</a>
+  </div>
+</div>
+</section>
+
+<section id="cli">
+<h2>CLI</h2>
+<p>The <code>mothership</code> command-line tool handles authentication, project discovery, beaming into projects, rifts and checkpoints, live chat and wormholes, and daemon, server, and gateway lifecycle management.</p>
+<table>
+  <thead><tr><th>Group</th><th>Commands</th></tr></thead>
+  <tbody>
+    <tr><td>Setup &amp; auth</td><td><code>connect</code>, <code>auth</code> (<code>google</code>, <code>github</code>), <code>logout</code>, <code>update</code></td></tr>
+    <tr><td>Projects</td><td><code>init</code>, <code>gateway list | release</code>, <code>beam</code>, <code>delete</code></td></tr>
+    <tr><td>Daemon &amp; server</td><td><code>daemon status | stop | restart</code>, <code>server status | list | disconnect</code>, <code>status</code>, <code>sync</code></td></tr>
+    <tr><td>Rifts</td><td><code>rift list | new | switch | status | diff | purge | chat</code></td></tr>
+    <tr><td>Checkpoints</td><td><code>checkpoint [-m]</code>, <code>checkpoint delete</code>, <code>history</code>, <code>restore</code></td></tr>
+    <tr><td>Wormholes</td><td><code>wormhole create</code></td></tr>
+  </tbody>
+</table>
+<div class="cards">
+  <div class="card">
+    <h3>CLI commands</h3>
+    <p>Command reference with examples, in the project README.</p>
+    <a href="../README.md#cli-commands-reference">README: CLI commands</a>
+  </div>
+  <div class="card">
+    <h3>Disconnect &amp; daemon management</h3>
+    <p>Disconnecting from projects, stopping and restarting the daemon, and daemon behavior.</p>
+    <a href="../DISCONNECT_GUIDE.md">DISCONNECT_GUIDE.md</a>
+  </div>
+  <div class="card">
+    <h3>Distribution</h3>
+    <p>How CLI binaries are built, packaged, and distributed, including update checks.</p>
+    <a href="../CLI_DISTRIBUTION_SUMMARY.md">CLI_DISTRIBUTION_SUMMARY.md</a>
+  </div>
+  <div class="card">
+    <h3>Local project discovery</h3>
+    <p>How <code>gateway list</code> and <code>beam</code> find projects, and which directories get pruned.</p>
+    <a href="../README.md#cli-commands-reference">README: discovery</a>
+  </div>
+</div>
+</section>
+
+<section id="daemon">
+<h2>Daemon</h2>
+<p>The daemon runs in the background, watches tracked projects, and force-syncs changes. <code>beam</code> starts it automatically if it is not running. Behavior and lifecycle are covered in the <a href="../DISCONNECT_GUIDE.md">disconnect guide</a>.</p>
+</section>
+
+<section id="gui">
+<h2>Desktop GUI</h2>
+<p>A cross-platform Tauri application for OAuth sign-in and project management.</p>
+<div class="cards">
+  <div class="card">
+    <h3>GUI README</h3>
+    <p>Features, prerequisites, development, building, architecture, and file structure.</p>
+    <a href="../mothership-gui/README.md">mothership-gui/README.md</a>
+  </div>
+</div>
+</section>
+
+<section id="common">
+<h2>Common library</h2>
+<p>The <code>mothership-common</code> crate provides shared types, protocols, diff and merge engines, <code>.mothershipignore</code> rules, and PostgreSQL models. Integration tests live under <code>mothership-common/tests/</code> (project and rift flows, and wormholes).</p>
+</section>
+
+<section id="auth">
+<h2>Authentication</h2>
+<p>Machines authenticate once through a browser OAuth flow, and the CLI stores a machine certificate locally. Login and error pages are served from <code>content/</code>:</p>
+<ul>
+  <li><code>content/login.html</code></li>
+  <li><code>content/ghostid-auth.html</code></li>
+  <li><code>content/auth-required.html</code></li>
+</ul>
+<p>Access is controlled by the user whitelist; see <a href="../SERVER_CONFIG.md#user-whitelist">User Whitelist</a>.</p>
+</section>
+
+<section id="configuration">
+<h2>Configuration</h2>
+<div class="cards">
+  <div class="card">
+    <h3>Server config</h3>
+    <p>Sections, deployment modes, environment overrides, and validation.</p>
+    <a href="../SERVER_CONFIG.md">SERVER_CONFIG.md</a>
+  </div>
+  <div class="card">
+    <h3>Example configs</h3>
+    <p>Templates for the simple, dual-port, and secure setups.</p>
+    <a href="../server.config.example">server.config.example</a> (plus the <code>.dual-port</code>, <code>.secure</code>, and <code>.simple</code> variants)
+  </div>
+  <div class="card">
+    <h3>Ignore rules</h3>
+    <p><code>.mothershipignore</code> prunes <code>node_modules</code>, <code>target</code>, <code>.git</code>, and build artifacts.</p>
+    <a href="../README.md#current-status">README</a>
+  </div>
+</div>
+</section>
+
+<section id="deployment">
+<h2>Deployment</h2>
+<p>Docker files at the repository root:</p>
+<ul>
+  <li><code>docker-compose.yml</code>: production stack with PostgreSQL</li>
+  <li><code>docker-compose.dev.yml</code>: development environment</li>
+  <li><code>docker-compose.override.yml</code>: local overrides applied on top of the base compose file</li>
+  <li><code>start-docker.bat</code> / <code>start-docker.sh</code>: one-step launchers for the stack</li>
+  <li><code>Dockerfile.server</code>: server container image (sqlx offline mode)</li>
+  <li><code>mothership-tunnel.yml</code>: tunnel configuration</li>
+</ul>
+<p>Build the server with sqlx offline mode: see <a href="SQLX_OFFLINE.md">SQLX_OFFLINE.md</a>.</p>
+</section>
+
+<section id="database">
+<h2>Database</h2>
+<p>PostgreSQL schema migrations live in <code>migrations/</code>:</p>
+<ul>
+  <li><code>001_initial_schema.sql</code></li>
+  <li><code>002_rift_schema.sql</code></li>
+</ul>
+<p>Offline query metadata for sqlx: <a href="SQLX_OFFLINE.md">SQLX_OFFLINE.md</a>.</p>
+</section>
+
+<section id="testing">
+<h2>Testing &amp; profiling</h2>
+<p>Latest run: 2026-11-04, Windows, debug build, <code>cargo test</code> per crate, against the current working tree.</p>
+<table>
+  <thead><tr><th>Crate / target</th><th>Result</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td><code>mothership-common</code> (lib unit tests)</td><td>54 passed, 0 failed</td><td>Diff, merge, and ignore-rule coverage</td></tr>
+    <tr><td><code>mothership-common</code> (<code>e2e_projects_rifts</code>)</td><td>4 passed, 0 failed</td><td>Project and rift end-to-end tests</td></tr>
+    <tr><td><code>mothership-common</code> (<code>e2e_wormholes</code>)</td><td>3 passed, 0 failed</td><td>Wormhole end-to-end tests</td></tr>
+    <tr><td><code>mothership-cli</code> (unit tests)</td><td>7 passed, 0 failed, 3 ignored</td><td>Ignored tests are the profiling tests</td></tr>
+    <tr><td><code>mothership-daemon</code> (unit tests)</td><td>7 passed, 0 failed, 2 ignored</td><td>Ignored tests are the profiling tests</td></tr>
+    <tr><td><code>mothership-server</code> (unit tests)</td><td>10 passed, 0 failed, 7 ignored</td><td>Run with <code>SQLX_OFFLINE=true</code></td></tr>
+    <tr><td><code>mothership-server</code> (ignored chat tests)</td><td>7 passed, 0 failed</td><td>Needs <code>TEST_DATABASE_URL</code> (see below). Covers the chat DB layer, the HTTP API (auth, project access, limits, history), and WebSocket broadcast to rift members</td></tr>
+  </tbody>
+</table>
+<div class="note"><strong>Offline sqlx mode:</strong> without <code>SQLX_OFFLINE=true</code>, sqlx's compile-time query checks try to reach a live database, and <code>mothership-server</code> fails to build. See <a href="SQLX_OFFLINE.md">SQLX_OFFLINE.md</a>.</div>
+<p>Run the test suites per crate:</p>
+<pre><code>cargo test -p mothership-common
+cargo test -p mothership-cli
+cargo test -p mothership-daemon
+cargo test -p mothership-server</code></pre>
+<p>The chat tests in <code>mothership-server</code> need a PostgreSQL database with the root migrations applied. They are <code>#[ignore]</code>d during normal runs:</p>
+<pre><code>TEST_DATABASE_URL=postgres://user:password@localhost:5432/mothership_test SQLX_OFFLINE=true cargo test -p mothership-server chat -- --ignored --test-threads=1</code></pre>
+<p>Release-mode profiling tests are <code>#[ignore]</code>d during normal runs:</p>
+<pre><code>cargo test -p mothership-cli --release profile_ -- --ignored --nocapture --test-threads=1
+cargo test -p mothership-daemon --release profile_ -- --ignored --nocapture --test-threads=1</code></pre>
+<p>End-to-end script: <code>scripts/integration-test.ps1</code> (Windows only). Latest run (2026-11-04, debug build): 20 checks passed, 0 failed. It covers CLI, GUI Neovim saves, daemon sync, rifts, wormhole convergence, and CLI chat send and history. There is no Linux/macOS equivalent yet.</p>
+<div class="note">The profiling tests are in <code>mothership-cli/src/profiling.rs</code>, <code>mothership-cli/src/beam.rs</code>, <code>mothership-cli/src/gateway.rs</code>, and <code>mothership-daemon/src/daemon.rs</code>. The chat API tests are in <code>mothership-server/src/chat_api_tests.rs</code>.</div>
+
+<p>The 2025 analysis reports and evidence are archived and are not current status. See <a href="#analysis">Analysis &amp; evidence</a>.</p>
+</section>
+
+<section id="project-structure">
+<h2>Project structure</h2>
+<pre><code>Mothership/
+├── mothership-server/    # Core API server (Axum + PostgreSQL + WebSocket)
+├── mothership-daemon/    # Background file tracking daemon
+├── mothership-cli/       # Command-line tools
+├── mothership-common/    # Shared types, protocols, models
+├── mothership-gui/       # Desktop app (Tauri)
+├── migrations/           # PostgreSQL schema
+├── content/              # Auth and login pages
+├── docs/                 # Documentation (this hub)
+├── analysis/             # Analysis workspace, reports, evidence
+├── scripts/              # Build, packaging, and integration test scripts
+├── cli-binaries/         # Packaged CLI binaries by version
+└── storage/              # Runtime storage</code></pre>
+</section>
+
+<section id="analysis">
+<h2>Analysis &amp; evidence</h2>
+<p>The <code>analysis/</code> workspace holds analysis tools and configuration, the active reports folder, and the archive of superseded reports and evidence. Start with the <a href="../analysis/README.md">analysis README</a>.</p>
+<h3>Reports</h3>
+<ul>
+  <li><a href="../analysis/reports/README.md">Active reports folder</a> (currently empty; new reports are generated here)</li>
+  <li><a href="../analysis/archive/">Archived reports and evidence</a> (superseded or inaccurate; kept for history only). This includes the 2025 shortcomings checklist, code analysis, functional testing report, and the older integration and CLI test results.</li>
+</ul>
+<h3>Archived evidence (2025 analysis)</h3>
+<ul>
+  <li><a href="../analysis/archive/evidence/">Archived evidence folder</a>: authentication, authenticated server verification, CLI–server integration, daemon, database, service configuration, and integration test analyses, plus the raw JSON and JSONL test outputs</li>
+</ul>
+<p>These were produced in August 2025 and are superseded by the test results above. Do not treat their conclusions as current.</p>
+<h3>Specs</h3>
+<ul>
+  <li><a href="../.kiro/specs/mothership-analysis/requirements.md">Requirements</a></li>
+  <li><a href="../.kiro/specs/mothership-analysis/design.md">Design</a></li>
+  <li><a href="../.kiro/specs/mothership-analysis/tasks.md">Tasks</a></li>
+</ul>
+</section>
+
+<section id="vision">
+<h2>Vision &amp; roadmap</h2>
+<p>The <a href="../MothershipVision.md">Vision Document</a> covers the core philosophy, user workflows, technical architecture, implementation phases, and migration path. The roadmap and current status are in the <a href="../README.md#roadmap">README</a>.</p>
+</section>
+
+<section id="legal">
+<h2>License</h2>
+<p>Mothership is proprietary software. An evaluation license applies to local builds, and a commercial license is required for deployment. See the <a href="../README.md#license">README license section</a>, and the <a href="https://mothership.dev/licensing">commercial licensing page</a>.</p>
+</section>
+
+<footer>
+  Generated documentation hub for the Mothership repository. Links are relative to <code>docs/</code>; markdown files open as plain text when viewed directly in a browser.
+</footer>
+
+</main>
+
+</body>
+</html>

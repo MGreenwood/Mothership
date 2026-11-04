@@ -33,6 +33,8 @@ mod sync;
 mod storage;
 mod web_ui;
 mod wormhole;
+#[cfg(test)]
+mod chat_api_tests;
 
 use auth::AuthService;
 use config::{ServerConfig, UserWhitelist};
@@ -259,8 +261,9 @@ fn create_api_router(state: AppState) -> Router {
         .route("/api/rifts/:id/chat", get(chat::get_chat_history).post(chat::post_chat))
         .route("/api/rifts/:id/presence", get(sync::get_rift_presence))
         .route("/api/wormholes", get(wormhole::list_wormholes).post(wormhole::create_wormhole))
-        .route("/api/wormholes/:id", get(wormhole::get_wormhole))
+        .route("/api/wormholes/:id", get(wormhole::get_wormhole).delete(wormhole::delete_wormhole))
         .route("/api/wormholes/:id/resolve", post(wormhole::resolve_conflict))
+        .route("/api/wormholes/:id/toggle", post(wormhole::toggle_wormhole_rift))
         .route("/api/wormholes/:id/converge", post(wormhole::converge_wormhole))
         .route("/api/wormholes/:id/files", get(wormhole::wormhole_files))
         .route("/api/wormholes/:id/rift-files", get(wormhole::wormhole_rift_files))
@@ -350,8 +353,9 @@ fn create_combined_router(state: AppState) -> Router {
         .route("/api/rifts/:id/chat", get(chat::get_chat_history).post(chat::post_chat))
         .route("/api/rifts/:id/presence", get(sync::get_rift_presence))
         .route("/api/wormholes", get(wormhole::list_wormholes).post(wormhole::create_wormhole))
-        .route("/api/wormholes/:id", get(wormhole::get_wormhole))
+        .route("/api/wormholes/:id", get(wormhole::get_wormhole).delete(wormhole::delete_wormhole))
         .route("/api/wormholes/:id/resolve", post(wormhole::resolve_conflict))
+        .route("/api/wormholes/:id/toggle", post(wormhole::toggle_wormhole_rift))
         .route("/api/wormholes/:id/converge", post(wormhole::converge_wormhole))
         .route("/api/wormholes/:id/files", get(wormhole::wormhole_files))
         .route("/api/wormholes/:id/rift-files", get(wormhole::wormhole_rift_files))
@@ -1579,11 +1583,20 @@ async fn create_gateway(
     }
 }
 
-/// List all projects (temporary endpoint for testing)
+/// List the projects the authenticated user is a member of
 async fn list_projects(
     State(state): State<AppState>,
+    headers: HeaderMap,
 ) -> Result<Json<ApiResponse<Vec<mothership_common::Project>>>, StatusCode> {
-    match state.db.list_all_projects().await {
+    let token = headers.get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    let claims = state.auth.verify_token(token).map_err(|_| StatusCode::UNAUTHORIZED)?;
+    let user_id = uuid::Uuid::parse_str(&claims.sub).map_err(|_| StatusCode::UNAUTHORIZED)?;
+
+    match state.db.get_user_projects(user_id).await {
         Ok(projects) => Ok(Json(ApiResponse::success(projects))),
         Err(e) => {
             error!("List projects failed: {}", e);

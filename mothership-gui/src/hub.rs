@@ -686,6 +686,27 @@ pub async fn hub_dissolve_wormhole(wormhole_id: String) -> Result<String, String
     Ok(id.to_string())
 }
 
+#[tauri::command]
+pub async fn hub_delete_wormhole(wormhole_id: String) -> Result<String, String> {
+    let id = client()?
+        .delete_wormhole(parse_id(&wormhole_id)?)
+        .await
+        .map_err(err)?;
+    Ok(id.to_string())
+}
+
+#[tauri::command]
+pub async fn hub_toggle_wormhole_rift(
+    wormhole_id: String,
+    rift_id: String,
+    enabled: Option<bool>,
+) -> Result<WormholeDetail, String> {
+    client()?
+        .toggle_wormhole_rift(parse_id(&wormhole_id)?, parse_id(&rift_id)?, enabled)
+        .await
+        .map_err(err)
+}
+
 /// Per-side text for files that differ between a wormhole's rifts. Works while conflicts remain.
 #[tauri::command]
 pub async fn hub_wormhole_rift_files(wormhole_id: String) -> Result<Vec<RiftFileSides>, String> {

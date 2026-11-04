@@ -21,6 +21,14 @@ pub struct WormholeRecord {
     /// Map of file path to content-store hash for the base snapshot
     pub base_hashes: HashMap<String, String>,
     pub rift_ids: Vec<RiftId>,
+    /// Rifts currently toggled off (muted) in this wormhole
+    pub disabled_rift_ids: Vec<RiftId>,
+}
+
+impl WormholeRecord {
+    pub fn is_rift_enabled(&self, rift_id: RiftId) -> bool {
+        !self.disabled_rift_ids.contains(&rift_id)
+    }
 }
 
 type WormholeRow = (Uuid, Uuid, String, String, Uuid, DateTime<Utc>, Option<Uuid>, String);
@@ -137,8 +145,14 @@ impl Database {
             CREATE TABLE IF NOT EXISTS wormhole_rifts (
                 wormhole_id UUID NOT NULL REFERENCES wormholes(id) ON DELETE CASCADE,
                 rift_id UUID NOT NULL REFERENCES rifts(id) ON DELETE CASCADE,
+                enabled BOOLEAN NOT NULL DEFAULT TRUE,
                 PRIMARY KEY (wormhole_id, rift_id)
             )
+        "#).execute(&self.pool).await?;
+
+        sqlx::query(r#"
+            ALTER TABLE wormhole_rifts
+            ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT TRUE
         "#).execute(&self.pool).await?;
 
         sqlx::query(r#"
@@ -574,12 +588,20 @@ impl Database {
     async fn hydrate_wormholes(&self, rows: Vec<WormholeRow>) -> Result<Vec<WormholeRecord>> {
         let mut records = Vec::with_capacity(rows.len());
         for (id, project_id, name, status, created_by, created_at, converted_rift_id, base_files) in rows {
-            let rift_rows: Vec<(Uuid,)> = sqlx::query_as(
-                "SELECT rift_id FROM wormhole_rifts WHERE wormhole_id = $1 ORDER BY rift_id",
+            let rift_rows: Vec<(Uuid, bool)> = sqlx::query_as(
+                "SELECT rift_id, enabled FROM wormhole_rifts WHERE wormhole_id = $1 ORDER BY rift_id",
             )
             .bind(id)
             .fetch_all(&self.pool)
             .await?;
+            let mut rift_ids = Vec::with_capacity(rift_rows.len());
+            let mut disabled_rift_ids = Vec::new();
+            for (rift_id, enabled) in rift_rows {
+                rift_ids.push(rift_id);
+                if !enabled {
+                    disabled_rift_ids.push(rift_id);
+                }
+            }
             records.push(WormholeRecord {
                 id,
                 project_id,
@@ -589,10 +611,51 @@ impl Database {
                 created_at,
                 converted_rift_id,
                 base_hashes: serde_json::from_str(&base_files)?,
-                rift_ids: rift_rows.into_iter().map(|(rift_id,)| rift_id).collect(),
+                rift_ids,
+                disabled_rift_ids,
             });
         }
         Ok(records)
+    }
+
+    /// Toggles or sets whether a rift is enabled in a wormhole. Returns `Some(new_enabled)` if the rift belongs to the wormhole.
+    pub async fn set_wormhole_rift_enabled(
+        &self,
+        wormhole_id: Uuid,
+        rift_id: RiftId,
+        enabled: Option<bool>,
+    ) -> Result<Option<bool>> {
+        let row: Option<(bool,)> = match enabled {
+            Some(val) => {
+                sqlx::query_as(
+                    "UPDATE wormhole_rifts SET enabled = $3 WHERE wormhole_id = $1 AND rift_id = $2 RETURNING enabled",
+                )
+                .bind(wormhole_id)
+                .bind(rift_id)
+                .bind(val)
+                .fetch_optional(&self.pool)
+                .await?
+            }
+            None => {
+                sqlx::query_as(
+                    "UPDATE wormhole_rifts SET enabled = NOT enabled WHERE wormhole_id = $1 AND rift_id = $2 RETURNING enabled",
+                )
+                .bind(wormhole_id)
+                .bind(rift_id)
+                .fetch_optional(&self.pool)
+                .await?
+            }
+        };
+        Ok(row.map(|(e,)| e))
+    }
+
+    /// Permanently delete a wormhole and its cascaded rows
+    pub async fn delete_wormhole(&self, wormhole_id: Uuid) -> Result<bool> {
+        let res = sqlx::query("DELETE FROM wormholes WHERE id = $1")
+            .bind(wormhole_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
     }
 
     /// Change a wormhole's lifecycle status, optionally recording the rift it converged into

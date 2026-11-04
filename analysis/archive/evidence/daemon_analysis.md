@@ -78,19 +78,11 @@ loop {
 
 ### 4. Automatic Startup and Lifecycle Management
 
-**MAJOR GAP IDENTIFIED:**
-- **NO AUTOMATIC STARTUP MECHANISM** - The daemon must be manually started
-- **NO SYSTEM SERVICE INTEGRATION** - No Windows service or systemd integration
-- **NO BOOT-TIME STARTUP** - No mechanism to start on system boot
-
-**CODE EVIDENCE:**
-The daemon implementation shows no evidence of:
-- Windows service registration
-- systemd service files
-- Auto-start registry entries
-- Boot-time initialization
-
-**CRITICAL FINDING:** Despite claims of "background daemon," users must manually start the daemon process.
+**CURRENT STATE (verified against source):**
+- **Windows service support exists.** `mothership-daemon/src/main.rs` (lines 32-67) implements `install` and `uninstall` subcommands (run as admin), plus an internal `service` mode used by the Service Control Manager.
+- **Service support is Windows-only.** On other platforms these commands print an error (`main.rs:42`, `main.rs:55`, `main.rs:67`).
+- **No systemd or launchd integration.** No unit files or launch agents exist in the repository.
+- **Boot-time startup depends on the service install.** Without it, the daemon must be started manually.
 
 ### 5. File Change Detection and Sync Capabilities
 
@@ -133,26 +125,19 @@ let health_log_interval = Duration::from_secs(300);
 let reconnect_delay = Duration::from_secs(5);
 ```
 
-### 7. Missing Critical Features
+### 7. Remaining Gaps
 
-**UNIMPLEMENTED:**
-1. **Automatic daemon startup** - No system service integration
-2. **Boot-time initialization** - No mechanism to start with system
-3. **Service management** - No install/uninstall commands
-4. **Background process management** - Relies on manual process management
-5. **System tray integration** - Only implemented for Windows, not cross-platform
+1. **Non-Windows service management** - No systemd or launchd support
+2. **System tray** - Windows only (`daemon.rs:249`)
 
 ### 8. System Integration Assessment
 
 **WINDOWS SUPPORT:**
-- System tray integration (Windows only)
-- Windows service registration
-- Auto-start registry entries
+- `install` / `uninstall` / `service` subcommands
+- System tray integration
 
 **LINUX/MAC SUPPORT:**
-- systemd service files
-- launchd integration (macOS)
-- Auto-start mechanisms
+- None. No systemd unit files or launchd agents.
 
 **CODE EVIDENCE:**
 ```rust
@@ -165,23 +150,15 @@ let system_tray = None;
 
 ## Conclusion
 
-The daemon implementation provides **EXCELLENT** file watching and sync capabilities but **FAILS TO DELIVER** on the "background daemon" promise due to:
+The daemon provides file watching and sync, and on Windows it can run as a service via `install`. Limitations:
 
-1. **No automatic startup** - Users must manually start the daemon
-2. **No system service integration** - Not a true background service
-3. **Manual lifecycle management** - No install/uninstall process
-4. **Platform-specific limitations** - System tray only on Windows
-
-**VERDICT: MISLEADING ADVERTISING** - This is a manually-started sync client, not a true background daemon.
+1. **Windows-only service support** - no systemd or launchd integration
+2. **System tray is Windows-only**
 
 ## Recommendations
 
-For users considering this system:
-1. Expect to manually start the daemon process each time
-2. Set up your own auto-start mechanisms (startup scripts, etc.)
-3. Monitor the daemon process manually - no service management
-4. Consider this more like a "sync client" than a "background daemon"
-5. Test thoroughly on your target platform before production use
+1. On Windows, use `mothership-daemon install` (as admin) for boot-time startup
+2. On Linux or macOS, start the daemon manually or write your own unit or launch agent
 
 ## Evidence Files Referenced
 

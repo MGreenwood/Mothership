@@ -112,23 +112,159 @@ fn marker_matches(folder: &Path, wormhole_id: Uuid) -> bool {
         .is_some_and(|marker| marker.wormhole_id == wormhole_id.to_string())
 }
 
-/// Asks the server whether the wormhole is dissolved or converted. Any failure means keep.
+/// Asks the server whether the wormhole is dissolved, converted, or deleted. Any other failure means keep.
 async fn should_remove(snapshot: &Snapshot) -> bool {
-    if !snapshot.folder.exists() || !marker_matches(&snapshot.folder, snapshot.wormhole_id) {
-        return false;
-    }
     let Some(server_url) = get_active_server_url() else {
         return false;
     };
-    let client = match MothershipClient::new(&server_url, load_auth_token()) {
+    should_remove_from_server(snapshot, &server_url, load_auth_token()).await
+}
+
+async fn should_remove_from_server(
+    snapshot: &Snapshot,
+    server_url: &str,
+    auth_token: Option<String>,
+) -> bool {
+    if !snapshot.folder.exists() || !marker_matches(&snapshot.folder, snapshot.wormhole_id) {
+        return false;
+    }
+    let client = match MothershipClient::new(server_url, auth_token) {
         Ok(client) => client,
         Err(_) => return false,
     };
     match client.get_wormhole(snapshot.wormhole_id).await {
         Ok(detail) => matches!(detail.summary.status.as_str(), "dissolved" | "converted"),
         Err(e) => {
-            debug!("Snapshot {} kept; wormhole status unavailable: {}", snapshot.folder.display(), e);
-            false
+            let msg = e.to_string();
+            if msg.contains("404") || msg.to_ascii_lowercase().contains("wormhole not found") {
+                true
+            } else {
+                debug!("Snapshot {} kept; wormhole status unavailable: {}", snapshot.folder.display(), e);
+                false
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{extract::Path as AxPath, http::StatusCode, routing::get, Json, Router};
+    use chrono::Utc;
+    use mothership_common::{
+        client::{WormholeDetail, WormholeSummary},
+        protocol::ApiResponse,
+    };
+
+    fn make_marked_folder(label: &str, wormhole_id: Uuid) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ms-snap-{label}-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join(".mothership")).unwrap();
+        let marker = WormholeMarker {
+            wormhole_id: wormhole_id.to_string(),
+            wormhole_name: label.to_string(),
+            project_id: Uuid::new_v4().to_string(),
+        };
+        std::fs::write(
+            dir.join(".mothership/wormhole.json"),
+            serde_json::to_string(&marker).unwrap(),
+        )
+        .unwrap();
+        dir
+    }
+
+    #[tokio::test]
+    async fn snapshot_sweep_checks_active_dissolved_converted_deleted_and_foreign() {
+        let active_id = Uuid::new_v4();
+        let dissolved_id = Uuid::new_v4();
+        let converted_id = Uuid::new_v4();
+        let deleted_id = Uuid::new_v4();
+
+        let app = Router::new().route(
+            "/api/wormholes/:id",
+            get(move |AxPath(id): AxPath<Uuid>| async move {
+                let status = if id == active_id {
+                    "active"
+                } else if id == dissolved_id {
+                    "dissolved"
+                } else if id == converted_id {
+                    "converted"
+                } else {
+                    return Err((StatusCode::NOT_FOUND, "wormhole not found".to_string()));
+                };
+                Ok(Json(ApiResponse::success(WormholeDetail {
+                    summary: WormholeSummary {
+                        id,
+                        project_id: Uuid::new_v4(),
+                        name: "wh".into(),
+                        status: status.into(),
+                        created_at: Utc::now(),
+                        rift_ids: vec![],
+                        disabled_rift_ids: vec![],
+                        converted_rift_id: None,
+                        unresolved_conflicts: 0,
+                    },
+                    sides: vec![],
+                    files: vec![],
+                })))
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let active_dir = make_marked_folder("active", active_id);
+        let dissolved_dir = make_marked_folder("dissolved", dissolved_id);
+        let converted_dir = make_marked_folder("converted", converted_id);
+        let deleted_dir = make_marked_folder("deleted", deleted_id);
+        let foreign_dir = make_marked_folder("foreign", Uuid::new_v4());
+
+        assert!(
+            !should_remove_from_server(
+                &Snapshot { folder: active_dir.clone(), wormhole_id: active_id },
+                &url,
+                None
+            )
+            .await
+        );
+        assert!(
+            should_remove_from_server(
+                &Snapshot { folder: dissolved_dir.clone(), wormhole_id: dissolved_id },
+                &url,
+                None
+            )
+            .await
+        );
+        assert!(
+            should_remove_from_server(
+                &Snapshot { folder: converted_dir.clone(), wormhole_id: converted_id },
+                &url,
+                None
+            )
+            .await
+        );
+        assert!(
+            should_remove_from_server(
+                &Snapshot { folder: deleted_dir.clone(), wormhole_id: deleted_id },
+                &url,
+                None
+            )
+            .await
+        );
+        // Folder whose marker has a different wormhole_id must never be removed
+        assert!(
+            !should_remove_from_server(
+                &Snapshot { folder: foreign_dir.clone(), wormhole_id: dissolved_id },
+                &url,
+                None
+            )
+            .await
+        );
+
+        for d in [active_dir, dissolved_dir, converted_dir, deleted_dir, foreign_dir] {
+            let _ = std::fs::remove_dir_all(d);
         }
     }
 }

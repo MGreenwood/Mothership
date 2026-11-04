@@ -52,6 +52,10 @@ pub struct RestoreData {
     pub files: HashMap<PathBuf, String>,
 }
 
+fn default_side_enabled() -> bool {
+    true
+}
+
 /// A wormhole as listed by `GET /api/wormholes`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WormholeSummary {
@@ -61,6 +65,8 @@ pub struct WormholeSummary {
     pub status: String,
     pub created_at: DateTime<Utc>,
     pub rift_ids: Vec<Uuid>,
+    #[serde(default)]
+    pub disabled_rift_ids: Vec<Uuid>,
     pub converted_rift_id: Option<Uuid>,
     pub unresolved_conflicts: usize,
 }
@@ -71,6 +77,8 @@ pub struct WormholeSide {
     pub index: usize,
     pub rift_id: Uuid,
     pub rift_name: String,
+    #[serde(default = "default_side_enabled")]
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -724,6 +732,33 @@ impl MothershipClient {
         Ok(Self::unwrap_api(resp)?.id)
     }
 
+    /// Permanently deletes a wormhole from the server.
+    pub async fn delete_wormhole(&self, wormhole_id: Uuid) -> Result<Uuid> {
+        let id = wormhole_id.to_string();
+        let resp: ApiResponse<WormholeStatusResponse> = self
+            .post_api(
+                &["api", "wormholes", &id, "dissolve"],
+                &serde_json::json!({ "delete": true }),
+            )
+            .await?;
+        Ok(Self::unwrap_api(resp)?.id)
+    }
+
+    /// Toggles (or sets) whether a rift's modular changes are active in a wormhole.
+    pub async fn toggle_wormhole_rift(
+        &self,
+        wormhole_id: Uuid,
+        rift_id: Uuid,
+        enabled: Option<bool>,
+    ) -> Result<WormholeDetail> {
+        let id = wormhole_id.to_string();
+        let body = ToggleWormholeRiftRequest { rift_id, enabled };
+        let resp: ApiResponse<WormholeDetail> = self
+            .post_api(&["api", "wormholes", &id, "toggle"], &body)
+            .await?;
+        Self::unwrap_api(resp)
+    }
+
     /// Per-side file text for paths that differ between a wormhole's rifts.
     pub async fn wormhole_rift_files(&self, wormhole_id: Uuid) -> Result<Vec<RiftFileSides>> {
         let id = wormhole_id.to_string();
@@ -751,6 +786,13 @@ struct ResolveWormholeRequest<'a> {
 #[derive(Serialize)]
 struct ConvergeWormholeRequest<'a> {
     name: Option<&'a str>,
+}
+
+#[derive(Serialize)]
+struct ToggleWormholeRiftRequest {
+    rift_id: Uuid,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    enabled: Option<bool>,
 }
 
 #[derive(Deserialize)]

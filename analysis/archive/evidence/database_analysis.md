@@ -129,18 +129,9 @@ CONSTRAINT users_email_check CHECK (email ~* '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\
 - Environment variable configuration working
 
 **CRITICAL GAP IDENTIFIED:**
-- **NO SCHEMA INITIALIZATION** - The `ensure_schema()` function exists but is never called
-- **NO MIGRATION SYSTEM** - Migration files exist but aren't applied automatically
-- **DEPLOYMENT FAILURE** - Database will be empty on first startup
+**CORRECTION (verified):** The schema is initialized at startup. `ensure_schema()` is called in `mothership-server/src/main.rs:116` after the database connects. A local run logged "Database schema ready!".
 
-**CODE EVIDENCE:**
-```rust
-// From mothership-server/src/main.rs:100-102
-info!("Connecting to database...");
-let db = Database::new(&database_url).await?;
-info!("Database connected");
-// NOTE: No call to db.ensure_schema() or migration system!
-```
+**HOW IT WORKS:** `ensure_schema()` (`database.rs:58`) runs `CREATE TABLE IF NOT EXISTS` for each table. The server does not use sqlx's migration runner, so no separate migration step applies files.
 
 ### 6. Data Persistence Verification
 

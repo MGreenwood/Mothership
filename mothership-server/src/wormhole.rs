@@ -16,7 +16,7 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use mothership_common::{
-    merge::{merge_rifts, snapshot_base, Choice, FileMerge, Resolution},
+    merge::{merge_rifts, snapshot_base_with_fallback, Choice, FileMerge, Resolution},
     protocol::{ApiResponse, SyncMessage},
 };
 use serde::{Deserialize, Serialize};
@@ -103,7 +103,13 @@ async fn compute(state: &AppState, wormhole: &WormholeRecord) -> Result<Computed
 
     let mut live = Vec::with_capacity(wormhole.rift_ids.len());
     for rift_id in &wormhole.rift_ids {
-        live.push(state.sync.storage.get_live_state(*rift_id).await.map_err(internal)?);
+        if wormhole.is_rift_enabled(*rift_id) {
+            live.push(state.sync.storage.get_live_state(*rift_id).await.map_err(internal)?);
+        } else {
+            // Disabled (muted) sides fall back to the shared base snapshot so their
+            // in-progress changes are excluded while keeping side indices stable.
+            live.push(base.clone());
+        }
     }
     let refs: Vec<&HashMap<PathBuf, String>> = live.iter().collect();
 
@@ -124,6 +130,7 @@ pub struct WormholeSummary {
     pub status: String,
     pub created_at: DateTime<Utc>,
     pub rift_ids: Vec<Uuid>,
+    pub disabled_rift_ids: Vec<Uuid>,
     pub converted_rift_id: Option<Uuid>,
     pub unresolved_conflicts: usize,
 }
@@ -151,6 +158,7 @@ pub struct SideView {
     pub index: usize,
     pub rift_id: Uuid,
     pub rift_name: String,
+    pub enabled: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -170,7 +178,12 @@ async fn side_views(state: &AppState, wormhole: &WormholeRecord) -> Result<Vec<S
             .await
             .map_err(internal)?
             .ok_or_else(|| internal(format!("rift {rift_id} missing")))?;
-        sides.push(SideView { index, rift_id: *rift_id, rift_name: rift.name });
+        sides.push(SideView {
+            index,
+            rift_id: *rift_id,
+            rift_name: rift.name,
+            enabled: wormhole.is_rift_enabled(*rift_id),
+        });
     }
     Ok(sides)
 }
@@ -202,6 +215,7 @@ fn summarize(wormhole: &WormholeRecord, computed: &Computed) -> WormholeSummary 
         status: wormhole.status.clone(),
         created_at: wormhole.created_at,
         rift_ids: wormhole.rift_ids.clone(),
+        disabled_rift_ids: wormhole.disabled_rift_ids.clone(),
         converted_rift_id: wormhole.converted_rift_id,
         unresolved_conflicts,
     }
@@ -313,7 +327,19 @@ pub async fn create_wormhole(
         live.push(state.sync.storage.get_live_state(*rift_id).await.map_err(internal)?);
     }
     let refs: Vec<&HashMap<PathBuf, String>> = live.iter().collect();
-    let base = snapshot_base(&refs);
+
+    // Fall back to the project's `main` rift for files that have already diverged across the sides.
+    // Skipped when `main` is itself a side: its content would become the base, hiding its edits.
+    let main_base = match state.db.get_project_rifts(req.project_id).await.ok() {
+        Some(project_rifts) => match project_rifts.into_iter().find(|r| r.name == "main") {
+            Some(main_rift) if !rift_ids.contains(&main_rift.id) => {
+                state.sync.storage.get_live_state(main_rift.id).await.ok()
+            }
+            _ => None,
+        },
+        None => None,
+    };
+    let base = snapshot_base_with_fallback(&refs, main_base.as_ref());
 
     let mut base_hashes = HashMap::new();
     for (path, content) in &base {
@@ -601,13 +627,76 @@ async fn watch_loop(
     }
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ToggleRiftRequest {
+    pub rift_id: Uuid,
+    #[serde(default)]
+    pub enabled: Option<bool>,
+}
+
+/// Toggle a side rift on or off in an active wormhole and notify watchers.
+pub async fn toggle_wormhole_rift(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxPath(wormhole_id): AxPath<Uuid>,
+    Json(req): Json<ToggleRiftRequest>,
+) -> ApiResult<WormholeDetail> {
+    let user_id = current_user(&state, &headers)?;
+    let wormhole = load_wormhole(&state, user_id, wormhole_id).await?;
+    require_active(&wormhole)?;
+
+    let updated = state
+        .db
+        .set_wormhole_rift_enabled(wormhole.id, req.rift_id, req.enabled)
+        .await
+        .map_err(internal)?;
+    if updated.is_none() {
+        return Err(fail(
+            StatusCode::BAD_REQUEST,
+            format!("rift {} is not part of this wormhole", req.rift_id),
+        ));
+    }
+
+    let wormhole = load_wormhole(&state, user_id, wormhole_id).await?;
+    let computed = compute(&state, &wormhole).await?;
+    let sides = side_views(&state, &wormhole).await?;
+
+    let _ = state.sync.broadcaster.send((
+        format!("wormhole_{wormhole_id}"),
+        SyncMessage::WormholeUpdated { wormhole_id },
+    ));
+
+    Ok(Json(ApiResponse::success(detail(&wormhole, &computed, sides))))
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct DissolveRequest {
+    #[serde(default)]
+    pub delete: bool,
+}
+
 pub async fn dissolve_wormhole(
     State(state): State<AppState>,
     headers: HeaderMap,
     AxPath(wormhole_id): AxPath<Uuid>,
+    body: Option<Json<DissolveRequest>>,
 ) -> ApiResult<StatusResponse> {
     let user_id = current_user(&state, &headers)?;
     let wormhole = load_wormhole(&state, user_id, wormhole_id).await?;
+    let should_delete = body.map(|Json(req)| req.delete).unwrap_or(false);
+
+    if should_delete {
+        state
+            .db
+            .delete_wormhole(wormhole.id)
+            .await
+            .map_err(internal)?;
+        return Ok(Json(ApiResponse::success(StatusResponse {
+            id: wormhole.id,
+            status: "deleted".to_string(),
+        })));
+    }
+
     require_active(&wormhole)?;
 
     state
@@ -618,5 +707,23 @@ pub async fn dissolve_wormhole(
     Ok(Json(ApiResponse::success(StatusResponse {
         id: wormhole.id,
         status: "dissolved".to_string(),
+    })))
+}
+
+pub async fn delete_wormhole(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxPath(wormhole_id): AxPath<Uuid>,
+) -> ApiResult<StatusResponse> {
+    let user_id = current_user(&state, &headers)?;
+    let wormhole = load_wormhole(&state, user_id, wormhole_id).await?;
+    state
+        .db
+        .delete_wormhole(wormhole.id)
+        .await
+        .map_err(internal)?;
+    Ok(Json(ApiResponse::success(StatusResponse {
+        id: wormhole.id,
+        status: "deleted".to_string(),
     })))
 }

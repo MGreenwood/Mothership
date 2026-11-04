@@ -171,6 +171,18 @@ try {
     $diskMerged = Get-Content $StackPath -Raw
     Assert-Contains $diskMerged "main-nvim-line-123" "Converged rift stack.txt has main line"
     Assert-Contains $diskMerged "feature-nvim-line-456" "Converged rift stack.txt has feature line"
+
+    Write-Step "9. Chatting in the converged rift: send via CLI and read history back"
+    $chatText = "chat-e2e-$Stamp"
+    $chatSend = & $MothershipBin rift chat send --rift merged-rift $chatText 2>&1 | Out-String
+    Write-Host $chatSend
+    if ($LASTEXITCODE -ne 0) { Write-Fail "rift chat send failed" }
+    Assert-Contains $chatSend "Sent to rift merged-rift" "rift chat send output"
+
+    $chatHistory = & $MothershipBin rift chat history --rift merged-rift --limit 10 2>&1 | Out-String
+    Write-Host $chatHistory
+    if ($LASTEXITCODE -ne 0) { Write-Fail "rift chat history failed" }
+    Assert-Contains $chatHistory $chatText "rift chat history output"
     $subMerged = Get-Content (Join-Path $TestDir "src\main.rs") -Raw
     Assert-Contains $subMerged "main-v2" "Converged rift src/main.rs has main-v2"
 
@@ -185,14 +197,22 @@ finally {
         Start-Sleep -Milliseconds 200
         if (-not $NvimProc.HasExited) { Stop-Process -Id $NvimProc.Id -Force -ErrorAction SilentlyContinue }
     }
+    $cleanupFailed = $false
     try {
         Set-Location $TestDir -ErrorAction SilentlyContinue
-        & $MothershipBin gateway disconnect $TestProject 2>$null | Out-Null
-        & $MothershipBin delete $TestProject --force 2>$null | Out-Null
-    } catch {}
+        & $MothershipBin gateway release $TestProject | Out-Null
+        & $MothershipBin delete $TestProject --force | Out-Null
+        if ($LASTEXITCODE -ne 0) { $cleanupFailed = $true }
+    } catch {
+        $cleanupFailed = $true
+    }
     Set-Location $OrigLocation
     if (Test-Path $TestDir) {
         Remove-Item -Recurse -Force $TestDir -ErrorAction SilentlyContinue
+        if (Test-Path $TestDir) { $cleanupFailed = $true }
+    }
+    if ($cleanupFailed) {
+        Write-Warning "Cleanup incomplete: gateway project '$TestProject' or temp dir '$TestDir' may still exist. Remove them manually."
     }
 }
 Write-Host "[+] Cleanup operations" 

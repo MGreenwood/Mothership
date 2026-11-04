@@ -17,6 +17,7 @@ export default function WormholePanel({ project, rifts, onRiftsChanged, onBeamRi
   const [watching, setWatching] = useState(false)
   const [lastUpdate, setLastUpdate] = useState(null)
   const [confirmDissolve, setConfirmDissolve] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState(null)
   const [changes, setChanges] = useState(null)
@@ -167,10 +168,39 @@ export default function WormholePanel({ project, rifts, onRiftsChanged, onBeamRi
       setDetail(null)
       setWatching(false)
       setConfirmDissolve(false)
+      setConfirmDelete(false)
       setChanges(null)
       setShowChanges(false)
       await loadList()
       succeed('Wormhole dissolved')
+    })
+
+  const deleteWormhole = () =>
+    run(async () => {
+      await invoke('hub_delete_wormhole', { wormholeId: activeId })
+      setActiveId(null)
+      setDetail(null)
+      setWatching(false)
+      setConfirmDissolve(false)
+      setConfirmDelete(false)
+      setChanges(null)
+      setShowChanges(false)
+      await loadList()
+      succeed('Wormhole permanently deleted')
+    })
+
+  const toggleSide = (side) =>
+    run(async () => {
+      const updated = await invoke('hub_toggle_wormhole_rift', {
+        wormholeId: activeId,
+        riftId: side.rift_id,
+        enabled: !side.enabled,
+      })
+      setDetail(updated)
+      await loadList()
+      succeed(
+        `Rift "${side.rift_name}" ${!side.enabled ? 'enabled' : 'disabled'} in wormhole`,
+      )
     })
 
   const loadChanges = () =>
@@ -270,10 +300,22 @@ export default function WormholePanel({ project, rifts, onRiftsChanged, onBeamRi
           <p>
             <span className={isActive ? 'ok' : 'muted'}>{detail.status}</span>
             {' · '}
-            Sides: {detail.sides.map((s) => s.rift_name).join(', ')}
-            {' · '}
             <span className={conflictCount ? 'bad' : 'ok'}>{conflictCount} unresolved conflict(s)</span>
           </p>
+          <div className="form-row">
+            <span>Modular rifts:</span>
+            {detail.sides.map((s) => (
+              <label key={s.rift_id} title={isActive ? 'Toggle this rift on or off in the wormhole' : ''}>
+                <input
+                  type="checkbox"
+                  checked={s.enabled !== false}
+                  disabled={busy || !isActive}
+                  onChange={() => toggleSide(s)}
+                />{' '}
+                {s.rift_name} {s.enabled === false ? '(off)' : ''}
+              </label>
+            ))}
+          </div>
 
           {isActive && (
             <label className="row">
@@ -340,14 +382,24 @@ export default function WormholePanel({ project, rifts, onRiftsChanged, onBeamRi
                 Beam to folder…
               </button>
             )}
-            {isActive && !confirmDissolve && (
+            {isActive && !confirmDissolve && !confirmDelete && (
               <button className="danger" onClick={() => setConfirmDissolve(true)} disabled={busy}>Dissolve</button>
+            )}
+            {!confirmDissolve && !confirmDelete && (
+              <button className="danger" onClick={() => setConfirmDelete(true)} disabled={busy}>Delete</button>
             )}
             {confirmDissolve && (
               <>
                 <span>Dissolve this wormhole?</span>
                 <button className="danger" onClick={dissolve} disabled={busy}>Yes</button>
                 <button onClick={() => setConfirmDissolve(false)}>No</button>
+              </>
+            )}
+            {confirmDelete && (
+              <>
+                <span>Permanently delete this wormhole on the server?</span>
+                <button className="danger" onClick={deleteWormhole} disabled={busy}>Yes</button>
+                <button onClick={() => setConfirmDelete(false)}>No</button>
               </>
             )}
           </div>

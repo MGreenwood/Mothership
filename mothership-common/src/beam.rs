@@ -475,7 +475,8 @@ pub fn beam_wormhole_files(
     files: &[(String, String)],
 ) -> Result<WormholeBeamOutcome> {
     let marker_path = folder.join(METADATA_DIR).join("wormhole.json");
-    if folder.exists() {
+    let was_existing = folder.exists();
+    if was_existing {
         let existing: Option<WormholeMarker> = fs::read_to_string(&marker_path)
             .ok()
             .and_then(|raw| serde_json::from_str(&raw).ok());
@@ -488,6 +489,7 @@ pub fn beam_wormhole_files(
         }
     }
 
+    let mut keep = std::collections::HashSet::new();
     let mut written = 0;
     let mut skipped_unsafe = Vec::new();
     for (path, content) in files {
@@ -495,6 +497,7 @@ pub fn beam_wormhole_files(
             skipped_unsafe.push(path.clone());
             continue;
         };
+        keep.insert(crate::normalize_rel_path(&relative));
         let target = folder.join(relative);
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent)
@@ -503,6 +506,10 @@ pub fn beam_wormhole_files(
         fs::write(&target, content)
             .with_context(|| format!("Failed to write {}", target.display()))?;
         written += 1;
+    }
+
+    if was_existing {
+        let _ = remove_stale_local_files(folder, &keep);
     }
 
     fs::create_dir_all(folder.join(METADATA_DIR))?;

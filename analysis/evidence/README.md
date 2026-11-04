@@ -1,20 +1,5 @@
 # Evidence Collection
 
-This directory stores all evidence collected during the analysis process.
+The 2025 evidence set has been moved to [../archive/evidence/](../archive/evidence/). It is superseded and should not be used as current status.
 
-## Structure
-
-- `code_analysis/` - Results from static code analysis
-- `functional_tests/` - Functional testing results and logs
-- `integration_tests/` - Integration test execution results
-- `screenshots/` - Visual evidence of functionality or failures
-- `logs/` - Detailed execution logs
-- `artifacts/` - Code snippets, configuration files, and other artifacts
-
-## Evidence Types
-
-Each piece of evidence includes:
-- Source location (file, line number)
-- Evidence type (code analysis, functional test, etc.)
-- Confidence level (high, medium, low)
-- Supporting documentation
+Current test results are produced by `cargo test` per crate. See the [documentation hub](../../docs/index.html#testing).

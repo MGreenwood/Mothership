@@ -36,8 +36,7 @@
   },
   "integration_testing": {
     "test_scripts": [
-      "../scripts/integration-test.ps1",
-      "../scripts/integration-test.sh"
+      "../scripts/integration-test.ps1"
     ],
     "docker_compose_file": "../docker-compose.yml",
     "health_check_endpoints": [

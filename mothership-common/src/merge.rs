@@ -193,6 +193,21 @@ pub fn snapshot_base(rifts: &[&HashMap<PathBuf, String>]) -> HashMap<PathBuf, St
         .collect()
 }
 
+/// Base for a new wormhole, falling back to a common ancestor rift (such as `main`)
+/// for paths where the selected rifts have already diverged before the wormhole was created.
+pub fn snapshot_base_with_fallback(
+    rifts: &[&HashMap<PathBuf, String>],
+    fallback_base: Option<&HashMap<PathBuf, String>>,
+) -> HashMap<PathBuf, String> {
+    let mut base = snapshot_base(rifts);
+    if let Some(fallback) = fallback_base {
+        for (path, content) in fallback {
+            base.entry(path.clone()).or_insert_with(|| content.clone());
+        }
+    }
+    base
+}
+
 fn lines_of(content: Option<&str>) -> Vec<&str> {
     match content {
         None | Some("") => Vec::new(),
@@ -519,5 +534,42 @@ mod tests {
         let merged = merge_rifts(&base, &[&first, &second]);
         assert_eq!(merged[&PathBuf::from("diff.txt")].conflicts().count(), 1);
         assert_eq!(merged[&PathBuf::from("same.txt")].conflicts().count(), 0);
+    }
+
+    #[test]
+    fn toggling_side_off_falls_back_to_base_while_preserving_other_sides() {
+        let mut base = HashMap::new();
+        base.insert(PathBuf::from("app.rs"), "line1\nline2\nline3".to_string());
+
+        let mut alice = base.clone();
+        alice.insert(PathBuf::from("app.rs"), "alice1\nline2\nline3".to_string());
+        alice.insert(PathBuf::from("alice_mod.rs"), "pub fn alice() {}".to_string());
+
+        let mut bob = base.clone();
+        bob.insert(PathBuf::from("app.rs"), "bob1\nline2\nline3".to_string());
+        bob.insert(PathBuf::from("bob_mod.rs"), "pub fn bob() {}".to_string());
+
+        // Both enabled: app.rs has a conflict on line 1.
+        let both_on = merge_rifts(&base, &[&alice, &bob]);
+        assert_eq!(both_on[&PathBuf::from("app.rs")].conflicts().count(), 1);
+
+        // Toggle Bob off (replace Bob's side with &base): conflict disappears and Alice's module remains active.
+        let bob_off = merge_rifts(&base, &[&alice, &base]);
+        assert_eq!(bob_off[&PathBuf::from("app.rs")].conflicts().count(), 0);
+        assert_eq!(
+            bob_off[&PathBuf::from("app.rs")]
+                .render(&HashMap::new())
+                .unwrap()
+                .join("\n"),
+            "alice1\nline2\nline3"
+        );
+        assert_eq!(
+            bob_off[&PathBuf::from("alice_mod.rs")]
+                .render(&HashMap::new())
+                .unwrap()
+                .join("\n"),
+            "pub fn alice() {}"
+        );
+        assert!(!bob_off.contains_key(&PathBuf::from("bob_mod.rs")));
     }
 }

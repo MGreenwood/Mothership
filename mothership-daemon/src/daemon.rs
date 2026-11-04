@@ -2595,4 +2595,311 @@ mod profiling_tests {
         assert!(rx.try_recv().is_err());
         assert_eq!(status.read().await.files_synced, 0);
     }
+
+    #[tokio::test]
+    async fn e2e_two_daemons_realtime_bidirectional_sync_no_echo_loop() {
+        let dir_a = TempDir(std::env::temp_dir().join(format!("ms-daemon-a-{}", Uuid::new_v4())));
+        let dir_b = TempDir(std::env::temp_dir().join(format!("ms-daemon-b-{}", Uuid::new_v4())));
+        std::fs::create_dir_all(dir_a.0.join(".mothership")).unwrap();
+        std::fs::create_dir_all(dir_b.0.join(".mothership")).unwrap();
+
+        let project_id = Uuid::new_v4();
+        let rift_id = Uuid::new_v4();
+        let meta = serde_json::json!({
+            "project_id": project_id.to_string(),
+            "project_name": "collab-proj",
+            "created_at": "2026-01-01T00:00:00Z",
+            "mothership_url": "http://localhost",
+            "rift_id": rift_id.to_string(),
+        })
+        .to_string();
+        std::fs::write(dir_a.0.join(".mothership/project.json"), &meta).unwrap();
+        std::fs::write(dir_b.0.join(".mothership/project.json"), &meta).unwrap();
+
+        let initial_lines: Vec<String> = (1..=60)
+            .map(|i| format!("fn helper_{i}() -> usize {{ {i} * 42 /* padding to exceed 1 KiB threshold */ }}"))
+            .collect();
+        let initial_text = initial_lines.join("\n");
+        std::fs::write(dir_a.0.join("main.rs"), &initial_text).unwrap();
+        std::fs::write(dir_b.0.join("main.rs"), &initial_text).unwrap();
+
+        let base_a: BaseHashes = Arc::new(RwLock::new(HashMap::from([(
+            (project_id, "main.rs".to_string()),
+            SyncBase::from_content(&initial_text),
+        )])));
+        let base_b: BaseHashes = Arc::new(RwLock::new(HashMap::from([(
+            (project_id, "main.rs".to_string()),
+            SyncBase::from_content(&initial_text),
+        )])));
+
+        let (tx_a, mut rx_a) = mpsc::unbounded_channel();
+        let (tx_b, mut rx_b) = mpsc::unbounded_channel();
+        let channels_a = Arc::new(RwLock::new(HashMap::from([(project_id, tx_a)])));
+        let channels_b = Arc::new(RwLock::new(HashMap::from([(project_id, tx_b)])));
+        let projects_a = Arc::new(RwLock::new(HashMap::from([(
+            project_id,
+            TrackedProject {
+                project_id,
+                project_name: "collab-proj".into(),
+                project_path: dir_a.0.clone(),
+                added_at: chrono::Utc::now(),
+                rift_id: Some(rift_id),
+            },
+        )])));
+        let projects_b = Arc::new(RwLock::new(HashMap::from([(
+            project_id,
+            TrackedProject {
+                project_id,
+                project_name: "collab-proj".into(),
+                project_path: dir_b.0.clone(),
+                added_at: chrono::Utc::now(),
+                rift_id: Some(rift_id),
+            },
+        )])));
+        let flags_b = Arc::new(RwLock::new(HashMap::new()));
+        let status_b = Arc::new(RwLock::new(DaemonStatus::default()));
+
+        // Developer A edits line 10 locally
+        let mut edited_lines = initial_lines.clone();
+        edited_lines[9] = "fn helper_10() -> usize { 9999 /* edited by A */ }".to_string();
+        let edited = edited_lines.join("\n");
+        std::fs::write(dir_a.0.join("main.rs"), &edited).unwrap();
+        let edit_event = FileChangeEvent {
+            project_id,
+            file_path: PathBuf::from("main.rs"),
+            content_hash: content_hash(&edited),
+            content: edited.clone(),
+            file_size: edited.len() as u64,
+            timestamp: chrono::Utc::now(),
+            change_type: crate::file_watcher::FileChangeType::Modified,
+        };
+        MothershipDaemon::send_file_change_via_persistent_websocket(
+            &edit_event,
+            &projects_a,
+            &channels_a,
+            &base_a,
+        )
+        .await
+        .unwrap();
+
+        // Daemon A must emit a compact FileDiffChanged (LineDiff) with the previous base_hash
+        let outgoing = rx_a.try_recv().unwrap();
+        let diff = match outgoing {
+            SyncMessage::FileDiffChanged { path, diff, base_hash, .. } => {
+                assert_eq!(path, PathBuf::from("main.rs"));
+                assert_eq!(base_hash, Some(content_hash(&initial_text)));
+                assert!(matches!(diff, FileDiff::LineDiff { .. }));
+                diff
+            }
+            other => panic!("expected FileDiffChanged, got {:?}", std::mem::discriminant(&other)),
+        };
+
+        // Server broadcasts RiftDiffUpdate to Daemon B
+        let broadcast_msg = SyncMessage::RiftDiffUpdate {
+            rift_id,
+            diff_changes: vec![mothership_common::FileDiffChange {
+                path: PathBuf::from("main.rs"),
+                diff,
+                file_size: edited.len() as u64,
+            }],
+            author: Uuid::new_v4(),
+            timestamp: chrono::Utc::now(),
+            compressed: false,
+            origin: None,
+        };
+        MothershipDaemon::handle_websocket_sync_message(
+            &serde_json::to_string(&broadcast_msg).unwrap(),
+            &dir_b.0,
+            &flags_b,
+            &base_b,
+            &channels_b,
+            project_id,
+        )
+        .await
+        .unwrap();
+
+        // Daemon B's file on disk now matches Developer A's edit
+        assert_eq!(std::fs::read_to_string(dir_b.0.join("main.rs")).unwrap(), edited);
+
+        // When Daemon B's OS file watcher fires an echo for that write, it is suppressed with 0 outgoing messages
+        let echo_b = FileChangeEvent {
+            project_id,
+            file_path: PathBuf::from("main.rs"),
+            content_hash: content_hash(&edited),
+            content: edited.clone(),
+            file_size: edited.len() as u64,
+            timestamp: chrono::Utc::now(),
+            change_type: crate::file_watcher::FileChangeType::Modified,
+        };
+        MothershipDaemon::handle_file_change_static(
+            echo_b,
+            &projects_b,
+            &status_b,
+            &channels_b,
+            &flags_b,
+            &base_b,
+        )
+        .await
+        .unwrap();
+        assert!(rx_b.try_recv().is_err());
+        assert_eq!(status_b.read().await.files_synced, 0);
+    }
+
+    #[tokio::test]
+    async fn e2e_stale_base_triggers_full_content_required_and_force_sync_backup() {
+        let root = TempDir(std::env::temp_dir().join(format!("ms-stale-base-{}", Uuid::new_v4())));
+        std::fs::create_dir_all(root.0.join(".mothership")).unwrap();
+        let project_id = Uuid::new_v4();
+        let rift_id = Uuid::new_v4();
+        std::fs::write(
+            root.0.join(".mothership/project.json"),
+            serde_json::json!({
+                "project_id": project_id.to_string(),
+                "project_name": "stale-proj",
+                "created_at": "2026-01-01T00:00:00Z",
+                "mothership_url": "http://localhost",
+                "rift_id": rift_id.to_string(),
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let local_stale_edit = "client edit on stale base".to_string();
+        std::fs::write(root.0.join("conflict.txt"), &local_stale_edit).unwrap();
+
+        let flags = Arc::new(RwLock::new(HashMap::new()));
+        let base_hashes: BaseHashes = Arc::new(RwLock::new(HashMap::new()));
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let channels = Arc::new(RwLock::new(HashMap::from([(project_id, tx)])));
+
+        // 1. Server sends FullContentRequired with the rejected stale base_hash
+        let req_msg = SyncMessage::FullContentRequired {
+            rift_id,
+            path: PathBuf::from("conflict.txt"),
+            base_hash: Some("old-stale-hash".into()),
+        };
+        MothershipDaemon::handle_websocket_sync_message(
+            &serde_json::to_string(&req_msg).unwrap(),
+            &root.0,
+            &flags,
+            &base_hashes,
+            &channels,
+            project_id,
+        )
+        .await
+        .unwrap();
+
+        // Daemon responds by queueing full FileChanged with the echoed stale base_hash
+        let resent = rx.try_recv().unwrap();
+        match resent {
+            SyncMessage::FileChanged { path, content, base_hash, .. } => {
+                assert_eq!(path, PathBuf::from("conflict.txt"));
+                assert_eq!(content, local_stale_edit);
+                assert_eq!(base_hash.as_deref(), Some("old-stale-hash"));
+            }
+            other => panic!("expected FileChanged, got {:?}", std::mem::discriminant(&other)),
+        }
+
+        // 2. Server saves client edit in a conflict rift and sends ForceSync with server's version
+        let force_msg = SyncMessage::ForceSync {
+            path: PathBuf::from("conflict.txt"),
+            server_content: "authoritative server version".into(),
+            server_timestamp: chrono::Utc::now(),
+        };
+        MothershipDaemon::handle_websocket_sync_message(
+            &serde_json::to_string(&force_msg).unwrap(),
+            &root.0,
+            &flags,
+            &base_hashes,
+            &channels,
+            project_id,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(root.0.join("conflict.txt")).unwrap(),
+            "authoritative server version"
+        );
+        // Client's local stale edit was backed up under .mothership/local-backup
+        assert!(root.0.join(".mothership/local-backup").exists());
+    }
+
+    #[tokio::test]
+    async fn e2e_large_file_chunked_streaming_and_ignore_aware_force_sync() {
+        let root = TempDir(std::env::temp_dir().join(format!("ms-stream-sync-{}", Uuid::new_v4())));
+        std::fs::create_dir_all(root.0.join(".mothership")).unwrap();
+        let project_id = Uuid::new_v4();
+        let rift_id = Uuid::new_v4();
+        std::fs::write(
+            root.0.join(".mothership/project.json"),
+            serde_json::json!({
+                "project_id": project_id.to_string(),
+                "project_name": "stream-proj",
+                "created_at": "2026-01-01T00:00:00Z",
+                "mothership_url": "http://localhost",
+                "rift_id": rift_id.to_string(),
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let large_content = "A".repeat((MAX_DIRECT_SYNC_SIZE as usize) + 50_000);
+        std::fs::write(root.0.join("large.txt"), &large_content).unwrap();
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let channels = Arc::new(RwLock::new(HashMap::from([(project_id, tx)])));
+        let projects = Arc::new(RwLock::new(HashMap::from([(
+            project_id,
+            TrackedProject {
+                project_id,
+                project_name: "stream-proj".into(),
+                project_path: root.0.clone(),
+                added_at: chrono::Utc::now(),
+                rift_id: Some(rift_id),
+            },
+        )])));
+        let base_hashes: BaseHashes = Arc::new(RwLock::new(HashMap::new()));
+
+        let stream_event = FileChangeEvent {
+            project_id,
+            file_path: PathBuf::from("large.txt"),
+            content: String::new(),
+            content_hash: String::new(),
+            file_size: large_content.len() as u64,
+            timestamp: chrono::Utc::now(),
+            change_type: crate::file_watcher::FileChangeType::Modified,
+        };
+        MothershipDaemon::send_file_change_via_persistent_websocket(
+            &stream_event,
+            &projects,
+            &channels,
+            &base_hashes,
+        )
+        .await
+        .unwrap();
+
+        let mut saw_start = false;
+        let mut chunk_count = 0usize;
+        let mut end_hash = None;
+        while let Ok(msg) = rx.try_recv() {
+            match msg {
+                SyncMessage::StartFileStream { total_size, .. } => {
+                    assert_eq!(total_size, large_content.len() as u64);
+                    saw_start = true;
+                }
+                SyncMessage::FileChunk { .. } => {
+                    chunk_count += 1;
+                }
+                SyncMessage::EndFileStream { final_hash, success, .. } => {
+                    assert!(success);
+                    end_hash = Some(final_hash);
+                }
+                _ => {}
+            }
+        }
+        assert!(saw_start);
+        assert!(chunk_count >= 16);
+        assert_eq!(end_hash, Some(content_hash(&large_content)));
+    }
 }
