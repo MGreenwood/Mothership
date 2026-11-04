@@ -1,6 +1,6 @@
 [package]
 name = "mothership-cli"
-version = "0.0.67"
+version = "0.0.73"
 edition = "2021"
 
 [[bin]]

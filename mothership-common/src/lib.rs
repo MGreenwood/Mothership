@@ -37,6 +37,85 @@ pub fn content_hash(content: &str) -> String {
     format!("{:x}", Sha256::digest(content.as_bytes()))
 }
 
+/// Normalizes a relative path to forward slashes (`/`) so Windows and Unix
+/// clients, daemons, and servers always agree on path keys.
+pub fn normalize_rel_path(path: &std::path::Path) -> String {
+    path.to_string_lossy()
+        .replace('\\', "/")
+        .trim_start_matches("./")
+        .to_string()
+}
+
+/// Prefix the server gives rifts created to hold a stale-base edit
+pub const CONFLICT_RIFT_PREFIX: &str = "conflict-";
+
+/// Whether a rift name was generated for a stale-base conflict
+pub fn is_conflict_rift_name(name: &str) -> bool {
+    name.starts_with(CONFLICT_RIFT_PREFIX)
+}
+
+/// Save a local file's current bytes under `.mothership/local-backup/` before server content
+/// overwrites it. Returns the backup path, or None when the file is missing or already matches.
+pub fn preserve_local_version(project_path: &std::path::Path, rel_path: &std::path::Path, server_content: &[u8]) -> std::io::Result<Option<std::path::PathBuf>> {
+    let local = match std::fs::read(project_path.join(rel_path)) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    if local == server_content {
+        return Ok(None);
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let backup = project_path.join(".mothership").join("local-backup").join(stamp.to_string()).join(rel_path);
+    if let Some(parent) = backup.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&backup, local)?;
+    Ok(Some(backup))
+}
+
+#[cfg(test)]
+mod conflict_and_backup_tests {
+    use super::{is_conflict_rift_name, preserve_local_version, CONFLICT_RIFT_PREFIX};
+    use std::path::Path;
+
+    #[test]
+    fn conflict_rift_names_are_detected() {
+        assert!(is_conflict_rift_name(&format!("{}alice-src/main.rs", CONFLICT_RIFT_PREFIX)));
+        assert!(!is_conflict_rift_name("main"));
+        assert!(!is_conflict_rift_name("feature-conflict-x"));
+    }
+
+    #[test]
+    fn overwrite_of_differing_file_keeps_local_copy() {
+        let dir = std::env::temp_dir().join(format!("mothership-backup-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/lib.rs"), "local edit").unwrap();
+
+        let backup = preserve_local_version(&dir, Path::new("src/lib.rs"), b"server version").unwrap()
+            .expect("differing local file should be backed up");
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), "local edit");
+        assert!(backup.starts_with(dir.join(".mothership").join("local-backup")));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn identical_or_missing_file_is_not_backed_up() {
+        let dir = std::env::temp_dir().join(format!("mothership-backup-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "same").unwrap();
+
+        assert!(preserve_local_version(&dir, Path::new("a.txt"), b"same").unwrap().is_none());
+        assert!(preserve_local_version(&dir, Path::new("missing.txt"), b"new").unwrap().is_none());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
 #[cfg(test)]
 mod content_hash_tests {
     use super::content_hash;

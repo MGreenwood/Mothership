@@ -724,6 +724,30 @@ impl Database {
         }
     }
 
+    /// Find a rift by exact name that the user collaborates on in a project
+    pub async fn get_user_rift_by_name(&self, project_id: ProjectId, user_id: UserId, name: &str) -> Result<Option<Rift>> {
+        let rift_id: Option<Uuid> = sqlx::query_scalar(
+            r#"
+            SELECT r.id
+            FROM rifts r
+            INNER JOIN rift_collaborators rc ON r.id = rc.rift_id
+            WHERE r.project_id = $1 AND rc.user_id = $2 AND r.name = $3 AND r.is_active = true
+            ORDER BY r.created_at ASC
+            LIMIT 1
+            "#,
+        )
+        .bind(project_id)
+        .bind(user_id)
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match rift_id {
+            Some(id) => self.get_rift(id).await,
+            None => Ok(None),
+        }
+    }
+
     /// Check if user has access to a project
     pub async fn user_has_project_access(&self, user_id: UserId, project_id: ProjectId) -> Result<bool> {
         let count = sqlx::query!(

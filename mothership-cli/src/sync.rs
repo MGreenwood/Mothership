@@ -37,6 +37,7 @@ pub async fn handle_status(config_manager: &ConfigManager) -> Result<()> {
     let local_metadata: Option<crate::sync::ProjectMetadata> = fs::read_to_string(".mothership/project.json")
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok());
+    let rift_id = local_metadata.as_ref().and_then(|meta| meta.rift_id.clone());
     if let Some((project_id, ref project_name)) = project_metadata {
         println!("\n{} {}", "Project:".bold(), project_name.blue().bold());
         println!("{} {}", "ID:".bold(), project_id.to_string().dimmed());
@@ -70,7 +71,7 @@ pub async fn handle_status(config_manager: &ConfigManager) -> Result<()> {
     }
 
     // 3. Show recent checkpoints (last 3)
-    if let Some((project_id, project_name)) = project_metadata {
+    if let Some((project_id, _)) = project_metadata {
         let config = config_manager.load_config()?;
         let server_url = get_server_url(config_manager)?;
         let client = get_http_client(&config);
@@ -97,10 +98,34 @@ pub async fn handle_status(config_manager: &ConfigManager) -> Result<()> {
         }
     }
 
-    // 4. Show connected collaborators (if available)
-    // Placeholder: This would require a new API endpoint or WebSocket presence tracking
+    // 4. Show connected collaborators in the current rift
     println!("\n{}", "Connected Collaborators:".bold());
-    println!("  {}", "(Feature coming soon: will show live users in this rift)".dimmed());
+    match rift_id {
+        None => println!("  {}", "Not beamed into a rift".dimmed()),
+        Some(rift_id) => {
+            let config = config_manager.load_config()?;
+            let server_url = get_server_url(config_manager)?;
+            let client = get_http_client(&config);
+            let presence_url = format!("{}/api/rifts/{}/presence", server_url, rift_id);
+            match client.get(&presence_url).send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    let names = resp
+                        .json::<ApiResponse<Vec<String>>>()
+                        .await
+                        .ok()
+                        .and_then(|r| r.data)
+                        .unwrap_or_default();
+                    if names.is_empty() {
+                        println!("  {}", "No one is connected".dimmed());
+                    }
+                    for name in names {
+                        println!("  {} {}", "●".green(), name.white());
+                    }
+                }
+                _ => println!("  {}", "Unable to load collaborators".yellow()),
+            }
+        }
+    }
 
     Ok(())
 }
@@ -196,7 +221,7 @@ pub async fn handle_history(config_manager: &ConfigManager, limit: usize) -> Res
     })?;
 
     if checkpoints.is_empty() {
-        print_info("No checkpoints found. Create your first checkpoint with 'mothership checkpoint \"message\"'");
+        print_info("No checkpoints found. Create your first checkpoint with 'mothership checkpoint -m \"message\"'");
         return Ok(());
     }
 
@@ -319,6 +344,49 @@ pub async fn handle_restore(config_manager: &ConfigManager, checkpoint_id: Strin
     Ok(())
 }
 
+pub async fn handle_delete_checkpoint(config_manager: &ConfigManager, checkpoint_id: String, force: bool) -> Result<()> {
+    if !config_manager.is_authenticated()? {
+        print_api_error("Not authenticated. Run 'mothership auth' to get started.");
+        return Ok(());
+    }
+
+    let (project_id, project_name) = find_current_project()?;
+
+    let checkpoint_uuid = uuid::Uuid::parse_str(&checkpoint_id)
+        .map_err(|_| anyhow!("Invalid checkpoint ID format. Use the full checkpoint ID from 'mothership history'"))?;
+
+    if !force {
+        println!("\n{}", " This permanently deletes the checkpoint. Your current files are not changed.".yellow().bold());
+        println!("{}", format!("Project: {}", project_name.blue().bold()));
+        println!("{}", format!("Checkpoint: {}", checkpoint_id.yellow()));
+        print!("{}", "Are you sure you want to continue? (y/N): ".white().bold());
+        io::stdout().flush()?;
+
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+
+        if !input.trim().to_lowercase().starts_with('y') {
+            print_info("Delete cancelled.");
+            return Ok(());
+        }
+    }
+
+    let config = config_manager.load_config()?;
+    let server_url = get_server_url(config_manager)?;
+    let client = get_http_client(&config);
+
+    let delete_url = format!("{}/projects/{}/checkpoints/{}", server_url, project_id, checkpoint_uuid);
+    let response = client.delete(&delete_url).send().await?;
+
+    if !response.status().is_success() {
+        return Err(anyhow!("Failed to delete checkpoint: {}", response.status()));
+    }
+
+    print_success(&format!("Checkpoint {} deleted", &checkpoint_id[..8]));
+    Ok(())
+}
+
+
 /// Find the current project by looking for .mothership/project.json
 fn find_current_project() -> Result<(uuid::Uuid, String)> {
     let current_dir = std::env::current_dir()?;
@@ -367,6 +435,8 @@ struct ProjectMetadata {
     project_name: String,
     created_at: String,
     mothership_url: String,
+    #[serde(default)]
+    rift_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]

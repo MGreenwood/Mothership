@@ -1,7 +1,11 @@
 use anyhow::Result;
 use axum::extract::ws::{Message, WebSocket};
+use axum::extract::{Path, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::Json;
 use futures_util::{SinkExt, StreamExt};
-use mothership_common::protocol::{SyncMessage, FileDiffChange};
+use mothership_common::protocol::{ApiResponse, SyncMessage, FileDiffChange};
+use mothership_common::RiftId;
 use mothership_common::diff::DiffEngine;
 use serde_json;
 use std::collections::HashMap;
@@ -17,6 +21,7 @@ use flate2;
 use crate::chat::{self, ChatSettings};
 use crate::database::Database;
 use crate::storage::StorageEngine;
+use crate::AppState;
 
 /// PERFORMANCE FIX: Batching state for reducing message overhead
 #[derive(Default)]
@@ -86,6 +91,35 @@ pub struct SyncState {
     // Rate limiting: track recent change timestamps per rift to detect floods
     pub recent_change_timestamps: Arc<RwLock<HashMap<String, Vec<Instant>>>>,
     pub chat: ChatSettings,
+    /// Live joined connections per rift: rift -> (connection channel -> username)
+    pub presence: Arc<RwLock<HashMap<Uuid, HashMap<String, String>>>>,
+}
+
+/// Distinct usernames in a rift's connection map, sorted
+fn collect_participants(connections: &HashMap<String, String>) -> Vec<String> {
+    let mut names: Vec<String> = connections.values().cloned().collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// Distinct usernames with a live, joined connection to the rift
+pub async fn rift_participants(state: &SyncState, rift_id: Uuid) -> Vec<String> {
+    let presence = state.presence.read().await;
+    presence.get(&rift_id).map(collect_participants).unwrap_or_default()
+}
+
+/// GET /api/rifts/:id/presence, usernames currently connected to the rift
+pub async fn get_rift_presence(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(rift_id): Path<RiftId>,
+) -> Result<Json<ApiResponse<Vec<String>>>, StatusCode> {
+    let user_id = chat::authenticated_user(&state, &headers)?;
+    chat::ensure_rift_access(&state.db, rift_id, user_id)
+        .await
+        .map_err(|e| chat::status_for(&e))?;
+    Ok(Json(ApiResponse::success(rift_participants(&state.sync, rift_id).await)))
 }
 
 /// Tells watchers of every active wormhole that includes `rift_id` to refetch.
@@ -119,6 +153,7 @@ impl SyncState {
             stream_manager: Arc::new(Mutex::new(StreamManager::default())),
             recent_change_timestamps: Arc::new(RwLock::new(HashMap::new())),
             chat,
+            presence: Arc::new(RwLock::new(HashMap::new())),
         };
         
         // PERFORMANCE FIX: Start background batch flusher
@@ -271,7 +306,7 @@ impl SyncState {
     }
 }
 
-pub async fn handle_websocket(socket: WebSocket, state: SyncState, rift_id: String, user_id: Uuid) {
+pub async fn handle_websocket(socket: WebSocket, state: SyncState, rift_id: String, user_id: Uuid, username: String) {
     let (sender, mut receiver) = socket.split();
     let mut broadcast_receiver = state.broadcaster.subscribe();
 
@@ -371,13 +406,18 @@ pub async fn handle_websocket(socket: WebSocket, state: SyncState, rift_id: Stri
                                 }
                             };
 
-                            // Add small delay to ensure connection is stable
-                            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                            // Register this connection as present in the rift
+                            let participants = {
+                                let mut presence = state.presence.write().await;
+                                let connections = presence.entry(msg_rift_id).or_default();
+                                connections.insert(connection_channel.clone(), username.clone());
+                                collect_participants(connections)
+                            };
 
                             let response = SyncMessage::RiftJoined {
                                 rift_id: msg_rift_id,
                                 current_files: live_files,
-                                participants: vec![], // TODO: Get actual participants
+                                participants,
                                 last_checkpoint,
                             };
 
@@ -450,7 +490,20 @@ pub async fn handle_websocket(socket: WebSocket, state: SyncState, rift_id: Stri
     }
 
     info!("WebSocket connection closed for rift: {}", rift_id);
+    remove_presence(&state, &rift_id, &connection_channel).await;
     sender_task.abort();
+}
+
+/// Drop a closed connection from the rift's presence map
+async fn remove_presence(state: &SyncState, rift_id: &str, connection_channel: &str) {
+    let Ok(rift_uuid) = Uuid::parse_str(rift_id) else { return };
+    let mut presence = state.presence.write().await;
+    if let Some(connections) = presence.get_mut(&rift_uuid) {
+        connections.remove(connection_channel);
+        if connections.is_empty() {
+            presence.remove(&rift_uuid);
+        }
+    }
 }
 
 /// True when a client's edit was made against content other than the current main.
@@ -503,7 +556,7 @@ async fn create_conflict_rift_for_stale_edit(
         .map(|u| u.username)
         .unwrap_or_else(|| user_id.to_string());
 
-    let base_name = format!("conflict-{}-{}", username, path.display());
+    let base_name = format!("{}{}-{}", mothership_common::CONFLICT_RIFT_PREFIX, username, path.display());
     // A repeat conflict on the same file gets a suffix so the name stays unique in the project
     let conflict_name = if state.db.rift_name_exists(original_rift.project_id, &base_name).await? {
         format!("{}-{}", base_name, &Uuid::new_v4().to_string()[..8])
@@ -565,13 +618,10 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
                 }
             };
 
-            // CRITICAL FIX: Add delay before sending RiftJoined to ensure connection is stable
-            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-
             let response = SyncMessage::RiftJoined {
                 rift_id: msg_rift_id,
                 current_files: live_files,
-                participants: vec![], // TODO: Get actual participants
+                participants: rift_participants(state, msg_rift_id).await,
                 last_checkpoint,
             };
             
@@ -918,12 +968,6 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
                 }
             } else {
                 warn!(" Received chunk for unknown stream {}", stream_id);
-                let error_msg = SyncMessage::StreamError {
-                    stream_id,
-                    error_code: mothership_common::protocol::StreamErrorCode::StreamNotFound,
-                    message: "Stream not found".to_string(),
-                    retry_chunk: None,
-                };
                 // We don't know the rift_id, so this error might not be delivered properly
                 // This is a design limitation - we might need to track stream_id -> rift_id mapping
             }

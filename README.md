@@ -145,8 +145,8 @@ cd my-awesome-project
 mothership deploy                                         # Uses directory name
 mothership deploy "My Application"       # Custom name
 
-# Create a gateway with explicit directory (traditional method)
-mothership gateway create --dir ./my-app "My Application"
+# Set up a project in an existing directory (creates the gateway)
+mothership init
 
 # Revolutionary zero-friction beam experience
 mothership beam "My Application"

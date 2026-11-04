@@ -92,6 +92,8 @@ venv/
 *~
 *.swp
 *.swo
+*.swn
+4913
 .DS_Store
 Thumbs.db
 desktop.ini
@@ -154,6 +156,18 @@ impl IgnoreRules {
             .any(|c| c.as_os_str() == ALWAYS_IGNORED_DIR)
         {
             return true;
+        }
+        if !is_dir {
+            if let Some(name) = relative.file_name().and_then(|n| n.to_str()) {
+                if name == "4913"
+                    || name.ends_with('~')
+                    || name.ends_with(".swp")
+                    || name.ends_with(".swo")
+                    || name.ends_with(".swn")
+                {
+                    return true;
+                }
+            }
         }
         self.gitignore
             .matched_path_or_any_parents(relative, is_dir)

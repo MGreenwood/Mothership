@@ -18,6 +18,9 @@ pub struct DaemonStatus {
     pub is_running: bool,
     pub projects_tracked: usize,
     pub files_syncing: usize,
+    /// Defaults to 0 so an older daemon's status still parses.
+    #[serde(default)]
+    pub files_synced: usize,
     pub last_sync: Option<DateTime<Utc>>,
     pub server_connected: bool,
 }
@@ -122,10 +125,23 @@ pub async fn register_snapshot(folder: &std::path::Path, wormhole_id: Uuid) -> R
     unwrap(resp)
 }
 
-/// Restarts the daemon's WebSocket for `project_id` so it re-reads `rift_id` from project.json.
+/// Restarts the daemon's WebSocket for `project_id` so it re-reads `rift_id` from project.json
+/// and waits until the new rift's files are written to disk.
 pub async fn reconnect_project(project_id: Uuid) -> Result<()> {
-    let resp: ApiResponse<String> = http(Duration::from_secs(10))?
+    let resp: ApiResponse<String> = http(Duration::from_secs(30))?
         .post(format!("{DAEMON_URL}/projects/{project_id}/reconnect"))
+        .send()
+        .await
+        .context("Daemon is not reachable")?
+        .json()
+        .await?;
+    unwrap(resp).map(|_| ())
+}
+
+/// Flushes pending changes for `project_id` and pauses its watcher/WebSocket before re-beaming.
+pub async fn pause_project(project_id: Uuid) -> Result<()> {
+    let resp: ApiResponse<String> = http(Duration::from_secs(15))?
+        .post(format!("{DAEMON_URL}/projects/{project_id}/pause"))
         .send()
         .await
         .context("Daemon is not reachable")?

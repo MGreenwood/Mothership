@@ -149,6 +149,53 @@ pub fn load_oauth_token() -> Option<String> {
     Some(creds.access_token)
 }
 
+/// Resolves the active Mothership server URL across CLI, GUI, and daemon:
+/// 1. `<config_dir>/mothership/connections.json` (`active_server`)
+/// 2. `<config_dir>/mothership/config.json` (`mothership_url`)
+/// 3. `ClientConfig::default().mothership_url`
+pub fn active_server_url() -> String {
+    #[derive(Deserialize)]
+    struct ServerConn {
+        url: String,
+    }
+    #[derive(Deserialize)]
+    struct ConnectionsFile {
+        active_server: Option<String>,
+        #[serde(default)]
+        servers: HashMap<String, ServerConn>,
+    }
+    #[derive(Deserialize)]
+    struct ConfigFile {
+        mothership_url: Option<String>,
+    }
+
+    if let Some(dir) = dirs::config_dir().map(|d| d.join("mothership")) {
+        if let Ok(raw) = std::fs::read_to_string(dir.join("connections.json")) {
+            if let Ok(conns) = serde_json::from_str::<ConnectionsFile>(&raw) {
+                if let Some(active) = conns.active_server {
+                    if let Some(server) = conns.servers.get(&active) {
+                        if !server.url.trim().is_empty() {
+                            return server.url.clone();
+                        }
+                    }
+                    if !active.trim().is_empty() {
+                        return active;
+                    }
+                }
+            }
+        }
+        if let Ok(raw) = std::fs::read_to_string(dir.join("config.json")) {
+            if let Ok(cfg) = serde_json::from_str::<ConfigFile>(&raw) {
+                if let Some(url) = cfg.mothership_url.filter(|u| !u.trim().is_empty()) {
+                    return url;
+                }
+            }
+        }
+    }
+
+    crate::ClientConfig::default().mothership_url
+}
+
 /// Starts the browser login flow, same as `mothership auth`. The caller opens `auth_url`.
 pub async fn start_oauth_login(base_url: &str, provider: OAuthProvider) -> Result<OAuthResponse> {
     let hostname = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "unknown".to_string());
@@ -276,7 +323,8 @@ pub fn scan_text_files(dir: &Path, max_size: u64) -> Result<ScanReport> {
                 }
                 match String::from_utf8(bytes) {
                     Ok(content) => {
-                        report.files.insert(relative, content);
+                        let normalized = PathBuf::from(crate::normalize_rel_path(&relative));
+                        report.files.insert(normalized, content);
                     }
                     Err(_) => report.skipped_binary.push(relative),
                 }
@@ -579,6 +627,17 @@ impl MothershipClient {
         let response = Self::ensure_success(response).await?;
         let resp: ApiResponse<RestoreData> = response.json().await?;
         Self::unwrap_api(resp)
+    }
+
+    /// Deletes a checkpoint's metadata from the caller's rift on the server.
+    pub async fn delete_checkpoint(&self, project_id: Uuid, checkpoint_id: Uuid) -> Result<()> {
+        let project_id = project_id.to_string();
+        let checkpoint_id = checkpoint_id.to_string();
+        let url = self.endpoint(&["projects", &project_id, "checkpoints", &checkpoint_id])?;
+        let response = self.authed(self.http.delete(url)).send().await?;
+        let response = Self::ensure_success(response).await?;
+        let resp: ApiResponse<String> = response.json().await?;
+        Self::unwrap_api(resp).map(|_| ())
     }
 
     /// Lists wormholes for a project, including active and dissolved ones.

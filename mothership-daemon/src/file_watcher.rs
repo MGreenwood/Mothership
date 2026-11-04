@@ -41,44 +41,41 @@ pub enum FileChangeType {
     Deleted,
 }
 
-/// Debouncing state for file events
+/// Debouncing state for file events (deduplicates identical content bursts from OS watchers)
 struct FileDebouncer {
-    last_event_time: HashMap<PathBuf, Instant>,
-    // Flood detection: track recent event times per file
+    last_content: HashMap<PathBuf, (String, Instant)>,
+    // Flood detection: track recent distinct-content change times per file
     recent_events: HashMap<PathBuf, VecDeque<Instant>>,
 }
 
 impl FileDebouncer {
     fn new() -> Self {
         Self {
-            last_event_time: HashMap::new(),
+            last_content: HashMap::new(),
             recent_events: HashMap::new(),
         }
     }
 
-    /// Check if enough time has passed since the last event for this file
-    fn should_process_event(&mut self, path: &PathBuf) -> bool {
+    /// Returns true when this event has new content or enough time has passed since the same content was sent.
+    fn should_process_content(&mut self, path: &PathBuf, content_hash: &str) -> bool {
         let now = Instant::now();
-        
-        if let Some(&last_time) = self.last_event_time.get(path) {
-            if now.duration_since(last_time) < DEBOUNCE_INTERVAL {
-                debug!("Debouncing file event for {}", path.display());
+        if let Some((last_hash, last_time)) = self.last_content.get(path) {
+            if last_hash == content_hash && now.duration_since(*last_time) < Duration::from_millis(500) {
+                debug!("Skipping duplicate watcher event with identical content for {}", path.display());
                 return false;
             }
         }
-        
-        self.last_event_time.insert(path.clone(), now);
+        self.last_content.insert(path.clone(), (content_hash.to_string(), now));
         true
     }
 
-    /// Flood detection: returns true if this file is being changed too frequently
+    /// Flood detection: returns true only if distinct content is changing abnormally fast (> 50 distinct saves in 5s)
     fn is_flooding(&mut self, path: &PathBuf) -> bool {
         const WINDOW: Duration = Duration::from_secs(5);
-        const MAX_EVENTS: usize = 8; // e.g. 8 changes in 5 seconds is suspicious
+        const MAX_EVENTS: usize = 50;
         let now = Instant::now();
         let events = self.recent_events.entry(path.clone()).or_insert_with(VecDeque::new);
         events.push_back(now);
-        // Remove events outside the window
         while let Some(&front) = events.front() {
             if now.duration_since(front) > WINDOW {
                 events.pop_front();
@@ -94,8 +91,8 @@ impl FileDebouncer {
         let now = Instant::now();
         let cutoff = Duration::from_secs(300); // 5 minutes
         
-        self.last_event_time.retain(|_, &mut last_time| {
-            now.duration_since(last_time) < cutoff
+        self.last_content.retain(|_, (_, last_time)| {
+            now.duration_since(*last_time) < cutoff
         });
 
         // Also clean up recent_events
@@ -227,6 +224,8 @@ fn handle_file_event(
     };
     
     for path in &event.paths {
+        info!("Raw watcher event {:?}: {}", event.kind, path.display());
+
         // Skip directories
         if path.is_dir() {
             continue;
@@ -237,9 +236,9 @@ fn handle_file_event(
             continue;
         }
         
-        // Calculate relative path
+        // Calculate normalized relative path (forward slashes so Windows/Unix match)
         let relative_path = match path.strip_prefix(project_path) {
-            Ok(rel_path) => rel_path.to_path_buf(),
+            Ok(rel_path) => PathBuf::from(mothership_common::normalize_rel_path(rel_path)),
             Err(_) => {
                 warn!("Path {} is outside project directory {}", 
                     path.display(), project_path.display());
@@ -254,30 +253,35 @@ fn handle_file_event(
                 relative_path_str, path.display());
             continue;
         }
-        
 
-        // PERFORMANCE FIX: Apply debouncing
-        if !debouncer.should_process_event(&relative_path) {
-            continue;
-        }
-
-        // DYNAMIC FLOOD DETECTION: Suppress if file is being changed too frequently
-        if debouncer.is_flooding(&relative_path) {
-            warn!("Suppressing file event flood for {} (too many changes in short time)", relative_path.display());
-            continue;
-        }
-        
-        // PERFORMANCE FIX: Check file size without reading content
-        let file_size = match std::fs::metadata(path) {
-            Ok(metadata) => metadata.len(),
-            Err(e) => {
-                debug!("Skipping file with unreadable metadata {}: {}", path.display(), e);
-                continue;
+        // Wait/retry if the file is momentarily missing during an editor atomic rename-save
+        let mut meta_attempts = 0;
+        let metadata = loop {
+            match std::fs::metadata(path) {
+                Ok(m) => break Some(m),
+                Err(e) if meta_attempts < 5 && (e.kind() == std::io::ErrorKind::NotFound || e.raw_os_error() == Some(32)) => {
+                    meta_attempts += 1;
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(e) => {
+                    debug!("Skipping file with unreadable metadata {}: {}", path.display(), e);
+                    break None;
+                }
             }
         };
+        let Some(metadata) = metadata else {
+            continue;
+        };
+        if metadata.is_dir() {
+            continue;
+        }
+        let file_size = metadata.len();
         
         // Check file size and determine sync strategy
         if file_size > MAX_DIRECT_SYNC_SIZE {
+            if !debouncer.should_process_content(&relative_path, &format!("stream:{file_size}")) {
+                continue;
+            }
             debug!("File {} ({} bytes) exceeds direct sync limit of {} bytes, will use streaming",
                 path.display(), file_size, MAX_DIRECT_SYNC_SIZE);
             
@@ -300,7 +304,7 @@ fn handle_file_event(
         
         // Editors and shells often truncate before writing; wait briefly so an
         // empty read isn't sent as the file's final state
-        let file_size = if file_size == 0 && matches!(change_type, FileChangeType::Modified) {
+        let file_size = if file_size == 0 && matches!(change_type, FileChangeType::Modified | FileChangeType::Created | FileChangeType::Deleted) {
             std::thread::sleep(EMPTY_WRITE_SETTLE);
             std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
         } else {
@@ -312,7 +316,7 @@ fn handle_file_event(
         let content = loop {
             match std::fs::read_to_string(path) {
                 Ok(content) => break Some(content),
-                Err(e) if e.raw_os_error() == Some(32) && attempts < READ_LOCK_RETRIES => {
+                Err(e) if (e.raw_os_error() == Some(32) || e.kind() == std::io::ErrorKind::NotFound) && attempts < READ_LOCK_RETRIES => {
                     attempts += 1;
                     std::thread::sleep(READ_LOCK_RETRY_DELAY);
                 }
@@ -325,9 +329,18 @@ fn handle_file_event(
         let Some(content) = content else {
             continue;
         };
+
+        let content_hash = mothership_common::content_hash(&content);
+        if !debouncer.should_process_content(&relative_path, &content_hash) {
+            continue;
+        }
+        if debouncer.is_flooding(&relative_path) {
+            warn!("Suppressing file event flood for {} (too many changes in short time)", relative_path.display());
+            continue;
+        }
         
         info!("File changed in project {}: {} ({} bytes)", 
-            project_id, relative_path.display(), file_size);
+            project_id, relative_path.display(), content.len());
         
         let change_event = FileChangeEvent {
             project_id,
@@ -335,7 +348,7 @@ fn handle_file_event(
             content,
             file_size,
             timestamp: chrono::Utc::now(),
-            change_type: change_type.clone(),
+            change_type: FileChangeType::Modified,
         };
         
         if let Err(e) = change_sender.send(change_event) {

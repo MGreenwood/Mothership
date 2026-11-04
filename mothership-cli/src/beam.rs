@@ -10,7 +10,6 @@ use std::fs;
 use serde::{Serialize, Deserialize};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use futures_util::{SinkExt, StreamExt};
-use walkdir::WalkDir;
 
 use uuid::Uuid;
 
@@ -22,32 +21,24 @@ use crate::{config::ConfigManager, get_http_client, print_api_error, print_info,
 /// Check if daemon is running and start it if needed
 /// Try to start daemon from a specific path
 pub fn try_start_daemon(daemon_path: &std::path::Path) -> Result<bool> {
+    let mut cmd = std::process::Command::new(daemon_path);
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+
     #[cfg(windows)]
     {
-        match std::process::Command::new(daemon_path)
-            .creation_flags(0x08000000) // CREATE_NO_WINDOW
-            .spawn()
-        {
-            Ok(_) => Ok(true),
-            Err(e) => {
-                print_info(&format!("Failed to start daemon from {}: {}", daemon_path.display(), e));
-                Ok(false)
-            }
-        }
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+        mothership_common::beam::clear_std_handle_inheritance();
     }
-    
-    #[cfg(not(windows))]
-    {
-        match std::process::Command::new(daemon_path)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-        {
-            Ok(_) => Ok(true),
-            Err(e) => {
-                print_info(&format!("Failed to start daemon from {}: {}", daemon_path.display(), e));
-                Ok(false)
-            }
+
+    match cmd.spawn() {
+        Ok(_) => Ok(true),
+        Err(e) => {
+            print_info(&format!("Failed to start daemon from {}: {}", daemon_path.display(), e));
+            Ok(false)
         }
     }
 }
@@ -70,54 +61,43 @@ pub async fn ensure_daemon_running() -> Result<()> {
     
     print_info("Starting Mothership daemon in background...");
     
-    // IMPROVED: Try multiple strategies to find and start the daemon
+    // IMPROVED: Prefer the daemon binary next to the running CLI executable first, then build dirs, then PATH
     let daemon_binary = if cfg!(windows) { "mothership-daemon.exe" } else { "mothership-daemon" };
-    
-    // Strategy 1: Try system PATH first (most reliable for installed systems)
-    if let Ok(path_result) = which::which(daemon_binary) {
-        if try_start_daemon(&path_result)? {
-            print_success(&format!("Started daemon from PATH: {}", path_result.display()));
-        } else {
-            return Err(anyhow!("Found daemon in PATH but failed to start it"));
+    let mut daemon_started = false;
+
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(exe_dir) = current_exe.parent() {
+            let candidates = [
+                exe_dir.join(daemon_binary),
+                exe_dir.join(format!("../target/debug/{}", daemon_binary)),
+                exe_dir.join(format!("../target/release/{}", daemon_binary)),
+                exe_dir.join(format!("../../target/debug/{}", daemon_binary)),
+                exe_dir.join(format!("../../target/release/{}", daemon_binary)),
+            ];
+            for daemon_path in &candidates {
+                if daemon_path.is_file() && try_start_daemon(daemon_path)? {
+                    print_success(&format!("Started daemon from: {}", daemon_path.display()));
+                    daemon_started = true;
+                    break;
+                }
+            }
         }
     }
-    // Strategy 2: Try same directory as CLI executable
-    else if let Ok(current_exe) = std::env::current_exe() {
-        if let Some(exe_dir) = current_exe.parent() {
-            let daemon_path = exe_dir.join(daemon_binary);
-            if daemon_path.exists() && try_start_daemon(&daemon_path)? {
-                print_success(&format!("Started daemon from CLI directory: {}", daemon_path.display()));
+
+    if !daemon_started {
+        if let Ok(path_result) = which::which(daemon_binary) {
+            if try_start_daemon(&path_result)? {
+                print_success(&format!("Started daemon from PATH: {}", path_result.display()));
+                daemon_started = true;
             }
-            // Strategy 3: Development/build directories (fallback)
-            else {
-                let build_paths = [
-                    exe_dir.join(format!("../target/debug/{}", daemon_binary)),
-                    exe_dir.join(format!("../target/release/{}", daemon_binary)),
-                    exe_dir.join(format!("../../target/debug/{}", daemon_binary)),
-                    exe_dir.join(format!("../../target/release/{}", daemon_binary)),
-                ];
-                
-                let mut daemon_started = false;
-                for daemon_path in &build_paths {
-                    if daemon_path.exists() && try_start_daemon(daemon_path)? {
-                        print_success(&format!("Started daemon from build directory: {}", daemon_path.display()));
-                        daemon_started = true;
-                        break;
-                    }
-                }
-                
-                if !daemon_started {
-                    return Err(anyhow!(
-                        "Could not find {}. Please ensure it's:\n  1. Installed via 'cargo install --path mothership-daemon'\n  2. Available in your PATH\n  3. In the same directory as the mothership CLI", 
-                        daemon_binary
-                    ));
-                }
-            }
-        } else {
-            return Err(anyhow!("Could not determine CLI executable directory"));
         }
-    } else {
-        return Err(anyhow!("Could not find daemon binary. Please install it via 'cargo install --path mothership-daemon'"));
+    }
+
+    if !daemon_started {
+        return Err(anyhow!(
+            "Could not find {}. Please ensure it's:\n  1. In the same directory as the mothership CLI\n  2. Installed via 'cargo install --path mothership-daemon'\n  3. Available in your PATH",
+            daemon_binary
+        ));
     }
     
     // Wait for daemon to start up
@@ -236,6 +216,8 @@ struct ProjectMetadata {
     created_at: String,
     mothership_url: String,
     rift_id: Option<String>, // CRITICAL FIX: Store rift_id for daemon WebSocket connection
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    current_rift: Option<String>,
 }
 
 /// Load stored authentication token for WebSocket connection
@@ -336,6 +318,13 @@ async fn perform_initial_sync(
                                     fs::create_dir_all(parent)?;
                                 }
                                 
+                                // Keep any local edit that the server copy is about to replace
+                                match mothership_common::preserve_local_version(project_path, &file.path, file.content.as_bytes()) {
+                                    Ok(Some(backup)) => print_info(&format!("Kept local version of {} at {}", file.path.display(), backup.display())),
+                                    Ok(None) => {}
+                                    Err(e) => print_info(&format!("Could not back up local {}: {}", file.path.display(), e)),
+                                }
+
                                 // Write file content
                                 fs::write(&file_path, &file.content)?;
                                 print_info(&format!("Downloaded: {}", file.path.display()));
@@ -357,19 +346,48 @@ async fn perform_initial_sync(
                         SyncMessage::RiftJoined { current_files, .. } => {
                             print_success(&format!("Received {} files from rift", current_files.len()));
                             
-                            // Write files to disk
-                            for (path, content) in current_files {
+                            let mut keep = std::collections::HashSet::new();
+                            let mut valid_files = Vec::new();
+                            for (raw_path, content) in current_files {
+                                let Some(rel_path) = mothership_common::beam::safe_relative_path(&raw_path) else {
+                                    continue;
+                                };
+                                keep.insert(mothership_common::normalize_rel_path(&rel_path));
+                                valid_files.push((rel_path, content));
+                            }
+                            let _ = mothership_common::beam::remove_stale_local_files(project_path, &keep);
+
+                            // Write only files that differ from the rift; identical files are left untouched
+                            let mut unchanged = 0usize;
+                            let mut updated = 0usize;
+                            for (path, content) in valid_files {
                                 let file_path = project_path.join(&path);
-                                
+
+                                if let Ok(existing) = fs::read(&file_path) {
+                                    if existing == content.as_bytes() {
+                                        unchanged += 1;
+                                        continue;
+                                    }
+                                }
+
                                 // Create parent directories if needed
                                 if let Some(parent) = file_path.parent() {
                                     fs::create_dir_all(parent)?;
                                 }
-                                
+
+                                // Back up any differing local file, then make it match the rift exactly
+                                match mothership_common::preserve_local_version(project_path, &path, content.as_bytes()) {
+                                    Ok(Some(backup)) => print_info(&format!("Backed up local {} to {}", path.display(), backup.display())),
+                                    Ok(None) => {}
+                                    Err(e) => print_info(&format!("Could not back up local {}: {}", path.display(), e)),
+                                }
+
                                 // Write file content
                                 fs::write(&file_path, &content)?;
-                                print_info(&format!("Downloaded: {}", path.display()));
+                                updated += 1;
+                                print_info(&format!("Updated: {}", path.display()));
                             }
+                            print_info(&format!("{} file(s) already up to date, {} updated", unchanged, updated));
                             
                             // Create .mothership metadata
                             create_project_metadata(project_path, project_id, project_name, mothership_url, Some(rift_id))?;
@@ -423,13 +441,15 @@ fn create_project_metadata(
         fs::create_dir_all(&mothership_dir)?;
     }
     
-    // Create project metadata file
+    // Create project metadata file (preserve existing current_rift when present)
+    let existing_rift_name = project_metadata_at(project_path).and_then(|m| m.current_rift);
     let metadata = ProjectMetadata {
         project_id: project_id.to_string(),
         project_name: project_name.to_string(),
         created_at: chrono::Utc::now().to_rfc3339(),
         mothership_url: mothership_url.to_string(),
         rift_id: rift_id.map(|id| id.to_string()), // CRITICAL FIX: Store rift_id
+        current_rift: existing_rift_name,
     };
     
     let metadata_file = mothership_dir.join("project.json");
@@ -458,7 +478,6 @@ fn project_metadata_at(dir: &std::path::Path) -> Option<ProjectMetadata> {
 pub async fn handle_beam(
     _config_manager: &ConfigManager,
     project: String,
-    rift: Option<String>,
     local_dir: Option<std::path::PathBuf>,
     force_sync: bool,
 ) -> Result<()> {
@@ -600,6 +619,12 @@ pub async fn handle_beam(
     };
 
     print_info(&format!("Beaming into project ID: {}", project_id));
+
+    // Pause any active watcher/WebSocket in the daemon for this project (flushing pending edits on the old rift first)
+    let _ = mothership_common::daemon::pause_project(project_id).await;
+
+    // Use the rift this folder is currently on (from .mothership metadata); None means the server default
+    let rift = project_metadata_at(&project_path).and_then(|m| m.current_rift);
 
     let beam_request = BeamRequest {
         project_id,

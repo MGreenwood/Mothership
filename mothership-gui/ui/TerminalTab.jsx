@@ -12,14 +12,16 @@ function base64ToBytes(b64) {
   return bytes
 }
 
-export default function TerminalTab({ id, kind = 'nvim', file, cwd, active, onExit, onFailed }) {
+export default function TerminalTab({ id, kind = 'nvim', file, cwd, active, onExit, onFailed, onError }) {
   const hostRef = useRef(null)
   const termRef = useRef(null)
   const fitRef = useRef(null)
   const onExitRef = useRef(onExit)
   const onFailedRef = useRef(onFailed)
+  const onErrorRef = useRef(onError)
   onExitRef.current = onExit
   onFailedRef.current = onFailed
+  onErrorRef.current = onError
 
   useEffect(() => {
     const term = new Terminal({
@@ -43,7 +45,9 @@ export default function TerminalTab({ id, kind = 'nvim', file, cwd, active, onEx
     }
 
     term.onData((data) => {
-      invoke('nvim_write', { id, data }).catch(() => {})
+      invoke('nvim_write', { id, data }).catch((err) => {
+        if (!disposed) onErrorRef.current?.(`Keystrokes were not sent to the editor: ${err}`)
+      })
     })
 
     const resizeObserver = new ResizeObserver(() => {

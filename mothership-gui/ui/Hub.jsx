@@ -124,7 +124,10 @@ export default function Hub({ onOpenInEditor, onGatewayChange, onRiftChanged }) 
         folder,
       })
       setNewProject({ name: '', description: '', folder: '' })
-      await loadProjects()
+      const list = await loadProjects()
+      const created = list.find((p) => p.id === res.project.id) ?? res.project
+      await loadProjectDetails(created)
+      onRiftChanged?.()
       setMessage({
         kind: 'ok',
         text: `Created "${res.project.name}": uploaded ${res.uploaded_files} file(s), skipped ${res.skipped_too_large} too large, ${res.skipped_binary} binary, ${res.skipped_unreadable} unreadable.`,
@@ -142,7 +145,9 @@ export default function Hub({ onOpenInEditor, onGatewayChange, onRiftChanged }) 
     setMessage(null)
     try {
       const res = await invoke('hub_beam', { projectId: project.id, localDir, riftId })
-      await loadProjects()
+      const list = await loadProjects()
+      // Select the beamed gateway so the top bar shows it, using the refreshed entry (now has local_path).
+      await loadProjectDetails(list.find((p) => p.id === project.id) ?? project)
       onRiftChanged?.()
       const parts = [
         `Beamed "${res.project_name}" to ${res.local_path}: ${res.downloaded} file(s) downloaded`,
@@ -213,6 +218,7 @@ export default function Hub({ onOpenInEditor, onGatewayChange, onRiftChanged }) 
         checkpointId,
       })
       setRestoreId(null)
+      onRiftChanged?.()
       const skipped = result.skipped_unsafe.length
       setMessage({
         kind: 'ok',
@@ -394,6 +400,7 @@ export default function Hub({ onOpenInEditor, onGatewayChange, onRiftChanged }) 
           <WormholePanel
             project={selected}
             rifts={rifts}
+            onRiftsChanged={() => invoke('hub_list_rifts', { projectId: selected.id }).then(setRifts)}
             onBeamRift={(riftId) => {
               const current = projects.find((p) => p.id === selected.id)
               if (current) beamProject(current, riftId)

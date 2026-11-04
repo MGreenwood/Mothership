@@ -74,10 +74,10 @@ fn open_folder(path: &std::path::Path) -> Result<()> {
 #[cfg(windows)]
 fn get_dynamic_tooltip(status: &DaemonStatus) -> String {
     let connection_status = if status.server_connected { "" } else { "" };
-    let sync_status = if status.files_syncing > 0 { 
-        format!("{} files syncing", status.files_syncing) 
-    } else { 
-        "All synced".to_string() 
+    let sync_status = if status.files_syncing > 0 {
+        format!("{} files syncing", status.files_syncing)
+    } else {
+        format!("{} changes synced", status.files_synced)
     };
     
     format!(
@@ -193,12 +193,14 @@ impl SystemTray {
                                     Running: {}\n\
                                     Server Connected: {}\n\
                                     Projects Tracked: {}\n\
-                                    Files Syncing: {}\n\
+                                    Files Syncing Now: {}\n\
+                                    File Changes Synced: {}\n\
                                     Last Sync: {}",
                                     if status.is_running { "Yes" } else { "No" },
                                     if status.server_connected { "Connected" } else { "Disconnected" },
                                     status.projects_tracked,
                                     status.files_syncing,
+                                    status.files_synced,
                                     status.last_sync
                                         .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
                                         .unwrap_or_else(|| "Never".to_string())

@@ -79,7 +79,7 @@ pub fn save_connections_config(config: &ConnectionsConfig) -> Result<()> {
     Ok(())
 }
 
-/// Get the currently active server connection
+/// Get the currently active server connection (falls back to shared active_server_url)
 pub fn get_active_server() -> Result<Option<ServerConnection>> {
     let config = load_connections_config()?;
     
@@ -88,8 +88,16 @@ pub fn get_active_server() -> Result<Option<ServerConnection>> {
             return Ok(Some(server.clone()));
         }
     }
-    
-    Ok(None)
+
+    let url = mothership_common::client::active_server_url();
+    Ok(Some(ServerConnection {
+        name: "Mothership Server".to_string(),
+        url,
+        auth_token: mothership_common::client::load_oauth_token(),
+        auth_method: "oauth".to_string(),
+        connected_at: chrono::Utc::now(),
+        capabilities: None,
+    }))
 }
 
 /// Standard Mothership port (try first)

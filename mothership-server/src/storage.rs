@@ -68,19 +68,11 @@ impl StorageEngine {
         self.storage_root.join("live").join(rift_id.to_string())
     }
 
-    /// Reject paths that could escape the rift directory (absolute, `..`, prefixes)
+    /// Reject paths that could escape the rift directory (absolute, `..`, prefixes, `.mothership`)
+    /// and normalize both `/` and `\` separators across platforms.
     fn safe_relative_path(path: &Path) -> Result<PathBuf> {
-        let mut out = PathBuf::new();
-        for component in path.components() {
-            match component {
-                std::path::Component::Normal(part) => out.push(part),
-                _ => return Err(anyhow::anyhow!("Invalid file path: {}", path.display())),
-            }
-        }
-        if out.as_os_str().is_empty() {
-            return Err(anyhow::anyhow!("Empty file path"));
-        }
-        Ok(out)
+        mothership_common::beam::safe_relative_path(path)
+            .ok_or_else(|| anyhow::anyhow!("Invalid file path: {}", path.display()))
     }
 
     /// Load a rift's working files from disk into memory if not already cached
@@ -102,9 +94,13 @@ impl StorageEngine {
                 if entry.file_type().await?.is_dir() {
                     pending.push(entry_path);
                 } else if let Ok(relative) = entry_path.strip_prefix(&root) {
+                    let Ok(clean_rel) = Self::safe_relative_path(relative) else {
+                        continue;
+                    };
+                    let key = PathBuf::from(mothership_common::normalize_rel_path(&clean_rel));
                     match fs::read_to_string(&entry_path).await {
                         Ok(content) => {
-                            files.insert(relative.to_path_buf(), content);
+                            files.insert(key, content);
                         }
                         Err(e) => tracing::warn!("Skipping unreadable live file {}: {}", entry_path.display(), e),
                     }
@@ -127,8 +123,9 @@ impl StorageEngine {
         }
         fs::write(&file_path, content.as_bytes()).await?;
 
+        let key = PathBuf::from(mothership_common::normalize_rel_path(&relative));
         let mut live_state = self.live_state.write().await;
-        live_state.entry(rift_id).or_insert_with(HashMap::new).insert(relative, content);
+        live_state.entry(rift_id).or_insert_with(HashMap::new).insert(key, content);
         Ok(())
     }
 
@@ -142,9 +139,11 @@ impl StorageEngine {
     /// PERFORMANCE FIX: Get content for a specific file in a rift
     pub async fn get_file_content(&self, rift_id: RiftId, path: &PathBuf) -> Result<String> {
         self.ensure_live_loaded(rift_id).await?;
+        let relative = Self::safe_relative_path(path)?;
+        let key = PathBuf::from(mothership_common::normalize_rel_path(&relative));
         let live_state = self.live_state.read().await;
         if let Some(rift_files) = live_state.get(&rift_id) {
-            if let Some(content) = rift_files.get(path) {
+            if let Some(content) = rift_files.get(&key).or_else(|| rift_files.get(path)) {
                 return Ok(content.clone());
             }
         }
@@ -275,6 +274,24 @@ impl StorageEngine {
             .collect();
         
         Ok(checkpoints)
+    }
+
+    /// Delete a checkpoint's metadata. Content blobs are shared by content hash, so they are kept.
+    pub async fn delete_checkpoint(&self, checkpoint_id: CheckpointId) -> Result<bool> {
+        {
+            let mut index = self.checkpoint_index.write().await;
+            index.remove(&checkpoint_id);
+        }
+
+        let checkpoint_path = self.storage_root
+            .join("checkpoints")
+            .join(format!("{}.json", checkpoint_id));
+
+        match fs::remove_file(&checkpoint_path).await {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Calculate storage statistics

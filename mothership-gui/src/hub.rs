@@ -10,7 +10,7 @@ use mothership_common::client::{
 };
 use mothership_common::daemon::{self, DaemonStatus, TrackedProject};
 use mothership_common::merge::Choice;
-use mothership_common::{Checkpoint, ClientConfig, Project};
+use mothership_common::{Checkpoint, Project};
 use serde::Serialize;
 use std::path::PathBuf;
 use tauri_plugin_opener::open_url;
@@ -58,7 +58,7 @@ pub struct BeamResult {
 }
 
 fn server_url() -> String {
-    ClientConfig::default().mothership_url
+    mothership_common::client::active_server_url()
 }
 
 fn client() -> Result<MothershipClient, String> {
@@ -281,18 +281,40 @@ pub async fn hub_create_project(
         c.upload_files(project.id, report.files).await.map_err(err)?;
     }
 
+    let _ = mothership_common::ignore::write_default_ignore_file(&dir);
+
+    let main_rift_id = c
+        .list_rifts(project.id)
+        .await
+        .ok()
+        .and_then(|rifts| {
+            rifts
+                .iter()
+                .find(|r| r.name == "main")
+                .or_else(|| rifts.first())
+                .map(|r| r.id)
+        });
+
     std::fs::create_dir_all(&meta_dir).map_err(err)?;
-    let metadata = serde_json::json!({
+    let mut metadata = serde_json::json!({
         "project_id": project.id.to_string(),
         "project_name": project.name,
         "created_at": chrono::Utc::now().to_rfc3339(),
         "mothership_url": server_url(),
+        "current_rift": "main",
     });
+    if let Some(rid) = main_rift_id {
+        metadata["rift_id"] = serde_json::json!(rid.to_string());
+    }
     std::fs::write(
         meta_dir.join("project.json"),
         serde_json::to_string_pretty(&metadata).map_err(err)?,
     )
     .map_err(err)?;
+
+    if ensure_daemon_running().await.is_ok() {
+        let _ = register_with_daemon(project.id, &project.name, &dir).await;
+    }
 
     Ok(CreateProjectResult {
         project,
@@ -326,8 +348,35 @@ pub async fn hub_create_rift(
     name: String,
     description: Option<String>,
 ) -> Result<String, String> {
-    let id = client()?
-        .create_rift(&name, description.as_deref(), parse_id(&project_id)?, None)
+    let project = parse_id(&project_id)?;
+    let c = client()?;
+
+    // Fork from the local folder's current rift when available, or fall back to main/first rift on server
+    let local_rift = tauri::async_runtime::spawn_blocking(move || {
+        index_local_projects(&default_search_roots())
+            .get(&project)
+            .and_then(|p| read_project_metadata(p))
+            .and_then(|m| m.rift_id)
+            .and_then(|id| Uuid::parse_str(&id).ok())
+    })
+    .await
+    .ok()
+    .flatten();
+
+    let fork_from = match local_rift {
+        Some(id) => Some(id),
+        None => c.list_rifts(project).await.ok().and_then(|rifts| {
+            rifts
+                .iter()
+                .find(|r| r.name == "main")
+                .or_else(|| rifts.iter().find(|r| !r.is_conflict_rift))
+                .or_else(|| rifts.first())
+                .map(|r| r.id)
+        }),
+    };
+
+    let id = c
+        .create_rift(&name, description.as_deref(), project, fork_from)
         .await
         .map_err(err)?;
     Ok(id.to_string())
@@ -367,30 +416,64 @@ pub async fn hub_switch_rift(project_id: String, rift_name: String) -> Result<St
         .find(|r| r.name == rift_name)
         .map(|r| r.id);
 
-    let tracked = match daemon::tracked_projects().await {
-        Ok(list) => list,
-        Err(e) => {
-            return Ok(format!(
-                "Switched server to rift \"{rift_name}\", but the daemon is not reachable ({e}). \
-                 Local files were not changed, so sync will use the old rift until you switch again."
-            ));
-        }
+    let _ = ensure_daemon_running().await;
+
+    // Prefer the daemon's record of the folder, then fall back to scanning for a linked folder
+    let (tracked_path, daemon_error) = match daemon::tracked_projects().await {
+        Ok(list) => (
+            list.into_iter()
+                .find(|p| p.project_id == project)
+                .map(|p| PathBuf::from(p.project_path)),
+            None,
+        ),
+        Err(e) => (None, Some(e.to_string())),
     };
-    let Some(local) = tracked.into_iter().find(|p| p.project_id == project) else {
-        return Ok(format!(
-            "Switched server to rift \"{rift_name}\". This project is not tracked by the daemon, \
-             so local files were not changed."
-        ));
+    let is_tracked = tracked_path.is_some();
+    let folder = match tracked_path {
+        Some(path) => Some(path),
+        None => tauri::async_runtime::spawn_blocking(|| index_local_projects(&default_search_roots()))
+            .await
+            .map_err(err)?
+            .get(&project)
+            .cloned(),
     };
 
-    update_local_rift(std::path::Path::new(&local.project_path), &rift_name, rift_id)?;
+    let Some(folder) = folder else {
+        return Ok(format!(
+            "Switched server to rift \"{rift_name}\". No local folder was found for this project, so project.json was not changed."
+        ));
+    };
+    update_local_rift(&folder, &rift_name, rift_id)?;
+
+    if let Some(e) = daemon_error {
+        return Ok(format!(
+            "Switched to rift \"{rift_name}\" and updated project.json, but the daemon is not reachable ({e}). Sync will use the new rift after the daemon restarts."
+        ));
+    }
+    if !is_tracked {
+        let project_name = read_project_metadata(&folder)
+            .map(|m| m.project_name)
+            .unwrap_or_else(|| project.to_string());
+        match register_with_daemon(project, &project_name, &folder).await {
+            Ok(()) => {
+                return Ok(format!(
+                    "Switched to rift \"{rift_name}\". Local project and daemon sync now use it."
+                ))
+            }
+            Err(e) => {
+                return Ok(format!(
+                    "Switched to rift \"{rift_name}\" and updated project.json, but could not register with daemon ({e:#})."
+                ))
+            }
+        }
+    }
 
     match daemon::reconnect_project(project).await {
         Ok(()) => Ok(format!(
             "Switched to rift \"{rift_name}\". Local project and daemon sync now use it."
         )),
         Err(e) => Ok(format!(
-            "Switched to rift \"{rift_name}\" and updated local files, but the daemon reconnect failed ({e})."
+            "Switched to rift \"{rift_name}\" and updated project.json, but the daemon reconnect failed ({e})."
         )),
     }
 }

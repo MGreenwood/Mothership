@@ -2,9 +2,8 @@ use anyhow::Result;
 use chrono::Utc;
 use jsonwebtoken::{decode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use mothership_common::auth::{
-    AuthError, Claims, OAuthProfile, OAuthProvider, OAuthRequest, OAuthResponse, OAuthSource,
+    AuthError, Claims,
 };
-use tracing::{error, info, warn};
 
 /// Authentication service for handling JWT tokens
 #[derive(Clone)]

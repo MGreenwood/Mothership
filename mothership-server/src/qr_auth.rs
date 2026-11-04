@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::sync::Mutex;
 use uuid::Uuid;
-use mothership_common::{User, UserRole};
+use mothership_common::UserRole;
 use crate::AppState;
 use tracing::error;
 

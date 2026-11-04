@@ -2,7 +2,7 @@ use axum::{
     extract::{DefaultBodyLimit, Path, State, WebSocketUpgrade},
     http::{HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Json, Response},
-    routing::{delete, get, post, MethodRouter},
+    routing::{delete, get, post},
     Router,
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar};
@@ -94,7 +94,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Load whitelist if enabled
     let whitelist = config.load_whitelist()?;
-    if let Some(ref whitelist) = whitelist {
+    if whitelist.is_some() {
         info!("Loaded whitelist");
     }
 
@@ -247,6 +247,7 @@ fn create_api_router(state: AppState) -> Router {
         .route("/projects/:id/checkpoints", post(create_checkpoint))
         .route("/projects/:id/history", get(get_project_history))
         .route("/projects/:id/checkpoints/:checkpoint_id/restore", post(restore_checkpoint))
+        .route("/projects/:id/checkpoints/:checkpoint_id", delete(delete_checkpoint))
         .route("/projects/:id", delete(delete_project))
         // Gateway routes
         .route("/gateway", post(gateway))
@@ -256,6 +257,7 @@ fn create_api_router(state: AppState) -> Router {
         .route("/api/rifts/switch", post(handlers::switch_rift))
         .route("/api/rifts/diff", get(handlers::get_rift_diffs))
         .route("/api/rifts/:id/chat", get(chat::get_chat_history).post(chat::post_chat))
+        .route("/api/rifts/:id/presence", get(sync::get_rift_presence))
         .route("/api/wormholes", get(wormhole::list_wormholes).post(wormhole::create_wormhole))
         .route("/api/wormholes/:id", get(wormhole::get_wormhole))
         .route("/api/wormholes/:id/resolve", post(wormhole::resolve_conflict))
@@ -334,6 +336,7 @@ fn create_combined_router(state: AppState) -> Router {
         .route("/projects/:id/checkpoints", post(create_checkpoint))
         .route("/projects/:id/history", get(get_project_history))
         .route("/projects/:id/checkpoints/:checkpoint_id/restore", post(restore_checkpoint))
+        .route("/projects/:id/checkpoints/:checkpoint_id", delete(delete_checkpoint))
         .route("/projects/:id", delete(delete_project))
         
         // Gateway routes
@@ -345,6 +348,7 @@ fn create_combined_router(state: AppState) -> Router {
         .route("/api/rifts/switch", post(handlers::switch_rift))
         .route("/api/rifts/diff", get(handlers::get_rift_diffs))
         .route("/api/rifts/:id/chat", get(chat::get_chat_history).post(chat::post_chat))
+        .route("/api/rifts/:id/presence", get(sync::get_rift_presence))
         .route("/api/wormholes", get(wormhole::list_wormholes).post(wormhole::create_wormhole))
         .route("/api/wormholes/:id", get(wormhole::get_wormhole))
         .route("/api/wormholes/:id/resolve", post(wormhole::resolve_conflict))
@@ -354,6 +358,7 @@ fn create_combined_router(state: AppState) -> Router {
         .route("/api/wormholes/:id/dissolve", post(wormhole::dissolve_wormhole))
         .route("/ws/wormholes/:id", get(wormhole::watch_wormhole))
         .route("/ws/:rift_id", get(websocket_handler))
+        .route("/max-upload-size", get(max_upload_size))
         
         // Web UI routes
         .merge(crate::web_ui::routes())
@@ -2025,6 +2030,69 @@ async fn restore_checkpoint(
     Ok(Json(ApiResponse::success(restore_data)))
 }
 
+/// Delete a checkpoint from the user's rift
+async fn delete_checkpoint(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, checkpoint_id)): Path<(ProjectId, uuid::Uuid)>,
+) -> Result<Json<ApiResponse<String>>, StatusCode> {
+    let auth_header = headers.get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    if !auth_header.starts_with("Bearer ") {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    let token = auth_header.trim_start_matches("Bearer ");
+    let claims = match state.auth.verify_token(token) {
+        Ok(claims) => claims,
+        Err(_) => return Err(StatusCode::UNAUTHORIZED),
+    };
+
+    let user_id = uuid::Uuid::parse_str(&claims.sub)
+        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+
+    info!("Delete checkpoint request for project: {} checkpoint: {} by user: {}", project_id, checkpoint_id, user_id);
+
+    match state.db.get_project(project_id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return Err(StatusCode::NOT_FOUND),
+        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+
+    if !state.db.user_has_project_access(user_id, project_id).await.unwrap_or(false) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let rift = match state.db.get_user_rift(project_id, user_id).await {
+        Ok(Some(rift)) => rift,
+        Ok(None) => return Err(StatusCode::NOT_FOUND),
+        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+    };
+
+    // Only checkpoints in the user's own rift can be deleted
+    let checkpoint = match state.sync.storage.load_checkpoint(checkpoint_id).await {
+        Ok(Some(checkpoint)) if checkpoint.rift_id == rift.id => checkpoint,
+        Ok(_) => return Err(StatusCode::NOT_FOUND),
+        Err(e) => {
+            error!("Failed to load checkpoint: {}", e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    match state.sync.storage.delete_checkpoint(checkpoint.id).await {
+        Ok(_) => {
+            info!("Deleted checkpoint {} from rift {}", checkpoint.id, rift.id);
+            Ok(Json(ApiResponse::success(format!("Checkpoint {} deleted", checkpoint.id))))
+        }
+        Err(e) => {
+            error!("Failed to delete checkpoint: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
 /// Delete a project and all associated data
 async fn delete_project(
     State(state): State<AppState>,
@@ -2191,7 +2259,7 @@ async fn websocket_handler(
     
     Ok(ws.on_upgrade(move |socket| async move {
         info!("WebSocket connection established for user: {} on rift: {}", claims.username, rift_id);
-        sync::handle_websocket(socket, state.sync, rift_id.clone(), user_id).await;
+        sync::handle_websocket(socket, state.sync, rift_id.clone(), user_id, claims.username.clone()).await;
         info!("WebSocket connection closed for user: {} on rift: {}", claims.username, rift_id);
     }))
 } 

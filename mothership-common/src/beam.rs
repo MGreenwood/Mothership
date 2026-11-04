@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -34,6 +34,8 @@ pub struct ProjectMetadata {
     pub mothership_url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rift_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_rift: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -101,20 +103,28 @@ pub struct RestoreOutcome {
     pub skipped_unsafe: Vec<String>,
 }
 
-/// Writes checkpoint files into a linked project folder, overwriting matching files.
-/// Files that exist locally but are missing from the checkpoint are left alone.
+/// Writes checkpoint files into a linked project folder, overwriting matching files
+/// and removing non-ignored files that are not in the checkpoint (after backing them up).
 pub fn restore_files_into(project_dir: &Path, files: &HashMap<PathBuf, String>) -> Result<RestoreOutcome> {
     let mut outcome = RestoreOutcome::default();
+    let mut keep = std::collections::HashSet::new();
+    let mut valid_files = Vec::new();
     for (raw, content) in files {
         let Some(rel) = safe_relative_path(raw) else {
             outcome.skipped_unsafe.push(raw.display().to_string());
             continue;
         };
+        keep.insert(crate::normalize_rel_path(&rel));
+        valid_files.push((rel, content));
+    }
+    let _ = remove_stale_local_files(project_dir, &keep);
+    for (rel, content) in valid_files {
         let target = project_dir.join(&rel);
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent)
                 .with_context(|| format!("Failed to create {}", parent.display()))?;
         }
+        let _ = crate::preserve_local_version(project_dir, &rel, content.as_bytes());
         fs::write(&target, content)
             .with_context(|| format!("Failed to write {}", target.display()))?;
         outcome.written += 1;
@@ -137,24 +147,66 @@ pub fn write_project_metadata(project_dir: &Path, meta: &ProjectMetadata) -> Res
 }
 
 /// Accepts only plain relative paths made of normal components, outside `.mothership`.
+/// Splits on both `/` and `\` (and WSL `\u{f05c}`) so Windows and Unix paths normalize identically.
 pub fn safe_relative_path(raw: &Path) -> Option<PathBuf> {
+    let raw_str = raw.to_str()?;
+    if raw_str.starts_with('/') || raw_str.starts_with('\\') || raw_str.starts_with('\u{f05c}') {
+        return None;
+    }
     let mut out = PathBuf::new();
-    for (i, component) in raw.components().enumerate() {
-        match component {
-            Component::Normal(part) => {
-                if i == 0 && part == METADATA_DIR {
-                    return None;
-                }
-                out.push(part);
-            }
-            _ => return None,
+    for (i, part) in raw_str.split(['/', '\\', '\u{f05c}']).enumerate() {
+        if part.is_empty() || part == "." || part == ".." || part.contains(':') {
+            return None;
         }
+        if i == 0 && part == METADATA_DIR {
+            return None;
+        }
+        out.push(part);
     }
     if out.as_os_str().is_empty() {
         None
     } else {
         Some(out)
     }
+}
+
+/// Removes non-ignored files in `project_dir` that are not in `keep_normalized` (backing them up first).
+pub fn remove_stale_local_files(
+    project_dir: &Path,
+    keep_normalized: &std::collections::HashSet<String>,
+) -> Result<()> {
+    if !project_dir.exists() {
+        return Ok(());
+    }
+    let rules = crate::ignore::IgnoreRules::load(project_dir)?;
+    let mut to_remove = Vec::new();
+    for entry in walkdir::WalkDir::new(project_dir)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| !rules.is_ignored(e.path(), e.file_type().is_dir()))
+        .filter_map(|e| e.ok())
+    {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if path.file_name().and_then(|n| n.to_str()) == Some(crate::ignore::IGNORE_FILE_NAME) {
+            continue;
+        }
+        let Ok(rel) = path.strip_prefix(project_dir) else {
+            continue;
+        };
+        let norm = crate::normalize_rel_path(rel);
+        if !keep_normalized.contains(&norm) {
+            to_remove.push((path.to_path_buf(), rel.to_path_buf()));
+        }
+    }
+
+    for (full_path, rel_path) in to_remove {
+        let _ = crate::preserve_local_version(project_dir, &rel_path, b"");
+        let _ = fs::remove_file(&full_path);
+    }
+    Ok(())
 }
 
 /// Joins a rift on the server and writes the project into `local_path`.
@@ -167,6 +219,10 @@ pub async fn beam_project(
     local_path: &Path,
     rift_name: Option<&str>,
 ) -> Result<BeamOutcome> {
+    // If the daemon is already tracking this project, pause its watcher and flush any pending
+    // edits on the old rift BEFORE we overwrite files in `local_path`.
+    let _ = crate::daemon::pause_project(project_id).await;
+
     let resp = client.beam(project_id, rift_name).await?;
 
     fs::create_dir_all(local_path)
@@ -185,16 +241,26 @@ pub async fn beam_project(
             .ok_or_else(|| anyhow!("Not signed in. Sign in before beaming a project."))?;
         let files = download_rift_files(token, &resp.websocket_url, resp.rift_id).await?;
 
+        let mut keep = std::collections::HashSet::new();
+        let mut valid_files = Vec::new();
         for (raw_path, content) in files {
             let Some(rel) = safe_relative_path(&raw_path) else {
                 outcome.skipped_unsafe.push(raw_path.display().to_string());
                 continue;
             };
+            keep.insert(crate::normalize_rel_path(&rel));
+            valid_files.push((rel, content));
+        }
+
+        let _ = remove_stale_local_files(local_path, &keep);
+
+        for (rel, content) in valid_files {
             let target = local_path.join(&rel);
             if let Some(parent) = target.parent() {
                 fs::create_dir_all(parent)
                     .with_context(|| format!("Failed to create {}", parent.display()))?;
             }
+            let _ = crate::preserve_local_version(local_path, &rel, content.as_bytes());
             fs::write(&target, content)
                 .with_context(|| format!("Failed to write {}", target.display()))?;
             outcome.downloaded += 1;
@@ -209,6 +275,7 @@ pub async fn beam_project(
             created_at: chrono::Utc::now().to_rfc3339(),
             mothership_url: mothership_url.to_string(),
             rift_id: Some(resp.rift_id.to_string()),
+            current_rift: Some(rift_name.unwrap_or("main").to_string()),
         },
     )?;
 
@@ -320,6 +387,7 @@ pub async fn ensure_daemon_running() -> Result<()> {
         const DETACHED_PROCESS: u32 = 0x0000_0008;
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
         cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+        clear_std_handle_inheritance();
     }
     cmd.spawn()
         .with_context(|| format!("Failed to start {}", daemon.display()))?;
@@ -333,6 +401,28 @@ pub async fn ensure_daemon_running() -> Result<()> {
     bail!("Started {} but it did not answer on {DAEMON_URL} within 10 seconds", daemon.display())
 }
 
+/// Clears `HANDLE_FLAG_INHERIT` on the current process's stdio handles on Windows so a
+/// detached `mothership-daemon` child does not keep the parent's piped stdout/stderr open.
+#[cfg(windows)]
+pub fn clear_std_handle_inheritance() {
+    extern "system" {
+        fn GetStdHandle(nStdHandle: u32) -> *mut std::ffi::c_void;
+        fn SetHandleInformation(hObject: *mut std::ffi::c_void, dwMask: u32, dwFlags: u32) -> i32;
+    }
+    const STD_INPUT_HANDLE: u32 = (-10i32) as u32;
+    const STD_OUTPUT_HANDLE: u32 = (-11i32) as u32;
+    const STD_ERROR_HANDLE: u32 = (-12i32) as u32;
+    const HANDLE_FLAG_INHERIT: u32 = 0x0000_0001;
+    unsafe {
+        for std_id in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+            let h = GetStdHandle(std_id);
+            if !h.is_null() && (h as isize) != -1 {
+                SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0);
+            }
+        }
+    }
+}
+
 /// Tells the local daemon to start watching the folder. Errors mean the daemon is unreachable or rejected it.
 pub async fn register_with_daemon(
     project_id: Uuid,
@@ -340,7 +430,7 @@ pub async fn register_with_daemon(
     project_path: &Path,
 ) -> Result<()> {
     let http = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(30))
         .build()?;
     let body = serde_json::json!({
         "project_id": project_id,
@@ -485,6 +575,7 @@ mod tests {
                 created_at: "now".into(),
                 mothership_url: "http://localhost:7523".into(),
                 rift_id: None,
+                current_rift: None,
             },
         )
         .unwrap();
@@ -499,6 +590,7 @@ mod tests {
                 created_at: "now".into(),
                 mothership_url: "http://localhost:7523".into(),
                 rift_id: None,
+                current_rift: None,
             },
         )
         .unwrap();

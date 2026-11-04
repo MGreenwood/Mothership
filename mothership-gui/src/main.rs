@@ -12,11 +12,13 @@ fn main() {
         .manage(nvim::NvimSessions::default())
         .invoke_handler(tauri::generate_handler![
             explorer::explorer_list_dir,
+            explorer::explorer_is_beamed,
             nvim::nvim_open,
             nvim::nvim_write,
             nvim::nvim_resize,
             nvim::nvim_close,
             nvim::nvim_check_file,
+            nvim::nvim_reload_files,
             nvim::terminal_open,
             nvim::terminal_close,
             hub::hub_auth_status,

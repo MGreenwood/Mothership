@@ -43,18 +43,18 @@ pub async fn handle_beam(
     
     let rift = if let Some(rift_name) = request.rift_name {
         info!("DEBUG: Specific rift name requested: {}", rift_name);
-        // Check if rift with specific name exists for user
-        match state.db.get_user_rift(project_id, user_id).await {
+        // Beam into the rift the user asked for, creating it only if it doesn't exist yet
+        match state.db.get_user_rift_by_name(project_id, user_id, &rift_name).await {
             Ok(Some(existing_rift)) => {
-                info!("Found existing rift: {} for user {} in project: {}", existing_rift.id, user_id, project.name);
+                info!("Found existing rift '{}': {} for user {} in project: {}", rift_name, existing_rift.id, user_id, project.name);
                 existing_rift
             }
             Ok(None) => {
-                info!("No existing rift found, creating new rift with name '{}' for user {} in project: {}", rift_name, user_id, project.name);
+                info!("No rift named '{}' for user {} in project: {}, creating it", rift_name, user_id, project.name);
                 state.db.create_rift(project_id, user_id, Some(rift_name)).await?
             }
             Err(e) => {
-                error!("Error checking for existing rift: {}", e);
+                error!("Error checking for rift '{}': {}", rift_name, e);
                 return Err(anyhow!("Database error checking for rift: {}", e));
             }
         }
@@ -208,6 +208,7 @@ pub async fn list_rifts(
                 _ => "Unknown".to_string(),
             };
 
+            let is_conflict_rift = mothership_common::is_conflict_rift_name(&rift.name);
             let rift_info = RiftInfo {
                 id: rift.id,
                 project_id: rift.project_id,
@@ -216,7 +217,7 @@ pub async fn list_rifts(
                 created_at: rift.created_at,
                 author,
                 file_count,
-                is_conflict_rift: false, // TODO: Add conflict rift detection
+                is_conflict_rift,
             };
 
             all_rifts.push(rift_info);

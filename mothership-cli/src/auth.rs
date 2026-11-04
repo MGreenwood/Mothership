@@ -1,14 +1,10 @@
 use anyhow::Result;
 use colored::*;
-use mothership_common::auth::{AuthRequest, AuthResponse, TokenRequest, OAuthRequest, OAuthResponse, OAuthProvider, OAuthSource};
+use mothership_common::auth::{OAuthRequest, OAuthResponse, OAuthProvider, OAuthSource};
 use mothership_common::protocol::ApiResponse;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
 use std::env;
-use std::io::{self, Write};
-use std::process::Command;
-use tracing::{info, warn, error};
 use open;
 
 use crate::config::ConfigManager;

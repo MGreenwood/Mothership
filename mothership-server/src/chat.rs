@@ -8,7 +8,7 @@ use mothership_common::{
     protocol::{ApiResponse, ChatMessage, SyncMessage},
     RiftId,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::fmt;
 use tokio::sync::broadcast;
 use tracing::{info, warn};
@@ -245,7 +245,7 @@ pub struct SendChatRequest {
     pub content: String,
 }
 
-fn status_for(err: &ChatError) -> StatusCode {
+pub fn status_for(err: &ChatError) -> StatusCode {
     match err {
         ChatError::Disabled => StatusCode::NOT_FOUND,
         ChatError::Forbidden => StatusCode::FORBIDDEN,

@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::fs;
 
 // Tokio imports
 use tokio::sync::{mpsc, RwLock, Mutex};
@@ -15,7 +14,6 @@ use tokio_tungstenite;
 use anyhow::{Result, anyhow};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
-use sha2::{Sha256, Digest};
 use flate2;
 
 // Internal imports
@@ -31,7 +29,7 @@ use mothership_common::{
     ConflictRiftInfo,
     SyncMessage,
     content_hash,
-    streaming::{StreamConfig, StreamProgress},
+    streaming::StreamConfig,
     transaction::TransactionManager,
 };
 
@@ -47,12 +45,43 @@ pub enum DaemonCommand {
 }
 
 /// Information about a tracked project
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TrackedProject {
     pub project_id: Uuid,
     pub project_name: String,
     pub project_path: PathBuf,
     pub added_at: chrono::DateTime<chrono::Utc>,
+}
+
+fn tracked_projects_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join("mothership").join("tracked_projects.json"))
+}
+
+pub fn load_persisted_projects() -> Vec<TrackedProject> {
+    let Some(path) = tracked_projects_path() else {
+        return Vec::new();
+    };
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    serde_json::from_str::<Vec<TrackedProject>>(&raw)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| p.project_path.join(".mothership").join("project.json").is_file())
+        .collect()
+}
+
+pub fn save_persisted_projects(projects: &HashMap<Uuid, TrackedProject>) {
+    let Some(path) = tracked_projects_path() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let list: Vec<&TrackedProject> = projects.values().collect();
+    if let Ok(json) = serde_json::to_string_pretty(&list) {
+        let _ = std::fs::write(path, json);
+    }
 }
 
 /// Files up to this size keep their synced content in `SyncBase`, so the next save can be sent as a diff.
@@ -134,7 +163,10 @@ pub struct MothershipDaemon {
 pub struct DaemonStatus {
     pub is_running: bool,
     pub projects_tracked: usize,
+    /// File changes being queued right now. Usually 0, because queueing finishes almost immediately.
     pub files_syncing: usize,
+    /// File changes queued for sync since the daemon started.
+    pub files_synced: usize,
     pub last_sync: Option<chrono::DateTime<chrono::Utc>>,
     pub server_connected: bool,
 }
@@ -145,6 +177,7 @@ impl Default for DaemonStatus {
             is_running: false,
             projects_tracked: 0,
             files_syncing: 0,
+            files_synced: 0,
             last_sync: None,
             server_connected: false,
         }
@@ -416,6 +449,7 @@ impl MothershipDaemon {
         match sync_result {
             Ok(()) => {
                 info!("Successfully queued file change for persistent WebSocket");
+                status.write().await.files_synced += 1;
             }
             Err(e) => {
                 error!("Failed to queue file change for persistent WebSocket: {}", e);
@@ -471,7 +505,9 @@ impl MothershipDaemon {
         };
         
         // Base is the content this client last synced for the path; the server rejects edits made against a stale base
-        let base_key = (event.project_id, event.file_path.to_string_lossy().to_string());
+        let norm_rel = mothership_common::normalize_rel_path(&event.file_path);
+        let norm_path = PathBuf::from(&norm_rel);
+        let base_key = (event.project_id, norm_rel);
         let base = base_hashes.read().await.get(&base_key).cloned();
         let base_hash = base.as_ref().map(|b| b.hash.clone());
 
@@ -492,7 +528,7 @@ impl MothershipDaemon {
         let sync_message = match line_diff {
             Some(diff) => SyncMessage::FileDiffChanged {
                 rift_id,
-                path: event.file_path.clone(),
+                path: norm_path,
                 diff,
                 file_size: event.content.len() as u64,
                 timestamp: event.timestamp,
@@ -500,7 +536,7 @@ impl MothershipDaemon {
             },
             None => SyncMessage::FileChanged {
                 rift_id,
-                path: event.file_path.clone(),
+                path: norm_path,
                 content: event.content.clone(),
                 timestamp: event.timestamp,
                 base_hash,
@@ -522,6 +558,60 @@ impl MothershipDaemon {
         base_hashes.write().await.insert(base_key, SyncBase::from_content(&event.content));
         
         Ok(())
+    }
+
+    /// Scans `project_path` and queues any local file edits that haven't been synced yet on the current WebSocket.
+    pub async fn flush_unsynced_project_files(
+        project_id: Uuid,
+        tracked_projects: &Arc<RwLock<HashMap<Uuid, TrackedProject>>>,
+        outgoing_channels: &Arc<RwLock<HashMap<Uuid, mpsc::UnboundedSender<SyncMessage>>>>,
+        base_hashes: &BaseHashes,
+    ) {
+        if !outgoing_channels.read().await.contains_key(&project_id) {
+            return;
+        }
+        let has_bases = base_hashes.read().await.keys().any(|(id, _)| *id == project_id);
+        if !has_bases {
+            return;
+        }
+        let Some(project_path) = tracked_projects.read().await.get(&project_id).map(|p| p.project_path.clone()) else {
+            return;
+        };
+        let Ok(report) = mothership_common::client::scan_text_files(&project_path, MAX_DIRECT_SYNC_SIZE) else {
+            return;
+        };
+        for (rel_path, content) in report.files {
+            let norm = mothership_common::normalize_rel_path(&rel_path);
+            let base_key = (project_id, norm.clone());
+            let current_hash = content_hash(&content);
+            let matches_base = base_hashes
+                .read()
+                .await
+                .get(&base_key)
+                .is_some_and(|b| b.hash == current_hash);
+            if !matches_base {
+                let event = FileChangeEvent {
+                    project_id,
+                    file_path: PathBuf::from(&norm),
+                    content,
+                    file_size: 0,
+                    timestamp: chrono::Utc::now(),
+                    change_type: crate::file_watcher::FileChangeType::Modified,
+                };
+                if let Err(e) = Self::send_file_change_via_persistent_websocket(
+                    &event,
+                    tracked_projects,
+                    outgoing_channels,
+                    base_hashes,
+                )
+                .await
+                {
+                    warn!("Failed to flush unsynced file {} before rift switch: {}", norm, e);
+                } else {
+                    info!("Flushed unsynced local file {} before rift switch", norm);
+                }
+            }
+        }
     }
     
     /// Handle large file streaming
@@ -645,7 +735,7 @@ impl MothershipDaemon {
         project_id: uuid::Uuid,
         outgoing_channels: &Arc<RwLock<HashMap<Uuid, mpsc::UnboundedSender<SyncMessage>>>>,
     ) -> Result<String> {
-        use std::io::{Read, Seek, SeekFrom};
+        use std::io::Read;
         
         // Open file for reading
         let mut file = std::fs::File::open(file_path)
@@ -895,6 +985,7 @@ impl MothershipDaemon {
                 Ok(file_count) => {
                     info!("Successfully synced {} files for project '{}'", file_count, project.project_name);
                     sync_count += file_count;
+                    status.write().await.files_synced += file_count;
                 }
                 Err(e) => {
                     error!("Failed to sync project '{}': {}", project.project_name, e);
@@ -1127,6 +1218,14 @@ impl MothershipDaemon {
         info!("Starting persistent WebSocket connection for project {} (rift: {})", project_id, rift_id);
         info!("WebSocket URL: {}", ws_url.replace(&auth_token, "***TOKEN***"));
         
+        // Stop any existing WebSocket listener for this project before starting a new one
+        {
+            let mut listeners = websocket_listeners.write().await;
+            if let Some(previous) = listeners.remove(&project_id) {
+                previous.abort();
+            }
+        }
+
         // Create channel for outgoing messages
         let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded_channel::<SyncMessage>();
         {
@@ -1134,13 +1233,18 @@ impl MothershipDaemon {
             channels.insert(project_id, outgoing_tx);
         }
 
+        let (initial_sync_tx, initial_sync_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+
         let status_clone = status.clone();
         let listener_handle = tokio::spawn(async move {
+            let mut initial_sync_tx = Some(initial_sync_tx);
             let ping_interval = Duration::from_secs(30);
             let health_log_interval = Duration::from_secs(300);
             let reconnect_delay = Duration::from_secs(5);
             let mut health = ConnectionHealth::new();
             
+            // Set when the outgoing queue is closed and fully drained, so the listener exits instead of reconnecting
+            let mut channel_closed = false;
             // CRITICAL FIX: Add reconnection loop
             loop {
                 let mut next_ping = Instant::now() + ping_interval;
@@ -1182,7 +1286,17 @@ impl MothershipDaemon {
                                 // Handle outgoing messages (from file watcher)
                                 msg = outgoing_rx.recv() => {
                                     match msg {
-                                        Some(sync_msg) => {
+                                        Some(mut sync_msg) => {
+                                            // Always stamp outgoing changes with the rift_id this socket is connected to,
+                                            // even if project.json on disk was already updated for an upcoming rift switch.
+                                            match &mut sync_msg {
+                                                SyncMessage::FileChanged { rift_id: msg_rift, .. }
+                                                | SyncMessage::FileDiffChanged { rift_id: msg_rift, .. }
+                                                | SyncMessage::StartFileStream { rift_id: msg_rift, .. } => {
+                                                    *msg_rift = rift_id;
+                                                }
+                                                _ => {}
+                                            }
                                             if let Ok(json) = serde_json::to_string(&sync_msg) {
                                                 if let Err(e) = ws_sender.send(tokio_tungstenite::tungstenite::Message::Text(json)).await {
                                                     error!("Failed to send WebSocket message: {}", e);
@@ -1196,6 +1310,14 @@ impl MothershipDaemon {
                                         }
                                         None => {
                                             info!("Outgoing channel closed, stopping WebSocket");
+                                            let close_frame = tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                                                code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Normal,
+                                                reason: "Reconnecting".into(),
+                                            };
+                                            let _ = ws_sender.send(tokio_tungstenite::tungstenite::Message::Close(Some(close_frame))).await;
+                                            let _ = ws_sender.close().await;
+                                            tokio::time::sleep(Duration::from_millis(100)).await;
+                                            channel_closed = true;
                                             break;
                                         }
                                     }
@@ -1207,13 +1329,21 @@ impl MothershipDaemon {
                                         Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) => {
                                             health.record_message_received();
                                             debug!("Received WebSocket message: {} chars", text.len());
+                                            let is_rift_joined = text.contains("\"RiftJoined\"");
                                             
                                             // Handle incoming sync message
-                                            if let Err(e) = Self::handle_websocket_sync_message(&text, &project_path, &server_write_flags, &base_hashes, &outgoing_channels, project_id).await {
+                                            let res = Self::handle_websocket_sync_message(&text, &project_path, &server_write_flags, &base_hashes, &outgoing_channels, project_id).await;
+                                            if let Err(ref e) = res {
                                                 error!("Failed to handle incoming sync message: {}", e);
                                             }
                                             // Handlers set this flag and clear it on success only; a failed write would otherwise leave local changes ignored
                                             server_write_flags.write().await.remove(&project_id);
+
+                                            if is_rift_joined {
+                                                if let Some(tx) = initial_sync_tx.take() {
+                                                    let _ = tx.send(res.map_err(|e| e.to_string()));
+                                                }
+                                            }
                                         }
                                         Some(Ok(tokio_tungstenite::tungstenite::Message::Close(close_frame))) => {
                                             info!("WebSocket closed by server: {:?}", close_frame);
@@ -1291,6 +1421,13 @@ impl MothershipDaemon {
                         } else if error_str.contains("404") {
                             error!("  WebSocket endpoint not found - rift may not exist");
                             error!("  Rift ID: {}", rift_id);
+                            {
+                                let mut projects = tracked_projects.write().await;
+                                projects.remove(&project_id);
+                                save_persisted_projects(&projects);
+                                status_clone.write().await.projects_tracked = projects.len();
+                            }
+                            channel_closed = true;
                         } else if error_str.contains("Connection refused") {
                             error!("  Connection refused - server may be down");
                             error!("  Server URL: {}", server_url);
@@ -1303,9 +1440,17 @@ impl MothershipDaemon {
                         }
                         
                         health.record_error();
+                        if let Some(tx) = initial_sync_tx.take() {
+                            let _ = tx.send(Err(error_str));
+                        }
                     }
                 }
                 
+                if channel_closed {
+                    info!("Queued changes sent, WebSocket listener stopped");
+                    break;
+                }
+
                 // Wait before reconnecting
                 info!(" Waiting {} seconds before reconnecting...", reconnect_delay.as_secs());
                 tokio::time::sleep(reconnect_delay).await;
@@ -1315,13 +1460,27 @@ impl MothershipDaemon {
             } // End of reconnection loop
         }); // End of spawned task
 
-        // Store the handle for later cleanup, but don't wait for it
+        // Store the handle for later cleanup
         {
             let mut listeners = websocket_listeners.write().await;
             listeners.insert(project_id, listener_handle);
         }
         
-        info!("WebSocket listener started for project {}", project_id);
+        info!("WebSocket listener started for project {}; waiting for initial rift sync...", project_id);
+        match tokio::time::timeout(Duration::from_secs(15), initial_sync_rx).await {
+            Ok(Ok(Ok(()))) => {
+                info!("Initial rift sync complete for project {}", project_id);
+            }
+            Ok(Ok(Err(e))) => {
+                warn!("Initial rift sync reported error for project {}: {}", project_id, e);
+            }
+            Ok(Err(_)) => {
+                warn!("Initial rift sync channel closed early for project {}", project_id);
+            }
+            Err(_) => {
+                warn!("Timed out waiting for initial rift sync for project {}", project_id);
+            }
+        }
         Ok(())
     }
     
@@ -1546,7 +1705,12 @@ impl MothershipDaemon {
         
         match sync_message {
             SyncMessage::FileChanged { path, content, .. } => {
-                info!("Received file change from collaborator: {} ({} bytes)", path.display(), content.len());
+                let Some(rel_path) = mothership_common::beam::safe_relative_path(&path) else {
+                    warn!("Skipping unsafe path from server: {}", path.display());
+                    return Ok(());
+                };
+                let norm = mothership_common::normalize_rel_path(&rel_path);
+                info!("Received file change from collaborator: {} ({} bytes)", norm, content.len());
                 
                 // Set server write flag to prevent file watcher loops
                 {
@@ -1554,8 +1718,10 @@ impl MothershipDaemon {
                     flags.insert(project_id, true);
                 }
                 
+                base_hashes.write().await.insert((project_id, norm.clone()), SyncBase::from_content(&content));
+
                 // Write the file to disk
-                let file_path = project_path.join(&path);
+                let file_path = project_path.join(&rel_path);
                 
                 // Create parent directories if needed
                 if let Some(parent) = file_path.parent() {
@@ -1564,8 +1730,8 @@ impl MothershipDaemon {
                 
                 // Write file content
                 tokio::fs::write(&file_path, &content).await?;
-                info!("Applied file change from collaborator: {}", path.display());
-                base_hashes.write().await.insert((project_id, path.to_string_lossy().to_string()), SyncBase::from_content(&content));
+                info!("Applied file change from collaborator: {}", norm);
+                tokio::time::sleep(Duration::from_millis(120)).await;
                 {
                     let mut flags = server_write_flags.write().await;
                     flags.remove(&project_id);
@@ -1584,7 +1750,11 @@ impl MothershipDaemon {
                 
                 // Apply all diffs
                 for change in diff_changes {
-                    let file_path = project_path.join(&change.path);
+                    let Some(rel_path) = mothership_common::beam::safe_relative_path(&change.path) else {
+                        continue;
+                    };
+                    let norm = mothership_common::normalize_rel_path(&rel_path);
+                    let file_path = project_path.join(&rel_path);
                     
                     // Read current content
                     let current_content = if file_path.exists() {
@@ -1597,6 +1767,7 @@ impl MothershipDaemon {
                     let diff_engine = DiffEngine::new();
                     match diff_engine.apply_diff(&current_content, &change.diff) {
                         Ok(new_content) => {
+                            base_hashes.write().await.insert((project_id, norm.clone()), SyncBase::from_content(&new_content));
                             // Create parent directories if needed
                             if let Some(parent) = file_path.parent() {
                                 tokio::fs::create_dir_all(parent).await?;
@@ -1604,16 +1775,16 @@ impl MothershipDaemon {
                             
                             // Write updated content
                             tokio::fs::write(&file_path, &new_content).await?;
-                            base_hashes.write().await.insert((project_id, change.path.to_string_lossy().to_string()), SyncBase::from_content(&new_content));
                             info!("Applied diff to {}: {} -> {} bytes", 
-                                change.path.display(), current_content.len(), new_content.len());
+                                norm, current_content.len(), new_content.len());
                         }
                         Err(e) => {
-                            error!("Failed to apply diff to {}: {}", change.path.display(), e);
+                            error!("Failed to apply diff to {}: {}", norm, e);
                         }
                     }
                 }
                 
+                tokio::time::sleep(Duration::from_millis(120)).await;
                 // Clear server write flag
                 {
                     let mut flags = server_write_flags.write().await;
@@ -1631,25 +1802,122 @@ impl MothershipDaemon {
                     flags.insert(project_id, true);
                 }
                 
-                // Base hashes belong to the rift we were on before; drop them so only this rift's files set bases
-                base_hashes.write().await.retain(|(id, _), _| *id != project_id);
+                // Snapshot the previous rift's synced base hashes before clearing them
+                let old_bases: HashMap<String, String> = {
+                    let mut bases = base_hashes.write().await;
+                    let old = bases
+                        .iter()
+                        .filter(|((id, _), _)| *id == project_id)
+                        .map(|((_, p), b)| (p.clone(), b.hash.clone()))
+                        .collect();
+                    bases.retain(|(id, _), _| *id != project_id);
+                    old
+                };
+
+                let recovery_stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+                let mut valid_files: Vec<(PathBuf, String, String)> = Vec::new();
+                let mut current_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
+                for (raw_path, content) in current_files {
+                    let Some(rel_path) = mothership_common::beam::safe_relative_path(&raw_path) else {
+                        warn!("Skipping unsafe path in RiftJoined: {}", raw_path.display());
+                        continue;
+                    };
+                    let norm = mothership_common::normalize_rel_path(&rel_path);
+                    current_paths.insert(norm.clone());
+                    valid_files.push((rel_path, norm, content));
+                }
+
+                // Collect candidate stale paths from both previous base_hashes and non-ignored files on disk
+                let mut stale_candidates: std::collections::HashSet<String> = old_bases
+                    .keys()
+                    .filter(|p| !current_paths.contains(*p))
+                    .cloned()
+                    .collect();
+                if let Ok(rules) = mothership_common::ignore::IgnoreRules::load(&project_path) {
+                    for entry in walkdir::WalkDir::new(&project_path)
+                        .follow_links(false)
+                        .into_iter()
+                        .filter_entry(|e| !rules.is_ignored(e.path(), e.file_type().is_dir()))
+                        .filter_map(|e| e.ok())
+                    {
+                        let p = entry.path();
+                        if !p.is_file() {
+                            continue;
+                        }
+                        if p.file_name().and_then(|n| n.to_str()) == Some(mothership_common::ignore::IGNORE_FILE_NAME) {
+                            continue;
+                        }
+                        if let Ok(rel) = p.strip_prefix(&project_path) {
+                            let norm = mothership_common::normalize_rel_path(rel);
+                            if !current_paths.contains(&norm) {
+                                stale_candidates.insert(norm);
+                            }
+                        }
+                    }
+                }
+
+                for stale in stale_candidates {
+                    let Some(rel_path) = mothership_common::beam::safe_relative_path(std::path::Path::new(&stale)) else {
+                        continue;
+                    };
+                    let stale_path = project_path.join(&rel_path);
+                    if stale_path.is_file() {
+                        // Back up if it wasn't already synced to the previous rift
+                        let should_backup = match tokio::fs::read_to_string(&stale_path).await {
+                            Ok(text) => old_bases.get(&stale) != Some(&content_hash(&text)),
+                            Err(_) => true,
+                        };
+                        if should_backup {
+                            let backup = project_path.join(".mothership").join("local-backup").join(&recovery_stamp).join(&rel_path);
+                            if let Some(parent) = backup.parent() {
+                                tokio::fs::create_dir_all(parent).await?;
+                            }
+                            let _ = tokio::fs::copy(&stale_path, &backup).await;
+                        }
+                        match tokio::fs::remove_file(&stale_path).await {
+                            Ok(()) => info!("Removed file not in this rift: {}", stale),
+                            Err(e) => error!("Failed to remove {}: {}", stale, e),
+                        }
+                    }
+                }
 
                 // Write all current files (initial sync)
-                for (path, content) in current_files {
-                    let file_path = project_path.join(&path);
+                for (rel_path, norm, content) in valid_files {
+                    let file_path = project_path.join(&rel_path);
                     
-                    // Create parent directories if needed
                     if let Some(parent) = file_path.parent() {
                         tokio::fs::create_dir_all(parent).await?;
                     }
                     
-                    // Write file content
+                    // Only back up local file if it differs from the incoming rift content AND wasn't already synced on the old rift
+                    if let Ok(local_bytes) = tokio::fs::read(&file_path).await {
+                        if local_bytes.as_slice() != content.as_bytes() {
+                            let was_synced_on_old_rift = std::str::from_utf8(&local_bytes)
+                                .ok()
+                                .is_some_and(|s| old_bases.get(&norm) == Some(&content_hash(s)));
+                            if !was_synced_on_old_rift {
+                                let backup = project_path
+                                    .join(".mothership")
+                                    .join("local-backup")
+                                    .join(&recovery_stamp)
+                                    .join(&rel_path);
+                                if let Some(parent) = backup.parent() {
+                                    tokio::fs::create_dir_all(parent).await?;
+                                }
+                                tokio::fs::write(&backup, &local_bytes).await?;
+                                warn!("Backed up unsynced local {} to {} before overwriting", norm, backup.display());
+                            }
+                        }
+                    }
+
+                    // Set base_hash BEFORE writing to disk so any watcher echo sees matching base_hash
+                    base_hashes.write().await.insert((project_id, norm.clone()), SyncBase::from_content(&content));
                     tokio::fs::write(&file_path, &content).await?;
-                    base_hashes.write().await.insert((project_id, path.to_string_lossy().to_string()), SyncBase::from_content(&content));
-                    info!("Wrote initial file: {}", path.display());
+                    info!("Wrote initial file: {}", norm);
                 }
                 
-                // Clear server write flag
+                // Keep server_write_flags set while asynchronous OS watcher notifications settle
+                tokio::time::sleep(Duration::from_millis(150)).await;
                 {
                     let mut flags = server_write_flags.write().await;
                     flags.remove(&project_id);
@@ -1664,15 +1932,20 @@ impl MothershipDaemon {
             SyncMessage::FullContentRequired { path, base_hash, .. } => {
                 // Server could not apply our diff (stale base). Resend the whole local file with the
                 // rejected base so the server keeps our edit in a conflict rift instead of discarding it.
-                let file_path = project_path.join(&path);
+                let Some(rel_path) = mothership_common::beam::safe_relative_path(&path) else {
+                    return Ok(());
+                };
+                let norm = mothership_common::normalize_rel_path(&rel_path);
+                let norm_path = PathBuf::from(&norm);
+                let file_path = project_path.join(&rel_path);
                 let file_size = match tokio::fs::metadata(&file_path).await {
                     Ok(meta) => meta.len(),
                     Err(e) => {
-                        warn!("Cannot send full content for {}: {}", path.display(), e);
+                        warn!("Cannot send full content for {}: {}", norm, e);
                         return Ok(());
                     }
                 };
-                info!("Server requested full content for {}; resending", path.display());
+                info!("Server requested full content for {}; resending", norm);
 
                 let rift_id = {
                     let metadata_file = project_path.join(".mothership").join("project.json");
@@ -1686,7 +1959,7 @@ impl MothershipDaemon {
                     }
                 };
 
-                let key = (project_id, path.to_string_lossy().to_string());
+                let key = (project_id, norm.clone());
 
                 // Large files go through the streaming protocol. The server checks the same base_hash on stream start.
                 if file_size > MAX_DIRECT_SYNC_SIZE {
@@ -1704,11 +1977,11 @@ impl MothershipDaemon {
                     let start_message = SyncMessage::StartFileStream {
                         stream_id,
                         rift_id,
-                        path: path.clone(),
+                        path: norm_path,
                         total_size: file_size,
                         chunk_size: config.chunk_size,
                         content_hash: String::new(),
-                        is_binary: !path.to_string_lossy().ends_with(".txt"),
+                        is_binary: !norm.ends_with(".txt"),
                         timestamp: chrono::Utc::now(),
                         base_hash,
                     };
@@ -1738,7 +2011,7 @@ impl MothershipDaemon {
                 let content = match tokio::fs::read_to_string(&file_path).await {
                     Ok(content) => content,
                     Err(e) => {
-                        warn!("Cannot send full content for {}: {}", path.display(), e);
+                        warn!("Cannot send full content for {}: {}", norm, e);
                         return Ok(());
                     }
                 };
@@ -1747,7 +2020,7 @@ impl MothershipDaemon {
                     match channels.get(&project_id) {
                         Some(sender) => sender.send(SyncMessage::FileChanged {
                             rift_id,
-                            path: path.clone(),
+                            path: norm_path,
                             content: content.clone(),
                             timestamp: chrono::Utc::now(),
                             base_hash,
@@ -1761,17 +2034,27 @@ impl MothershipDaemon {
             }
             SyncMessage::ForceSync { path, server_content, .. } => {
                 // Server replaced our base with its version (e.g. after a stale-edit conflict); adopt it
-                info!("Force syncing {} from server", path.display());
+                let Some(rel_path) = mothership_common::beam::safe_relative_path(&path) else {
+                    return Ok(());
+                };
+                let norm = mothership_common::normalize_rel_path(&rel_path);
+                info!("Force syncing {} from server", norm);
                 {
                     let mut flags = server_write_flags.write().await;
                     flags.insert(project_id, true);
                 }
-                let file_path = project_path.join(&path);
+                base_hashes.write().await.insert((project_id, norm.clone()), SyncBase::from_content(&server_content));
+                let file_path = project_path.join(&rel_path);
                 if let Some(parent) = file_path.parent() {
                     tokio::fs::create_dir_all(parent).await?;
                 }
+                match mothership_common::preserve_local_version(&project_path, &rel_path, server_content.as_bytes()) {
+                    Ok(Some(backup)) => warn!("Kept local version of {} at {} before adopting server content", norm, backup.display()),
+                    Ok(None) => {}
+                    Err(e) => warn!("Could not back up local {} before overwrite: {}", norm, e),
+                }
                 tokio::fs::write(&file_path, &server_content).await?;
-                base_hashes.write().await.insert((project_id, path.to_string_lossy().to_string()), SyncBase::from_content(&server_content));
+                tokio::time::sleep(Duration::from_millis(120)).await;
                 {
                     let mut flags = server_write_flags.write().await;
                     flags.remove(&project_id);
@@ -1889,12 +2172,16 @@ impl MothershipDaemon {
         
         // Spawn new daemon instance
         let mut command = std::process::Command::new(&current_exe);
+        command
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
         
         // Start the new process detached from the current one
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
-            command.creation_flags(0x00000008); // DETACHED_PROCESS flag
+            command.creation_flags(0x00000008 | 0x00000200 | 0x08000000); // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
         }
         
         #[cfg(unix)]
@@ -1923,46 +2210,15 @@ struct ProjectMetadata {
     project_name: String,
     created_at: String,
     mothership_url: String,
+    #[serde(default)]
     rift_id: Option<String>, // CRITICAL FIX: Read rift_id for WebSocket connection
+    #[serde(default)]
+    current_rift: Option<String>,
 }
 
-/// Get the active server URL (prioritize active connection over project metadata)
+/// Get the active server URL (shared with CLI and GUI)
 pub(crate) fn get_active_server_url() -> Option<String> {
-    use serde::{Deserialize, Serialize};
-    
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    struct ServerConnection {
-        pub name: String,
-        pub url: String,
-        pub auth_token: Option<String>,
-        pub auth_method: String,
-        pub connected_at: chrono::DateTime<chrono::Utc>,
-    }
-
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    struct ConnectionsConfig {
-        pub active_server: Option<String>,
-        pub servers: std::collections::HashMap<String, ServerConnection>,
-    }
-    
-    // Try to load active server connection
-    if let Some(config_dir) = dirs::config_dir() {
-        let connections_path = config_dir.join("mothership").join("connections.json");
-        if connections_path.exists() {
-            if let Ok(connections_content) = std::fs::read_to_string(&connections_path) {
-                if let Ok(connections) = serde_json::from_str::<ConnectionsConfig>(&connections_content) {
-                    if let Some(active_url) = &connections.active_server {
-                        if let Some(server) = connections.servers.get(active_url) {
-                            info!("Using active server connection: {}", server.url);
-                            return Some(server.url.clone());
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    None
+    Some(mothership_common::client::active_server_url())
 }
 
 /// Load stored authentication token for WebSocket connection

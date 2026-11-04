@@ -43,7 +43,7 @@ enum Commands {
         #[clap(subcommand)]
         method: Option<AuthMethod>,
     },
-    /// Gateway operations (list, create projects)
+    /// Gateway operations (list, release)
     Gateway {
         #[command(subcommand)]
         action: GatewayAction,
@@ -59,20 +59,19 @@ enum Commands {
         #[arg(default_value = "", add = ArgValueCandidates::new(completion::beam_project_candidates))]
         project: String,
         
-        /// Optional rift ID to join
-        #[arg(long)]
-        rift: Option<String>,
-        
         /// Local directory to use (required for new projects)
-        #[arg(long)]
+        #[arg(short = 'l', long = "local-dir")]
         local_dir: Option<PathBuf>,
     },
     /// Status of current Mothership environment
     Status,
-    /// Create a checkpoint (commit changes)
+    /// Create a checkpoint, or manage existing ones
     Checkpoint {
-        /// Checkpoint message
-        message: String,
+        #[command(subcommand)]
+        action: Option<CheckpointAction>,
+        /// Checkpoint message (defaults to "<rift> <date time>")
+        #[arg(short = 'm', long = "message")]
+        name: Option<String>,
     },
     /// Sync with remote Mothership
     Sync,
@@ -148,17 +147,9 @@ enum GatewayAction {
         #[arg(long)]
         include_inactive: bool,
     },
-    /// Create a new gateway project
-    Create {
-        /// Gateway name
-        name: String,
-        /// Project directory path
-        #[arg(short, long)]
-        dir: std::path::PathBuf,
-    },
-    /// Disconnect from a project (stop background tracking)
-    Disconnect {
-        /// Project name to disconnect from (optional, defaults to current project)
+    /// Release a gateway (stop background tracking)
+    Release {
+        /// Gateway name to release (optional, defaults to current gateway)
         project: Option<String>,
     },
 }
@@ -215,10 +206,24 @@ enum RiftAction {
         /// Second rift to compare (optional)
         to: Option<String>,
     },
+    /// List and delete local backup copies saved before overwrites
+    Purge,
     /// Send and read chat messages in a rift
     Chat {
         #[command(subcommand)]
         action: ChatAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum CheckpointAction {
+    /// Delete a checkpoint from your rift
+    Delete {
+        /// Checkpoint ID to delete
+        checkpoint_id: String,
+        /// Force deletion without confirmation
+        #[arg(short, long)]
+        force: bool,
     },
 }
 
@@ -333,12 +338,8 @@ async fn main() -> Result<()> {
                     println!("{}", "Accessing your development gateway...".cyan().bold());
                     gateway::handle_gateway(&config_manager, include_inactive).await?;
                 }
-                GatewayAction::Create { name, dir } => {
-                    println!("{}", format!(" Creating new gateway: {}...", name).cyan().bold());
-                    gateway::handle_gateway_create(&config_manager, name, dir).await?;
-                }
-                GatewayAction::Disconnect { project } => {
-                    println!("{}", "Disconnecting from project...".cyan().bold());
+                GatewayAction::Release { project } => {
+                    println!("{}", "Releasing gateway...".cyan().bold());
                     beam::handle_disconnect(&config_manager, project).await?;
                 }
             }
@@ -361,11 +362,11 @@ async fn main() -> Result<()> {
             println!("{}", format!("Initializing {}...", project_name).cyan().bold());
             
             // Create the gateway/project (CRITICAL FIX: Properly handle errors)
-            match gateway::handle_gateway_create(&config_manager, project_name.clone(), current_dir).await {
+            match gateway::handle_gateway_create(&config_manager, project_name.clone(), current_dir.clone()).await {
                 Ok(_project) => {
                     // Automatically beam into the newly created project
                     println!("\n{}", "Automatically beaming into your new project...".cyan().bold());
-                    if let Err(e) = beam::handle_beam(&config_manager, project_name, None, None, false).await {
+                    if let Err(e) = beam::handle_beam(&config_manager, project_name, Some(current_dir), false).await {
                         print_api_error(&format!("Failed to beam into project: {}", e));
                         print_info("You can manually beam into your project later.");
                     }
@@ -376,7 +377,7 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        Commands::Beam { project, rift, local_dir } => {
+        Commands::Beam { project, local_dir } => {
             // Validate authentication before beam operations
             if let Err(e) = validate_authentication(&config_manager).await {
                 print_auth_error(&e.to_string());
@@ -384,7 +385,7 @@ async fn main() -> Result<()> {
             }
 
             println!("{}", format!("Beaming into {}...", project).cyan().bold());
-            beam::handle_beam(&config_manager, project, rift, local_dir, false).await?;
+            beam::handle_beam(&config_manager, project, local_dir, false).await?;
         }
         Commands::Status => {
             // Validate authentication before status operations
@@ -396,15 +397,26 @@ async fn main() -> Result<()> {
             println!("{}", "Checking sync status...".cyan().bold());
             sync::handle_status(&config_manager).await?;
         }
-        Commands::Checkpoint { message } => {
+        Commands::Checkpoint { action, name } => {
             // Validate authentication before checkpoint operations
             if let Err(e) = validate_authentication(&config_manager).await {
                 print_auth_error(&e.to_string());
                 return Ok(());
             }
 
-            println!("{}", "Creating checkpoint...".cyan().bold());
-            sync::handle_checkpoint(&config_manager, Some(message)).await?;
+            match action {
+                Some(CheckpointAction::Delete { checkpoint_id, force }) => {
+                    sync::handle_delete_checkpoint(&config_manager, checkpoint_id, force).await?;
+                }
+                None => {
+                    let checkpoint_name = match name {
+                        Some(name) => name,
+                        None => default_checkpoint_name().await,
+                    };
+                    println!("{}", "Creating checkpoint...".cyan().bold());
+                    sync::handle_checkpoint(&config_manager, Some(checkpoint_name)).await?;
+                }
+            }
         }
         Commands::Sync => {
             println!("{}", "Syncing with remote Mothership...".cyan().bold());
@@ -499,6 +511,9 @@ async fn main() -> Result<()> {
                 }
                 RiftAction::Diff { from, to } => {
                     handle_rift_diff_command(from, to).await?;
+                }
+                RiftAction::Purge => {
+                    handle_rift_purge_command()?;
                 }
                 RiftAction::Chat { action } => match action {
                     ChatAction::Send { rift, message } => {
@@ -1113,23 +1128,45 @@ fn in_project(rift: &RiftInfo, project_id: Option<Uuid>) -> bool {
     }
 }
 
+/// Default checkpoint name: "<rift> <YYYY-MM-DD HH:MM>" in local time
+async fn default_checkpoint_name() -> String {
+    let rift = get_current_rift()
+        .await
+        .ok()
+        .flatten()
+        .map(|r| r.name)
+        .unwrap_or_else(|| "main".to_string());
+    format!("{} {}", rift, chrono::Local::now().format("%Y-%m-%d %H:%M"))
+}
+
 /// The rift this project directory is currently on, from local metadata
 async fn get_current_rift() -> Result<Option<RiftInfo>> {
     let metadata = get_current_project_metadata()?;
     let project_id = local_project_id();
 
     let rifts = get_rifts().await?;
-    let found = match (&metadata.current_rift, &metadata.rift_id) {
-        (Some(name), _) => rifts
-            .into_iter()
-            .find(|r| &r.name == name && in_project(r, project_id)),
-        (None, Some(rift_id)) => {
-            let rift_id = Uuid::parse_str(rift_id).ok();
-            rifts.into_iter().find(|r| Some(r.id) == rift_id)
+    if let Some(rift_id_str) = &metadata.rift_id {
+        if let Ok(rift_id) = Uuid::parse_str(rift_id_str) {
+            if let Some(found) = rifts.iter().find(|r| r.id == rift_id) {
+                return Ok(Some(RiftInfo {
+                    id: found.id,
+                    project_id: found.project_id,
+                    name: found.name.clone(),
+                    description: found.description.clone(),
+                    created_at: found.created_at,
+                    author: found.author.clone(),
+                    file_count: found.file_count,
+                    is_conflict_rift: found.is_conflict_rift,
+                }));
+            }
         }
-        (None, None) => None,
-    };
-    Ok(found)
+    }
+    if let Some(name) = &metadata.current_rift {
+        return Ok(rifts
+            .into_iter()
+            .find(|r| &r.name == name && in_project(r, project_id)));
+    }
+    Ok(None)
 }
 
 /// Switch to a different rift
@@ -1187,12 +1224,11 @@ async fn switch_to_rift(rift_name: &str) -> Result<()> {
         .map(|r| r.id);
     update_local_rift_metadata(rift_name, rift_id)?;
 
-    // The daemon keeps its WebSocket on the rift it opened, so point it at the new one
+    // Ensure the daemon is running and reconnects so local files are updated to the new rift
     if let Some(project_id) = local_project_id() {
-        let url = format!("http://localhost:7525/projects/{}/reconnect", project_id);
-        match reqwest::Client::new().post(&url).send().await {
-            Ok(resp) if resp.status().is_success() => {}
-            _ => println!("Daemon not reachable; background sync will use '{}' after the next beam", rift_name),
+        let _ = beam::ensure_daemon_running().await;
+        if let Err(e) = mothership_common::daemon::reconnect_project(project_id).await {
+            println!("Daemon reconnect warning: {e}");
         }
     }
     
@@ -1238,6 +1274,56 @@ async fn get_rift_diffs(from_rift: &str, to_rift: &str) -> Result<Vec<RiftDiff>>
     
     let diffs = api_response.data.ok_or_else(|| anyhow!("No diff data received"))?;
     Ok(diffs)
+}
+
+/// List every local backup file in the current project with size and modified time, then delete them all on confirmation
+fn handle_rift_purge_command() -> Result<()> {
+    let current_dir = std::env::current_dir()?;
+    let mothership_dir = current_dir.join(".mothership");
+    if !mothership_dir.join("project.json").exists() {
+        return Err(anyhow!("Not in a Mothership project directory."));
+    }
+
+    let backup_root = mothership_dir.join("local-backup");
+    let mut entries: Vec<(PathBuf, u64, Option<std::time::SystemTime>)> = Vec::new();
+    if backup_root.exists() {
+        for entry in walkdir::WalkDir::new(&backup_root).into_iter().filter_map(|e| e.ok()) {
+            if entry.file_type().is_file() {
+                let meta = entry.metadata()?;
+                let rel = entry.path().strip_prefix(&backup_root).unwrap_or(entry.path()).to_path_buf();
+                entries.push((rel, meta.len(), meta.modified().ok()));
+            }
+        }
+    }
+
+    if entries.is_empty() {
+        println!("{}", "No local backups in this project.".green());
+        return Ok(());
+    }
+
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    let total: u64 = entries.iter().map(|(_, size, _)| *size).sum();
+    println!("{}", "Local backups:".cyan().bold());
+    for (rel, size, modified) in &entries {
+        let modified = modified
+            .map(|t| DateTime::<chrono::Local>::from(t).format("%Y-%m-%d %H:%M:%S").to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        println!("  {:>10} bytes  {}  {}", size, modified, rel.display());
+    }
+    println!("{} file(s), {} bytes total", entries.len(), total);
+
+    print!("Purge all {} backup file(s)? [y/n]: ", entries.len());
+    std::io::stdout().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    if !answer.trim().eq_ignore_ascii_case("y") {
+        println!("{}", "Purge cancelled. Backups kept.".yellow());
+        return Ok(());
+    }
+
+    std::fs::remove_dir_all(&backup_root)?;
+    println!("{}", format!("Purged {} backup file(s).", entries.len()).green().bold());
+    Ok(())
 }
 
 /// Helper function to get current project metadata
@@ -1323,8 +1409,11 @@ async fn handle_daemon_restart() -> Result<()> {
 }
 
 async fn handle_sync_internal() -> Result<()> {
-    let _project_metadata = get_current_project_metadata()?;
-    // ... existing code ...
+    let project_metadata = get_current_project_metadata()?;
+    let project_id = Uuid::parse_str(&project_metadata.project_id)?;
+    beam::ensure_daemon_running().await?;
+    mothership_common::daemon::reconnect_project(project_id).await?;
+    print_success("Synchronized local project with active rift on server!");
     Ok(())
 }
 
@@ -1373,14 +1462,12 @@ fn print_verbose_help() {
     
     print_command_section("", "gateway", "Project Management", &[
         ("list", "List available projects", Some("--include-inactive")),
-        ("create", "Create a new project", Some("<name> --dir <path>")),
-        ("disconnect", "Stop tracking a project", Some("[project]")),
+        ("release", "Stop tracking a gateway", Some("[project]")),
     ]);
     
     print_command_section("", "beam", "Project Development", &[]);
-    println!("    {} {}", "mothership beam".green().bold(), "<project> [OPTIONS]".white());
-    println!("    {} {}", "   --rift".bright_blue(), "<name>                Specify rift to join".dimmed());
-    println!("    {} {}", "   --local-dir".bright_blue(), "<path>           Local directory for project".dimmed());
+    println!("    {} {}", "mothership beam".green().bold(), "<gateway> [OPTIONS]".white());
+    println!("    {} {}", "   -l, --local-dir".bright_blue(), "<path>     Local directory for project".dimmed());
     println!();
     
     print_command_section("", "status", "Project Status", &[]);
@@ -1388,7 +1475,10 @@ fn print_verbose_help() {
     println!();
     
     print_command_section("", "checkpoint", "Version Control", &[]);
-    println!("    {} {}", "mothership checkpoint".green().bold(), "<message>        Create a checkpoint".dimmed());
+    println!("    {} {}", "mothership checkpoint".green().bold(), "[-m <message>]  Create a checkpoint".dimmed());
+    println!("    {} {}", "   --message".bright_blue(), "<message>          Message (default: \"<rift> <date time>\")".dimmed());
+    println!("    {} {}", "mothership checkpoint delete".green().bold(), "<checkpoint-id>".dimmed());
+    println!("    {} {}", "   --force".bright_blue(), "                       Skip confirmation".dimmed());
     println!();
     
     print_command_section("", "sync", "Synchronization", &[]);
@@ -1468,7 +1558,7 @@ fn print_verbose_help() {
     println!("    {} {}", "mothership gateway list".green(), "                   # List available projects".dimmed());
     println!("    {} {}", "mothership beam my-project".green(), "                # Join a project".dimmed());
     println!("    {} {}", "mothership rift new feature-branch".green(), "        # Create a new rift".dimmed());
-    println!("    {} {}", "mothership checkpoint \"Added new feature\"".green(), "   # Save progress".dimmed());
+    println!("    {} {}", "mothership checkpoint -m \"Feature works\"".green(), "   # Save progress".dimmed());
     println!("    {} {}", "mothership daemon status".green(), "                  # Check background sync".dimmed());
     println!();
     
@@ -1479,7 +1569,7 @@ fn print_verbose_help() {
     println!("    {} {}", "4.".bright_cyan().bold(), "mothership beam <project>       # Join project");
     println!("    {} {}", "5.".bright_cyan().bold(), "mothership rift new <branch>    # Create workspace");
     println!("    {} {}", "6.".bright_cyan().bold(), "Edit files...                   # Work on your code");
-    println!("    {} {}", "7.".bright_cyan().bold(), "mothership checkpoint <msg>     # Save progress");
+    println!("    {} {}", "7.".bright_cyan().bold(), "mothership checkpoint [-m <message>] # Save progress");
     println!();
     
     println!("{}", "For more information, visit: https://mothership.dev/docs".bright_blue().underline());

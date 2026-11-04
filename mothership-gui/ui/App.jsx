@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { ask, open } from '@tauri-apps/plugin-dialog'
+import { ask } from '@tauri-apps/plugin-dialog'
 import TerminalTab from './TerminalTab.jsx'
 import Hub from './Hub.jsx'
 import Explorer from './Explorer.jsx'
@@ -19,7 +19,32 @@ export default function App() {
   const activeFile = tabs.find((t) => t.key === activeKey)?.file ?? null
   const [gateway, setGateway] = useState(null)
   const [riftVersion, setRiftVersion] = useState(0)
-  const bumpRift = () => setRiftVersion((v) => v + 1)
+  const bumpRift = () => {
+    setRiftVersion((v) => v + 1)
+    // The daemon has already synced the new rift's files, so open editors re-read them.
+    invoke('nvim_reload_files').catch((err) => setNotice(`Editor refresh failed: ${err}`))
+  }
+  const [explorerBeamed, setExplorerBeamed] = useState(null)
+
+  // Files are only browsable while the daemon tracks the folder; otherwise edits would not sync.
+  useEffect(() => {
+    if (!explorerRoot) {
+      setExplorerBeamed(false)
+      return
+    }
+    let cancelled = false
+    setExplorerBeamed(null)
+    invoke('explorer_is_beamed', { path: explorerRoot })
+      .then((res) => {
+        if (!cancelled) setExplorerBeamed(res)
+      })
+      .catch(() => {
+        if (!cancelled) setExplorerBeamed(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [explorerRoot, view, riftVersion])
 
   const changeExplorerRoot = (path) => {
     localStorage.setItem(EXPLORER_ROOT_KEY, path)
@@ -63,14 +88,10 @@ export default function App() {
     addTab({ file: path, cwd: null, title: name })
   }
 
-  const pickFile = async () => {
-    const path = await open({ multiple: false, directory: false })
-    if (typeof path === 'string') await openFile(path)
-  }
-
   const openTerminal = () => {
     const folder = explorerRoot ? explorerRoot.split(/[\\/]/).filter(Boolean).pop() : null
     addTab({ kind: 'shell', cwd: explorerRoot ?? null, title: folder ? `terminal: ${folder}` : 'terminal' })
+    setView('editor')
   }
 
   const closeTab = async (tab) => {
@@ -123,8 +144,6 @@ export default function App() {
           Editor
         </button>
         <span className="toolbar-sep" />
-        <button onClick={pickFile}>Open file…</button>
-        <button onClick={() => addTab({ title: 'nvim' })}>New Neovim</button>
         <button onClick={openTerminal}>New Terminal</button>
         <span className="toolbar-sep" />
         <ActiveRiftBar gateway={gateway} version={riftVersion} />
@@ -137,18 +156,19 @@ export default function App() {
         </div>
       )}
 
-      {view === 'hub' && (
+      <div style={{ display: view === 'hub' ? 'flex' : 'none', flexDirection: 'column', flex: 1, minHeight: 0 }}>
         <Hub
           onOpenInEditor={openProjectFolder}
           onGatewayChange={setGateway}
           onRiftChanged={bumpRift}
         />
-      )}
+      </div>
 
       <div className="editor-view" style={{ display: view === 'editor' ? 'flex' : 'none' }}>
       <Explorer
         root={explorerRoot}
-        onRootChange={changeExplorerRoot}
+        beamed={explorerBeamed}
+        refreshKey={riftVersion}
         openFile={openFile}
         activeFile={activeFile}
       />
@@ -189,6 +209,7 @@ export default function App() {
             active={tab.key === activeKey}
             onExit={removeTab}
             onFailed={failTab}
+            onError={(message) => setNotice(message)}
           />
         ))}
       </main>

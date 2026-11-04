@@ -772,7 +772,6 @@ async fn ghostid_auth_page(State(state): State<crate::AppState>) -> Result<Html<
 /// Generate QR code image for GhostID authentication
 async fn ghostid_qr_page(
     Path(challenge_id): Path<String>,
-    State(state): State<crate::AppState>,
 ) -> impl IntoResponse {
     // Get the challenge data via internal API
     match crate::qr_auth::get_qr_status(Path(challenge_id.clone())).await {
@@ -961,7 +960,6 @@ async fn ghostid_poll_status(
 
 /// Handle callback from GhostID Chain after mobile authentication
 async fn ghostid_auth_callback(
-    State(state): State<crate::AppState>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
     Json(callback_data): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
@@ -985,7 +983,7 @@ async fn ghostid_auth_callback(
             StatusCode::BAD_REQUEST
         })?;
     
-    let signature = callback_data.get("signature")
+    let _signature = callback_data.get("signature")
         .and_then(|v| v.as_str())
         .ok_or_else(|| {
             error!("Missing 'signature' field in callback data");

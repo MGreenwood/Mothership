@@ -4,14 +4,14 @@ A Tauri 2 desktop hub for Mothership. It runs the real Neovim binary in embedded
 
 ## Features
 
-- **Embedded Neovim**: Each explorer click or "New Neovim" opens its own `nvim` process in an xterm.js tab, backed by a ConPTY. The user's normal Neovim config loads, and nothing is passed like `-u NONE`.
+- **Embedded Neovim**: Each explorer click opens its own `nvim` process in an xterm.js tab, backed by a ConPTY. The user's normal Neovim config loads, and nothing is passed like `-u NONE`.
 - **Embedded terminal**: "New Terminal" opens a PowerShell tab in the explorer's current folder, on the same ConPTY. Closing it kills the shell without an unsaved-changes check.
 - **Tab handling**: Opening a file that is already open switches to its tab. Closing a tab with unsaved buffers asks for confirmation. Closing quits that Neovim process.
 - **Open guards**: Files over 500 KB, binary extensions, and files with NUL bytes in their first 8 KB are refused with a message.
-- **Explorer**: A tree view of the chosen root. Folders come first, and `.git`, `node_modules`, and `target` are skipped.
+- **Explorer**: A tree view of the chosen root, shown only while the daemon tracks that folder (beamed in). Folders come first, and `.git`, `node_modules`, and `target` are skipped.
 - **Top bar**: Shows the selected gateway and the rift its local folder is beamed into, or "Not local" or "Not beamed into a rift". It stays visible in every view.
 - **Gateways**: Create, init, delete, and beam. Each gateway shows whether it is local (green) or remote-only (red). Beam downloads the gateway and overwrites existing local files, matching the CLI.
-- **Rifts**: List, create, and switch. Switch moves the server to the rift, updates the local project's `.mothership/project.json`, and tells the daemon to reconnect. If the daemon is not running, the local folder is left unchanged and the message says so.
+- **Rifts**: List, create, and switch. Switch moves the server to the rift, updates the local project's `.mothership/project.json`, and tells the daemon to reconnect. If the daemon is not running, the local folder is left unchanged and the message says so. After a switch (or a beam), open Neovim sessions re-read changed files and the explorer reloads. Unsaved buffer edits are kept, and Neovim warns about the conflict.
 - **Checkpoints**: Create and list.
 - **Wormholes**: Create (two or more rifts), list, show, resolve conflicts, converge, dissolve, and watch (polls every 3 s). An active wormhole can be beamed to a snapshot folder it picks. The daemon removes that snapshot once the wormhole is dissolved or converted, provided the folder's marker still matches. A converged wormhole shows "Beam converted rift", which beams the rift it created through the same flow as the gateway Beam button.
 - **Daemon panel**: Shows status, tracked gateways, and server connection. Start, stop, and restart are available. The GUI starts the daemon on launch if it is not already running. The daemon also cleans up registered snapshots every 60 s.
@@ -56,7 +56,7 @@ cargo build -p mothership-gui   # binary in target\debug\mothership-gui.exe
 2. **Start the app**: run `npm run build` in `mothership-gui`, then `cargo run -p mothership-gui`. No Vite server is needed.
 3. **Sign in**: click Sign in. The browser shows a code. Paste it into the GUI.
 4. **Gateways and rifts**: pick a gateway to see its rifts, checkpoints, and wormholes. Beam downloads a gateway into a local folder. The top bar shows which rift that folder is beamed into.
-5. **Explorer and Neovim**: the explorer starts empty. Open a folder from the explorer to browse it, and the choice is remembered. Click a file to open it in Neovim. Click "New Neovim" to open an empty Neovim tab. Click "New Terminal" to open a PowerShell tab starting in the explorer's current folder.
+5. **Explorer and Neovim**: the explorer lists files only for a folder the daemon is tracking. Beam into a project from the Hub and it opens in the explorer. Click a file to open it in Neovim. Click "New Terminal" to switch to the editor with a PowerShell tab open in the explorer's current folder.
 6. **Wormholes**: create one from two or more rifts. Resolve conflicts with the per-side Use buttons. Converge is disabled while conflicts remain, and the server returns 409 if you try anyway.
 7. **Daemon**: the GUI starts the daemon if it is not running. Stop and restart use the daemon's `/shutdown` route and then start it again.
 
@@ -72,8 +72,8 @@ Backend (`src/`):
 
 - `main.rs`: Tauri setup, plugins, and the `generate_handler!` command list.
 - `hub.rs`: Hub commands for auth, gateways (projects in the API), rifts, checkpoints, server info, daemon control, wormholes, beam, and the active-rift lookup for the top bar.
-- `nvim.rs`: Neovim and shell sessions on ConPTY (`portable-pty`). Guards open. Close polls `try_wait`, because the ConPTY output pipe can stay open after nvim exits. `terminal_open` and `terminal_close` handle shell tabs.
-- `explorer.rs`: `explorer_list_dir`, which returns folders first and skips noise directories.
+- `nvim.rs`: Neovim and shell sessions on ConPTY (`portable-pty`). Guards open. Close polls `try_wait`, because the ConPTY output pipe can stay open after nvim exits. `terminal_open` and `terminal_close` handle shell tabs. `nvim_reload_files` sends `:checktime` to each Neovim session over its RPC pipe.
+- `explorer.rs`: `explorer_list_dir`, which returns folders first and skips noise directories, and `explorer_is_beamed`, which reports whether the daemon tracks the folder.
 
 Frontend (`ui/`):
 

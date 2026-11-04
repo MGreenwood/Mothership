@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { open } from '@tauri-apps/plugin-dialog'
 
 function TreeNode({ entry, depth, openFile, activeFile }) {
   const [expanded, setExpanded] = useState(false)
@@ -57,7 +56,7 @@ function TreeNode({ entry, depth, openFile, activeFile }) {
   )
 }
 
-export default function Explorer({ root, onRootChange, openFile, activeFile }) {
+export default function Explorer({ root, beamed, refreshKey, openFile, activeFile }) {
   const [entries, setEntries] = useState([])
   const [error, setError] = useState(null)
 
@@ -72,13 +71,17 @@ export default function Explorer({ root, onRootChange, openFile, activeFile }) {
   }, [])
 
   useEffect(() => {
-    if (root) loadRoot(root)
-  }, [root, loadRoot])
+    if (root && beamed) {
+      loadRoot(root)
+    } else {
+      setEntries([])
+      setError(null)
+    }
+  }, [root, beamed, refreshKey, loadRoot])
 
-  const chooseFolder = async () => {
-    const path = await open({ multiple: false, directory: true })
-    if (typeof path === 'string') onRootChange(path)
-  }
+  let hint = null
+  if (!root) hint = 'Open a folder to browse its files.'
+  else if (beamed === false) hint = 'Beam into this project to browse its files. Files outside a beamed rift are not synced.'
 
   return (
     <aside className="explorer">
@@ -86,20 +89,20 @@ export default function Explorer({ root, onRootChange, openFile, activeFile }) {
         <span className="explorer-title" title={root ?? ''}>
           {root ? root.split(/[\\/]/).filter(Boolean).pop() : 'Explorer'}
         </span>
-        <button onClick={chooseFolder}>Open folder…</button>
       </div>
       <div className="explorer-tree">
-        {!root && <p className="explorer-hint">Open a folder to browse its files.</p>}
+        {hint && <p className="explorer-hint">{hint}</p>}
         {error && <p className="explorer-hint error">{error}</p>}
-        {entries.map((entry) => (
-          <TreeNode
-            key={entry.path}
-            entry={entry}
-            depth={0}
-            openFile={openFile}
-            activeFile={activeFile}
-          />
-        ))}
+        {beamed &&
+          entries.map((entry) => (
+            <TreeNode
+              key={entry.path}
+              entry={entry}
+              depth={0}
+              openFile={openFile}
+              activeFile={activeFile}
+            />
+          ))}
       </div>
     </aside>
   )

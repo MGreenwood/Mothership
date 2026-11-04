@@ -7,7 +7,7 @@ const errText = (e) => (typeof e === 'string' ? e : e?.message ?? String(e))
 
 const WATCH_INTERVAL_MS = 3000
 
-export default function WormholePanel({ project, rifts, onBeamRift }) {
+export default function WormholePanel({ project, rifts, onRiftsChanged, onBeamRift }) {
   const [wormholes, setWormholes] = useState([])
   const [activeId, setActiveId] = useState(null)
   const [detail, setDetail] = useState(null)
@@ -129,6 +129,7 @@ export default function WormholePanel({ project, rifts, onBeamRift }) {
       setConvergeName('')
       await loadList()
       await loadDetail(activeId)
+      await onRiftsChanged?.()
       succeed(
         `Converged into rift "${res.rift_name}": ${res.files_written} file(s) written, ${res.files_removed} removed`,
       )

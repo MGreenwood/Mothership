@@ -116,16 +116,30 @@ impl IpcServer {
     pub async fn start(self) -> Result<()> {
         info!("Starting Mothership Daemon IPC server on port 7525...");
 
+        let state = Arc::new(self);
+
+        // Restore previously tracked projects across daemon restarts
+        {
+            let restore_state = state.clone();
+            tokio::spawn(async move {
+                for proj in crate::daemon::load_persisted_projects() {
+                    info!("Restoring persisted tracked project '{}' at {}", proj.project_name, proj.project_path.display());
+                    let _ = register_project_internal(&restore_state, proj.project_id, proj.project_name, proj.project_path).await;
+                }
+            });
+        }
+
         let app = Router::new()
             .route("/health", get(health_check))
             .route("/status", get(get_status))
             .route("/projects", get(list_projects))
             .route("/projects/add", post(add_project))
             .route("/projects/:id/remove", post(remove_project))
+            .route("/projects/:id/pause", post(pause_project))
             .route("/projects/:id/reconnect", post(reconnect_project))
             .route("/snapshots/register", post(register_snapshot))
             .route("/shutdown", post(shutdown_daemon))
-            .with_state(Arc::new(self));
+            .with_state(state);
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:7525").await?;
         info!("IPC server listening on http://127.0.0.1:7525");
@@ -159,109 +173,127 @@ async fn list_projects(State(server): State<Arc<IpcServer>>) -> Json<ApiResponse
     Json(ApiResponse::success(project_list))
 }
 
+/// Internal helper to register/re-register a project with file watcher and WebSocket sync
+async fn register_project_internal(
+    server: &Arc<IpcServer>,
+    project_id: Uuid,
+    project_name: String,
+    project_path: PathBuf,
+) -> std::result::Result<String, String> {
+    if !project_path.exists() {
+        return Err(format!("Project path does not exist: {}", project_path.display()));
+    }
+    let mothership_dir = project_path.join(".mothership");
+    if !mothership_dir.exists() {
+        return Err(format!("No .mothership directory found at: {}", project_path.display()));
+    }
+
+    // Drain any existing WebSocket listener for this project before replacing
+    let old_listener = server.websocket_listeners.write().await.remove(&project_id);
+    server.outgoing_channels.write().await.remove(&project_id);
+    if let Some(handle) = old_listener {
+        let abort = handle.abort_handle();
+        if tokio::time::timeout(std::time::Duration::from_secs(5), handle).await.is_err() {
+            abort.abort();
+        }
+    }
+
+    let tracked_project = TrackedProject {
+        project_id,
+        project_name: project_name.clone(),
+        project_path: project_path.clone(),
+        added_at: chrono::Utc::now(),
+    };
+
+    {
+        let mut projects = server.tracked_projects.write().await;
+        projects.insert(project_id, tracked_project);
+        crate::daemon::save_persisted_projects(&projects);
+    }
+
+    {
+        let mut status = server.status.write().await;
+        status.projects_tracked = server.tracked_projects.read().await.len();
+    }
+
+    let file_watcher = crate::file_watcher::FileWatcher::new(
+        project_path.clone(),
+        project_id,
+        server.file_change_sender.clone(),
+    )
+    .await
+    .map_err(|e| format!("Failed to start file watcher for '{}': {}", project_name, e))?;
+
+    {
+        let mut watchers = server.file_watchers.write().await;
+        watchers.insert(project_id, file_watcher);
+    }
+
+    info!("File watcher started and stored for project '{}'", project_name);
+
+    // Start WebSocket listener and wait until initial RiftJoined sync completes
+    if let Err(e) = crate::daemon::MothershipDaemon::start_websocket_listener(
+        project_id,
+        server.tracked_projects.clone(),
+        server.status.clone(),
+        server.websocket_listeners.clone(),
+        server.outgoing_channels.clone(),
+        server.server_write_flags.clone(),
+        server.base_hashes.clone(),
+    )
+    .await
+    {
+        error!("Failed to start WebSocket listener for project {}: {}", project_id, e);
+    }
+
+    server.server_write_flags.write().await.remove(&project_id);
+
+    info!("Project '{}' added for tracking with active file watcher and WebSocket sync", project_name);
+    Ok(format!("Project '{}' successfully added for tracking", project_name))
+}
+
 /// Add a project for tracking
 async fn add_project(
     State(server): State<Arc<IpcServer>>,
     Json(req): Json<AddProjectRequest>,
 ) -> Result<Json<ApiResponse<String>>, StatusCode> {
     info!("Adding project for tracking: {} at {}", req.project_name, req.project_path.display());
-
-    // Validate project path exists
-    if !req.project_path.exists() {
-        let error_msg = format!("Project path does not exist: {}", req.project_path.display());
-        return Ok(Json(ApiResponse::error(error_msg)));
+    match register_project_internal(&server, req.project_id, req.project_name, req.project_path).await {
+        Ok(msg) => Ok(Json(ApiResponse::success(msg))),
+        Err(err) => Ok(Json(ApiResponse::error(err))),
     }
-    
-    // Validate .mothership directory exists (critical for file watcher)
-    let mothership_dir = req.project_path.join(".mothership");
-    if !mothership_dir.exists() {
-        let error_msg = format!("No .mothership directory found at: {}", req.project_path.display());
-        return Ok(Json(ApiResponse::error(error_msg)));
-    }
+}
 
-    // Create tracked project
-    let tracked_project = TrackedProject {
-        project_id: req.project_id,
-        project_name: req.project_name.clone(),
-        project_path: req.project_path.clone(),
-        added_at: chrono::Utc::now(),
-    };
-
-    // Add to registry
-    {
-        let mut projects = server.tracked_projects.write().await;
-        projects.insert(req.project_id, tracked_project);
+/// Flushes unsynced changes for a tracked project and pauses its watcher/WebSocket before re-beaming
+async fn pause_project(
+    State(server): State<Arc<IpcServer>>,
+    Path(project_id): Path<Uuid>,
+) -> Json<ApiResponse<String>> {
+    if !server.tracked_projects.read().await.contains_key(&project_id) {
+        return Json(ApiResponse::success("Project not currently tracked".to_string()));
     }
 
-    // Update daemon status
-    {
-        let mut status = server.status.write().await;
-        status.projects_tracked = server.tracked_projects.read().await.len();
-    }
+    crate::daemon::MothershipDaemon::flush_unsynced_project_files(
+        project_id,
+        &server.tracked_projects,
+        &server.outgoing_channels,
+        &server.base_hashes,
+    )
+    .await;
 
-    // CRITICAL FIX: Actually start file watcher for this project!
-    let file_watcher = match crate::file_watcher::FileWatcher::new(
-        req.project_path.clone(),
-        req.project_id,
-        server.file_change_sender.clone(),
-    ).await {
-        Ok(watcher) => watcher,
-        Err(e) => {
-            let error_msg = format!("Failed to start file watcher for '{}': {}", req.project_name, e);
-            return Ok(Json(ApiResponse::error(error_msg)));
-        }
-    };
-    
-    // CRITICAL: Store the file watcher to keep it alive!
-    {
-        let mut watchers = server.file_watchers.write().await;
-        watchers.insert(req.project_id, file_watcher);
-    }
-    
-    info!("File watcher started and stored for project '{}'", req.project_name);
+    server.server_write_flags.write().await.insert(project_id, true);
+    server.file_watchers.write().await.remove(&project_id);
 
-    // CRITICAL FIX: Start WebSocket listener for real-time sync
-    let websocket_handle = {
-        let project_id = req.project_id;
-        let tracked_projects = server.tracked_projects.clone();
-        let status = server.status.clone();
-        let websocket_listeners = server.websocket_listeners.clone();
-        let outgoing_channels = server.outgoing_channels.clone();
-        let server_write_flags = server.server_write_flags.clone();
-        let base_hashes = server.base_hashes.clone();
-        
-        tokio::spawn(async move {
-            info!("Starting WebSocket listener for project {}", project_id);
-            if let Err(e) = crate::daemon::MothershipDaemon::start_websocket_listener(
-                project_id,
-                tracked_projects,
-                status,
-                websocket_listeners,
-                outgoing_channels,
-                server_write_flags,
-                base_hashes,
-            ).await {
-                error!("Failed to start WebSocket listener for project {}: {}", project_id, e);
-            }
-        })
-    };
-    
-    // Store the WebSocket listener handle. Re-adding a tracked project (e.g. after a rift
-    // switch) must stop the previous listener, or it keeps syncing the old rift.
-    {
-        let mut listeners = server.websocket_listeners.write().await;
-        if let Some(previous) = listeners.insert(req.project_id, websocket_handle) {
-            previous.abort();
+    let old_listener = server.websocket_listeners.write().await.remove(&project_id);
+    server.outgoing_channels.write().await.remove(&project_id);
+    if let Some(handle) = old_listener {
+        let abort = handle.abort_handle();
+        if tokio::time::timeout(std::time::Duration::from_secs(10), handle).await.is_err() {
+            abort.abort();
         }
     }
-    
-    info!("WebSocket listener started for project '{}'", req.project_name);
 
-    info!("Project '{}' added for tracking with active file watcher and WebSocket sync", req.project_name);
-    Ok(Json(ApiResponse::success(format!(
-        "Project '{}' successfully added for tracking",
-        req.project_name
-    ))))
+    Json(ApiResponse::success(format!("Paused project {}", project_id)))
 }
 
 /// Restart a project's WebSocket so it picks up a changed rift_id from project.json
@@ -269,14 +301,56 @@ async fn reconnect_project(
     State(server): State<Arc<IpcServer>>,
     Path(project_id): Path<Uuid>,
 ) -> Json<ApiResponse<String>> {
+    // If the project is not currently in memory (e.g. after a daemon restart), try to locate and register it
     if !server.tracked_projects.read().await.contains_key(&project_id) {
-        return Json(ApiResponse::error(format!("Project {} is not tracked by the daemon", project_id)));
+        let found = crate::daemon::load_persisted_projects()
+            .into_iter()
+            .find(|p| p.project_id == project_id)
+            .map(|p| (p.project_name, p.project_path))
+            .or_else(|| {
+                let index = mothership_common::beam::index_local_projects(
+                    &mothership_common::beam::default_search_roots(),
+                );
+                let path = index.get(&project_id)?.clone();
+                let meta = mothership_common::beam::read_project_metadata(&path)?;
+                Some((meta.project_name, path))
+            });
+        match found {
+            Some((name, path)) => match register_project_internal(&server, project_id, name, path).await {
+                Ok(_) => return Json(ApiResponse::success(format!("Reconnected project {}", project_id))),
+                Err(e) => return Json(ApiResponse::error(e)),
+            },
+            None => {
+                return Json(ApiResponse::error(format!(
+                    "Project {} is not tracked by the daemon",
+                    project_id
+                )))
+            }
+        }
     }
 
-    {
-        let mut listeners = server.websocket_listeners.write().await;
-        if let Some(handle) = listeners.remove(&project_id) {
-            handle.abort();
+    // Flush any unsynced local file edits to the old rift before closing its WebSocket!
+    crate::daemon::MothershipDaemon::flush_unsynced_project_files(
+        project_id,
+        &server.tracked_projects,
+        &server.outgoing_channels,
+        &server.base_hashes,
+    )
+    .await;
+
+    // Close the old queue so its listener sends what is already queued, then stops.
+    // Waiting for it keeps those edits from being dropped, and the new listener's
+    // RiftJoined handler must not overwrite local files until they are sent.
+    let old_listener = server.websocket_listeners.write().await.remove(&project_id);
+    server.outgoing_channels.write().await.remove(&project_id);
+    if let Some(handle) = old_listener {
+        let abort = handle.abort_handle();
+        match tokio::time::timeout(std::time::Duration::from_secs(15), handle).await {
+            Ok(_) => {}
+            Err(_) => {
+                tracing::warn!("Old WebSocket for project {} did not drain in time; aborting it", project_id);
+                abort.abort();
+            }
         }
     }
 
@@ -328,9 +402,11 @@ async fn remove_project(
 
     let project_name = {
         let mut projects = server.tracked_projects.write().await;
-        projects.remove(&project_id)
+        let removed = projects.remove(&project_id)
             .map(|p| p.project_name)
-            .unwrap_or_else(|| project_id.to_string())
+            .unwrap_or_else(|| project_id.to_string());
+        crate::daemon::save_persisted_projects(&projects);
+        removed
     };
 
     // Update daemon status and check if we should shutdown
@@ -349,7 +425,10 @@ async fn remove_project(
         }
     }
 
-    // CRITICAL: Remove WebSocket listener to stop sync
+    // CRITICAL: Remove WebSocket listener and channels to stop sync
+    server.outgoing_channels.write().await.remove(&project_id);
+    server.base_hashes.write().await.retain(|(id, _), _| *id != project_id);
+    server.server_write_flags.write().await.remove(&project_id);
     {
         let mut listeners = server.websocket_listeners.write().await;
         if let Some(handle) = listeners.remove(&project_id) {
@@ -358,29 +437,11 @@ async fn remove_project(
         }
     }
 
-    info!("Project '{}' removed from tracking", project_name);
-    
-    // If no projects remain, automatically shutdown the daemon
-    if projects_remaining == 0 {
-        info!("No projects remaining - initiating automatic daemon shutdown...");
-        
-        // Schedule shutdown after a brief delay to allow response to be sent
-        tokio::spawn(async {
-            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-            info!("Auto-shutdown: No projects to track - daemon stopping...");
-            std::process::exit(0);
-        });
-        
-        Json(ApiResponse::success(format!(
-            "Project '{}' removed. No projects remaining - daemon will auto-shutdown in 1 second",
-            project_name
-        )))
-    } else {
-        Json(ApiResponse::success(format!(
-            "Project '{}' successfully removed from tracking ({} projects remaining)",
-            project_name, projects_remaining
-        )))
-    }
+    info!("Project '{}' removed from tracking ({} projects remaining)", project_name, projects_remaining);
+    Json(ApiResponse::success(format!(
+        "Project '{}' successfully removed from tracking ({} projects remaining)",
+        project_name, projects_remaining
+    )))
 }
 
 /// Shutdown the daemon gracefully

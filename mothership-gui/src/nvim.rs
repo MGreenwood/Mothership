@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -174,6 +175,8 @@ pub fn nvim_open(
     let mut cmd = CommandBuilder::new(nvim_program());
     cmd.arg("--listen");
     cmd.arg(&pipe);
+    cmd.arg("--cmd");
+    cmd.arg("set autoread backupcopy=yes noswapfile");
     if let Some(f) = &file {
         cmd.arg(f);
     }
@@ -334,6 +337,55 @@ pub async fn nvim_close(
             std::thread::sleep(Duration::from_millis(25));
         }
         Ok(false)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Normal mode, then enable `autoread` and `backupcopy=yes` so unmodified buffers reload silently.
+/// `checktime` re-reads files changed on disk. Buffers with unsaved edits keep them,
+/// and Neovim reports the conflict instead of overwriting.
+const RELOAD_KEYS: &str = r"<C-\><C-N>:set autoread backupcopy=yes<CR>:silent! checktime<CR>";
+
+/// Asks every open Neovim session to re-read files changed on disk, such as after a
+/// rift switch. Keys go through each session's RPC pipe, so the user's terminal input
+/// and cursor are left alone.
+#[tauri::command]
+pub async fn nvim_reload_files(sessions: State<'_, NvimSessions>) -> Result<(), String> {
+    let pipes: Vec<String> = sessions
+        .sessions
+        .lock()
+        .unwrap()
+        .values()
+        .filter(|s| !s.pipe.is_empty())
+        .map(|s| s.pipe.clone())
+        .collect();
+    if pipes.is_empty() {
+        return Ok(());
+    }
+    let program = nvim_program();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut failures = Vec::new();
+        for pipe in pipes {
+            let mut cmd = Command::new(&program);
+            cmd.args(["--server", &pipe, "--remote-send", RELOAD_KEYS]);
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+                cmd.creation_flags(CREATE_NO_WINDOW);
+            }
+            match cmd.output() {
+                Ok(out) if out.status.success() => {}
+                Ok(out) => failures.push(String::from_utf8_lossy(&out.stderr).trim().to_string()),
+                Err(e) => failures.push(e.to_string()),
+            }
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(format!("could not refresh {} editor session(s): {}", failures.len(), failures.join("; ")))
+        }
     })
     .await
     .map_err(|e| e.to_string())?

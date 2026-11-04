@@ -3,10 +3,30 @@
 
 use std::path::Path;
 
+use mothership_common::daemon;
 use serde::Serialize;
 
 /// Folders that are never useful to browse in the editor.
 const HIDDEN_NAMES: &[&str] = &[".git", "node_modules", "target"];
+
+/// True when the daemon is tracking a project whose folder contains `path`, so edits in it sync.
+/// An unreachable daemon counts as not beamed.
+#[tauri::command]
+pub async fn explorer_is_beamed(path: String) -> bool {
+    let Ok(tracked) = daemon::tracked_projects().await else {
+        return false;
+    };
+    tracked
+        .iter()
+        .any(|p| is_within(Path::new(&path), Path::new(&p.project_path)))
+}
+
+/// Compares canonical paths when both exist, so casing and relative segments don't matter.
+fn is_within(child: &Path, parent: &Path) -> bool {
+    let child = std::fs::canonicalize(child).unwrap_or_else(|_| child.to_path_buf());
+    let parent = std::fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
+    child.starts_with(parent)
+}
 
 #[derive(Serialize)]
 pub struct DirEntry {
@@ -68,6 +88,23 @@ mod tests {
         assert_eq!(entries[1].size, 1);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn folder_is_within_its_beamed_project() {
+        let root = std::env::temp_dir().join(format!("mothership-within-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let project = root.join("project");
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        let sibling = root.join("project-other");
+        std::fs::create_dir_all(&sibling).unwrap();
+
+        assert!(is_within(&project, &project));
+        assert!(is_within(&project.join("src"), &project));
+        assert!(!is_within(&sibling, &project));
+        assert!(!is_within(&root, &project));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
