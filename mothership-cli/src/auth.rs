@@ -64,7 +64,7 @@ async fn handle_oauth_auth(config_manager: &ConfigManager, provider: OAuthProvid
         callback_url: None,
     };
 
-    let client = reqwest::Client::new();
+    let client = crate::http_client();
     let response = client
         .post(&format!("{}/auth/oauth/start", server_url))
         .json(&oauth_request)
@@ -111,7 +111,7 @@ async fn handle_oauth_auth(config_manager: &ConfigManager, provider: OAuthProvid
     println!("{}", "Validating token with server...".dimmed());
 
     // Validate the token before saving
-    let client = reqwest::Client::new();
+    let client = crate::http_client();
     let response = client
         .get(&format!("{}/auth/check", server_url))
         .bearer_auth(access_token)
@@ -145,7 +145,7 @@ pub async fn try_auto_login(config_manager: &ConfigManager) -> Result<bool> {
     
     // Verify the token is still valid
     let server_url = get_server_url(config_manager)?;
-    let client = reqwest::Client::new();
+    let client = crate::http_client();
     let response = client
         .post(&format!("{}/auth/verify", server_url))
         .json(&creds.access_token)

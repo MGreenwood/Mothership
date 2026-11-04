@@ -150,34 +150,44 @@ impl SystemTray {
 
                 info!("Enhanced system tray icon created successfully");
 
-                // Track last menu update time and project count to avoid rebuilding too frequently
-                let mut last_menu_update = std::time::Instant::now();
-                let mut last_tooltip_update = std::time::Instant::now();
-                let mut last_project_count = 0;
+                // Track state to rebuild menu/tooltip only when status or projects actually change
+                let mut last_status_check = std::time::Instant::now();
+                let mut last_tooltip = initial_tooltip;
+                let mut last_project_ids: Vec<Uuid> = {
+                    let mut ids: Vec<Uuid> = tracked_projects.blocking_read().keys().copied().collect();
+                    ids.sort_unstable();
+                    ids
+                };
                 
                 // Run the event loop
                 let result = event_loop.run(move |_event, elwt| {
                     elwt.set_control_flow(ControlFlow::Wait);
 
-                    // Update tooltip every 5 seconds
-                    if last_tooltip_update.elapsed() > std::time::Duration::from_secs(5) {
-                        let current_status = status.blocking_read();
-                        let new_tooltip = get_dynamic_tooltip(&current_status);
-                        let _ = tray_icon.set_tooltip(Some(&new_tooltip));
-                        last_tooltip_update = std::time::Instant::now();
-                    }
+                    // Poll status and project changes at most every 5 seconds instead of every winit event,
+                    // and only update the tooltip or rebuild the menu when the state actually changed.
+                    if last_status_check.elapsed() > std::time::Duration::from_secs(5) {
+                        last_status_check = std::time::Instant::now();
 
-                    // Update menu only when projects change or after long intervals (1 minute)
-                    let current_project_count = tracked_projects.blocking_read().len();
-                    let should_update_menu = current_project_count != last_project_count 
-                        || last_menu_update.elapsed() > std::time::Duration::from_secs(60);
-                    
-                    if should_update_menu {
-                        let updated_menu = Self::build_context_menu(&status, &tracked_projects);
-                        let _ = tray_icon.set_menu(Some(Box::new(updated_menu)));
-                        last_menu_update = std::time::Instant::now();
-                        last_project_count = current_project_count;
-                        info!("System tray menu updated (projects: {})", current_project_count);
+                        let new_tooltip = {
+                            let current_status = status.blocking_read();
+                            get_dynamic_tooltip(&current_status)
+                        };
+                        if new_tooltip != last_tooltip {
+                            let _ = tray_icon.set_tooltip(Some(&new_tooltip));
+                            last_tooltip = new_tooltip;
+                        }
+
+                        let current_project_ids = {
+                            let mut ids: Vec<Uuid> = tracked_projects.blocking_read().keys().copied().collect();
+                            ids.sort_unstable();
+                            ids
+                        };
+                        if current_project_ids != last_project_ids {
+                            let updated_menu = Self::build_context_menu(&status, &tracked_projects);
+                            let _ = tray_icon.set_menu(Some(Box::new(updated_menu)));
+                            info!("System tray menu updated (projects: {})", current_project_ids.len());
+                            last_project_ids = current_project_ids;
+                        }
                     }
 
                     // Handle menu events

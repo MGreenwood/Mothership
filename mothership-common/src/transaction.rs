@@ -7,6 +7,7 @@ use crate::diff::DiffEngine;
 use crate::protocol::FileDiff;
 use crate::crdt::RiftCRDT;
 use anyhow::{Result, anyhow};
+#[cfg(test)]
 use sha2::{Sha256, Digest};
 
 /// Represents a multi-file transaction that ensures atomic changes across files
@@ -94,7 +95,7 @@ impl TransactionManager {
 
         let engine = DiffEngine::new();
         let diff = engine.generate_line_diff(current_content, new_content);
-        let _previous_hash = crypto_hash(current_content);
+        let _previous_hash = crate::content_hash(current_content);
 
         let file_state = FileState {
             path: path.clone(),
@@ -241,8 +242,17 @@ impl TransactionManager {
     }
 }
 
-fn crypto_hash(content: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(content.as_bytes());
-    format!("{:x}", hasher.finalize())
-} 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn content_hash_matches_legacy_crypto_hash() {
+        for sample in ["", "hello world", "fn main() {\n    println!(\"hi\");\n}\n"] {
+            let mut hasher = Sha256::new();
+            hasher.update(sample.as_bytes());
+            let legacy = format!("{:x}", hasher.finalize());
+            assert_eq!(crate::content_hash(sample), legacy);
+        }
+    }
+}

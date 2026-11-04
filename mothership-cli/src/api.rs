@@ -14,7 +14,7 @@ pub async fn get_rifts() -> Result<Vec<RiftInfo>> {
     let config = get_config()?;
     let url = format!("{}/api/rifts", config.server_url);
     
-    let response = reqwest::Client::new()
+    let response = crate::http_client()
         .get(&url)
         .header("Authorization", format!("Bearer {}", config.auth_token))
         .send()
@@ -29,7 +29,7 @@ pub async fn create_rift(name: &str, description: Option<String>) -> Result<Uuid
     let config = get_config()?;
     let url = format!("{}/api/rifts", config.server_url);
     
-    let response = reqwest::Client::new()
+    let response = crate::http_client()
         .post(&url)
         .header("Authorization", format!("Bearer {}", config.auth_token))
         .json(&serde_json::json!({
@@ -48,7 +48,7 @@ pub async fn switch_to_rift(rift_name: &str) -> Result<()> {
     let config = get_config()?;
     let url = format!("{}/api/rifts/switch", config.server_url);
     
-    reqwest::Client::new()
+    crate::http_client()
         .post(&url)
         .header("Authorization", format!("Bearer {}", config.auth_token))
         .json(&serde_json::json!({
@@ -73,7 +73,7 @@ pub async fn get_current_rift() -> Result<Option<RiftInfo>> {
         let config = get_config()?;
         let url = format!("{}/api/rifts/current", config.server_url);
         
-        let response = reqwest::Client::new()
+        let response = crate::http_client()
             .get(&url)
             .header("Authorization", format!("Bearer {}", config.auth_token))
             .send()
@@ -91,7 +91,7 @@ pub async fn get_rift_diffs(from: &str, to: &str) -> Result<Vec<RiftDiff>> {
     let config = get_config()?;
     let url = format!("{}/api/rifts/diff", config.server_url);
     
-    let response = reqwest::Client::new()
+    let response = crate::http_client()
         .get(&url)
         .header("Authorization", format!("Bearer {}", config.auth_token))
         .query(&[("from", from), ("to", to)])

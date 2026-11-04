@@ -34,33 +34,30 @@ Mothership is a **frictionless version control system** that eliminates the comp
 ## Key Features
 
 ### **Gateway System**
-- **Instant Project Discovery**: `mothership gateway list` shows all accessible projects with PostgreSQL persistence
-- **Intuitive Project Deployment**: `mothership deploy` creates projects in current directory
-- **Human-Readable Access**: Beam into projects by name with PostgreSQL lookups, not cryptic IDs
+- **Instant Project Discovery**: `mothership gateway list` shows all accessible projects with PostgreSQL persistence and single-pass pruned local project indexing
+- **Intuitive Project Initialization**: `mothership init` creates projects in the current directory and generates a default `.mothershipignore`
+- **Human-Readable Access**: Beam into projects by name or ID with PostgreSQL lookups
 - **Intelligent Project Creation**: Automatic `.mothership` metadata with PostgreSQL storage and nested gateway prevention
 
 ### **Production-Ready Authentication**
-- **OAuth Integration**: Complete Google OAuth flow with browser-based device authorization and PostgreSQL user persistence
-- **Cross-Platform GUI**: Tauri-based authentication app for seamless token management with database integration
+- **OAuth Integration**: Google and GitHub OAuth flows (`mothership auth google`, `mothership auth github`) with browser-based authorization and PostgreSQL user persistence
+- **Cross-Platform GUI**: Tauri-based desktop hub (`mothership-gui`) for managing projects, rifts, checkpoints, and wormholes
 - **JWT Security**: Machine certificates with automatic token refresh, validation, and PostgreSQL user recreation
 - **Multi-Role System**: User/Admin/SuperAdmin with PostgreSQL-backed secure role management and ACID compliance
 
 ### **Real-Time Collaboration Engine**
-- **INSTANT MULTI-USER SYNC**: Multiple developers in same rift with millisecond-latency synchronization
-- **WebSocket Broadcasting**: Live file content sharing via dedicated rift channels (`rift_{rift_id}`)
-- **Google Docs-Level Experience**: Real-time editing with automatic conflict detection
-- **Scalable Architecture**: Tokio async infrastructure supporting enterprise-level collaboration
-- **Perfect Isolation**: Team-specific broadcast channels for secure multi-project environments
-- **Live State Management**: Content-addressable storage with instant working state updates
+- **INSTANT MULTI-USER SYNC**: Multiple developers in the same rift with millisecond-latency synchronization
+- **Line-Diff & Full-Content Sync**: Incremental line diffs (`FileDiffChanged`) with base-hash verification, automatic fallback to full content, and chunked streaming for large files (>1 MB)
+- **Non-Destructive Conflict Handling**: Edits against a stale base are automatically preserved in a conflict rift and local overwrites are backed up under `.mothership/local-backup`
+- **Wormholes (Live Merge Previews)**: `mothership wormhole` lets teams preview, resolve, test (`wormhole beam`), watch, and converge merges across multiple rifts without mutating the source rifts
+- **Built-In Rift Chat**: `mothership rift chat` supports sending messages, viewing history, and interactive terminal chat within a rift
 
 ### **Developer Experience**
 - **One-Click Deployment**: `./start-docker.bat` launches complete PostgreSQL development environment
-- **Zero-Friction Beam**: `mothership beam <project>` automatically starts background daemon and enables file tracking
-- **Complete Daemon Management**: `mothership disconnect`, `mothership daemon status/stop/restart` for full lifecycle control
-- **Non-Blocking Console**: Beam command returns immediately while daemon handles background sync
-- **Intuitive Commands**: `mothership deploy` for project creation, `mothership gateway list` for discovery
-- **Clean Codebase**: 100% warning-free compilation with sqlx compile-time safety and professional standards
-- **Cross-Platform Support**: Windows, macOS, Linux with PostgreSQL persistence and automatic daemon spawning
+- **Zero-Friction Beam**: `mothership beam <project>` automatically starts the background daemon and enables file tracking
+- **Complete Daemon Management**: `mothership gateway release`, `mothership daemon status/stop/restart` for full lifecycle control
+- **Ignore-Aware Sync & Fast Discovery**: `.mothershipignore` rules prune `node_modules`, `target`, `.git`, and build artifacts across `init`, file watching, and daemon force-sync; local project discovery prunes ignored trees in a single walk
+- **Cross-Platform Support**: Windows, macOS, Linux with PostgreSQL persistence, shell completions, and automatic daemon spawning
 
 ## Quick Start
 
@@ -99,12 +96,13 @@ cargo install --path mothership-daemon
 ### Quick Start
 
 ```bash
-# Authenticate with your Mothership server
+# Connect to a Mothership server and authenticate
+mothership connect https://your-mothership-server.com
 mothership auth
 
-# Deploy a project in current directory
+# Initialize a project in the current directory
 cd your-project
-mothership deploy
+mothership init
 
 # Start real-time collaboration
 mothership beam "your-project"
@@ -140,32 +138,26 @@ cp .env.example .env
 # List all your accessible projects (stored in PostgreSQL)
 mothership gateway list
 
-# Deploy a new project in current directory (intuitive!)
+# Initialize a new project in the current directory
 cd my-awesome-project
-mothership deploy                                         # Uses directory name
-mothership deploy "My Application"       # Custom name
-
-# Set up a project in an existing directory (creates the gateway)
-mothership init
+mothership init                          # Uses directory name and creates .mothershipignore
+mothership init "My Application"         # Custom project name
 
 # Revolutionary zero-friction beam experience
 mothership beam "My Application"
 # Automatically starts background daemon if needed
-# Registers project for continuous file tracking  
+# Registers project for continuous file tracking
 # Returns console immediately - no blocking!
 
 # REAL-TIME COLLABORATION: Have a teammate run the same command!
 # Both of you will now see each other's changes instantly as you edit files
 
-# Complete daemon lifecycle management
-mothership daemon status                       # Show daemon status + tracked projects
-mothership disconnect "My Application"     # Remove project from tracking
-mothership daemon stop                         # Graceful daemon shutdown
-mothership daemon restart                   # Clean restart with fresh state
-
-# Smart auto-detection for disconnect
-cd my-application-directory
-mothership disconnect                           # Auto-detects current project
+# Complete daemon & gateway lifecycle management
+mothership daemon status                 # Show daemon status + tracked projects
+mothership gateway release "My Application" # Stop tracking project in daemon
+mothership gateway release               # Auto-detects current project directory
+mothership daemon stop                   # Graceful daemon shutdown
+mothership daemon restart                # Clean restart with fresh state
 ```
 
 ### **Testing Real-Time Collaboration**
@@ -205,16 +197,16 @@ Mothership consists of several key components:
 - **PostgreSQL Database**: Production-grade database with ACID compliance, relationships, and transaction safety
 - **Auth Server** (`auth-server/`): OAuth callback handler and browser-based authentication with database integration
 - **GUI Application** (`mothership-gui/`): Cross-platform desktop app for seamless OAuth with PostgreSQL user management
-- **CLI Tools** (`mothership-cli/`): Command-line interface with `deploy` command and PostgreSQL project discovery
+- **CLI Tools** (`mothership-cli/`): Command-line interface with `init`, `gateway`, `beam`, `rift`, and `wormhole` commands
 - **Real-Time Sync Engine**: **WebSocket broadcasting system enabling instant collaboration between multiple developers**
-- **Common Library** (`mothership-common/`): Shared types, protocols, and PostgreSQL models with sqlx safety
+- **Common Library** (`mothership-common/`): Shared types, protocols, diff/merge engines, `.mothershipignore` rules, and PostgreSQL models with sqlx safety
 
-## Current Status (January 2025)
+## Current Status
 
 ### **Phase 1: Foundation - COMPLETE**
 
 #### **Authentication System**
-- Complete OAuth flow with Google integration and PostgreSQL user persistence
+- Complete OAuth flow with Google and GitHub integration and PostgreSQL user persistence
 - Browser-based device authorization (ports 7523 + 3001) with database validation
 - JWT token management with automatic refresh and PostgreSQL user recreation
 - Cross-platform GUI for seamless authentication with database integration
@@ -222,7 +214,7 @@ Mothership consists of several key components:
 
 #### **Gateway Management**
 - Project creation and listing with human-readable names and PostgreSQL persistence
-- Intuitive `mothership deploy` command for current directory project creation
+- Intuitive `mothership init` command for current directory project creation and `.mothershipignore` generation
 - Intelligent `.mothership` metadata directory with PostgreSQL storage and relationships
 - Nested gateway prevention with helpful error messages and database validation
 - Local project tracking and PostgreSQL metadata persistence with ACID compliance
@@ -275,39 +267,65 @@ SyncMessage::FileUpdate {
 
 **Result**: Multiple developers beaming into same rift see each other's file changes **instantly**!
 
-## New Commands Available
+## CLI Commands Reference
 
-### **Project Management**
+### **Project & Gateway Management**
 ```bash
-mothership beam "project-name"                       # Start tracking project (auto-starts daemon)
-mothership disconnect "project-name"           # Stop tracking project      
-mothership disconnect                                           # Auto-detect and disconnect current project
+mothership init [name]                                # Initialize current directory as a project (writes .mothershipignore)
+mothership gateway list [--include-inactive]          # List all accessible projects and local status
+mothership beam [project] [--local-dir <path>]        # Beam into a project and start background sync
+mothership gateway release [project]                  # Stop background tracking for a project (defaults to current dir)
+mothership delete <project-name> [--force]            # Delete a project from the server
 ```
 
-### **Daemon Management**
+### **Rift & Checkpoint Management**
 ```bash
-mothership daemon status                                   # Show daemon status + tracked projects
-mothership daemon stop                                       # Gracefully stop background daemon
-mothership daemon restart                                 # Stop and restart daemon with fresh state
+mothership rift list [--detailed]                     # List rifts in the current project
+mothership rift new <name> [-d <description>]         # Create a new rift forked from the current rift
+mothership rift switch <name>                         # Switch local workspace and daemon to another rift
+mothership rift status                                # Show current rift status
+mothership rift diff [from] [to]                      # Compare changes between rifts
+mothership rift purge                                 # List and clean up .mothership/local-backup files
+mothership rift chat send -r <rift> <message...>      # Send a chat message to a rift
+mothership rift chat history -r <rift> [-l <limit>]   # View recent chat messages in a rift
+mothership rift chat enter [-r <rift>]                # Interactive live chat prompt
+mothership checkpoint [-m <message>]                  # Create a checkpoint on the current rift
+mothership checkpoint delete <checkpoint-id> [--force]# Delete a checkpoint
+mothership history [-l <limit>]                       # View checkpoint history
+mothership restore <checkpoint-id> [--force]          # Restore workspace to a checkpoint
 ```
 
-### **Project Setup**
+### **Wormholes (Live Multi-Rift Merge Previews)**
 ```bash
-mothership deploy                                                 # Deploy current directory as project
-mothership deploy "Custom Name"                     # Deploy with custom project name
-mothership gateway list                                     # List all accessible projects
+mothership wormhole create <name> <rift1> <rift2>...  # Create a live merge preview across two or more rifts
+mothership wormhole list                              # List wormholes in the current project
+mothership wormhole show <wormhole>                   # Inspect merged state and conflicts
+mothership wormhole resolve <wormhole> <path> <id> --side <rift> # Resolve a conflict by side, --text, or --file
+mothership wormhole beam <wormhole> [--dir <path>]    # Materialize merged files locally to build/test
+mothership wormhole watch <wormhole>                  # Stream live updates as source rifts change
+mothership wormhole converge <wormhole> [--name <n>]  # Create a new rift from the resolved wormhole
+mothership wormhole dissolve <wormhole>               # Archive a wormhole without creating a rift
 ```
 
-### **Real-Time Collaboration Testing**
+### **Daemon, Server & Account Management**
 ```bash
-# Developer A:
-mothership beam "team-project"
-# Edit src/main.rs
-
-# Developer B (different machine):  
-mothership beam "team-project"  
-# Watch src/main.rs update in real-time!
+mothership connect <server-url>                       # Connect to a Mothership server
+mothership server status                              # Show current server connection status
+mothership server list                                # List configured servers
+mothership server disconnect                          # Switch to local-only mode
+mothership auth [google|github]                       # Authenticate via OAuth
+mothership logout                                     # Clear stored credentials
+mothership daemon status                              # Show daemon status and tracked projects
+mothership daemon stop                                # Gracefully stop background daemon
+mothership daemon restart                             # Stop and restart daemon
+mothership status                                     # Show environment, server, and project status
+mothership sync                                       # Trigger manual synchronization
+mothership update [--check-only|--force|--list-versions|--version <v>] # Manage CLI updates
 ```
+
+### **Ignore Rules & Local Discovery Notes**
+- **`.mothershipignore`**: `mothership init` writes a default `.mothershipignore` (excluding `.git/`, `node_modules/`, `/target/`, `/dist/`, `/build/`, secrets, and binaries). Both the file watcher and daemon force-sync honor `.mothershipignore`, and `.mothership/` is always excluded.
+- **Local Project Discovery**: When resolving local projects (`mothership gateway list`, `mothership beam`), the CLI walks search roots (`cwd`, `%USERPROFILE%\mothership`, `%USERPROFILE%`) up to depth 3 and prunes `node_modules`, `target`, `.git`, dot-prefixed directories other than `.mothership`, and `AppData` so lookups stay fast. Projects stored inside those pruned directories will not be auto-discovered.
 
 ## Project Structure
 
@@ -352,9 +370,15 @@ cargo run --bin mothership -- auth
 # Run all tests
 cargo test
 
-# Run specific test suites
-cargo test --bin mothership-server
-cargo test --lib mothership-common
+# Run specific crate test suites
+cargo test -p mothership-common
+cargo test -p mothership-cli
+cargo test -p mothership-daemon
+cargo test -p mothership-server
+
+# Run release-mode performance/profiling benchmarks (ignored during normal test runs)
+cargo test -p mothership-cli --release profile_ -- --ignored --nocapture --test-threads=1
+cargo test -p mothership-daemon --release profile_ -- --ignored --nocapture --test-threads=1
 ```
 
 ### Docker Development
@@ -468,57 +492,4 @@ For commercial licensing options, please contact: **licensing@mothership.dev**
 
 ---
 
-**© 2025 Mothership Development Team. All Rights Reserved.**
-
-
-Authentication Commands
-auth - Authenticate with Mothership
-google - Google OAuth login
-github - GitHub OAuth login
-device - Legacy device authentication
-logout - Clear stored credentials
-
-Project Management
-gateway - Project management commands
-list - List available projects
-create - Create new project
-deploy - Deploy new project
-beam - Beam into a project
-project-disconnect - Stop tracking a project
-
-Sync & Version Control
-status - Check environment status
-checkpoint - Create a checkpoint
-sync - Sync with remote
-history - View project history
-restore - Restore to checkpoint
-delete - Delete project
-
-Server Management
-connect - Connect to a server
-server - Server operations
-status - Show connection status
-disconnect - Disconnect from server
-list - List configured servers
-
-Rift Management
-rifts - List all rifts
-create-rift - Create new rift
-switch-rift - Switch to different rift
-rift-status - Show current rift status
-rift-diff - Compare rifts
-
-Daemon Management
-daemon - Daemon operations
-status - Show daemon status
-stop - Stop daemon
-restart - Restart daemon
-
-Updates
-update - CLI update management
---check-only - Check for updates
---force - Force update
---list-versions - Show available versions
---version - Update to specific version
-
-Each command has its own set of options and flags for fine-tuned control. The diagram shows the hierarchical relationship between commands and their subcommands.
+**© 2025–2026 Mothership Development Team. All Rights Reserved.**

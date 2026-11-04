@@ -20,6 +20,9 @@ mod completion_shell;
 mod config;
 mod connections;
 mod gateway;
+#[cfg(test)]
+mod profiling;
+mod project_index;
 mod sync;
 mod update;
 mod wormhole;
@@ -577,10 +580,19 @@ async fn validate_authentication(config_manager: &ConfigManager) -> Result<()> {
     }
 }
 
-/// Helper function to get HTTP client with optional auth
+static HTTP: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+
+/// Process-wide shared HTTP client for requests that set headers per call.
+pub(crate) fn http_client() -> &'static reqwest::Client {
+    HTTP.get_or_init(reqwest::Client::new)
+}
+
+/// Helper function to get HTTP client with optional auth, caching the built client
+/// when the configuration (auth token) is unchanged.
 fn get_http_client(config: &ClientConfig) -> reqwest::Client {
-    let mut headers = reqwest::header::HeaderMap::new();
-    
+    static CACHED_CLIENT: std::sync::OnceLock<Mutex<Option<(Option<String>, reqwest::Client)>>> =
+        std::sync::OnceLock::new();
+
     // First try to get token from new OAuth credentials format
     let token = if let Some(oauth_token) = get_oauth_token() {
         Some(oauth_token)
@@ -588,8 +600,19 @@ fn get_http_client(config: &ClientConfig) -> reqwest::Client {
         // Fallback to old config format
         config.auth_token.clone()
     };
+
+    let cache = CACHED_CLIENT.get_or_init(|| Mutex::new(None));
+    if let Ok(guard) = cache.lock() {
+        if let Some((cached_token, cached_client)) = guard.as_ref() {
+            if *cached_token == token {
+                return cached_client.clone();
+            }
+        }
+    }
+
+    let mut headers = reqwest::header::HeaderMap::new();
     
-    if let Some(token) = token {
+    if let Some(ref token) = token {
         headers.insert(
             reqwest::header::AUTHORIZATION,
             reqwest::header::HeaderValue::from_str(&format!("Bearer {}", token))
@@ -597,10 +620,16 @@ fn get_http_client(config: &ClientConfig) -> reqwest::Client {
         );
     }
 
-    reqwest::Client::builder()
+    let client = reqwest::Client::builder()
         .default_headers(headers)
         .build()
-        .unwrap_or_else(|_| reqwest::Client::new())
+        .unwrap_or_else(|_| http_client().clone());
+
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some((token, client.clone()));
+    }
+
+    client
 }
 
 /// Helper function to get OAuth token from credentials.json
@@ -830,7 +859,7 @@ async fn handle_chat_send_command(rift: &str, content: &str) -> Result<()> {
     let rift_id = resolve_rift_id(rift).await?;
     let (server_url, auth_token) = chat_api_context()?;
 
-    let response = reqwest::Client::new()
+    let response = http_client()
         .post(format!("{}/api/rifts/{}/chat", server_url, rift_id))
         .header("Authorization", format!("Bearer {}", auth_token))
         .json(&serde_json::json!({ "content": content }))
@@ -854,7 +883,7 @@ async fn handle_chat_history_command(rift: &str, limit: i64) -> Result<()> {
     let rift_id = resolve_rift_id(rift).await?;
     let (server_url, auth_token) = chat_api_context()?;
 
-    let response = reqwest::Client::new()
+    let response = http_client()
         .get(format!("{}/api/rifts/{}/chat", server_url, rift_id))
         .query(&[("limit", limit)])
         .header("Authorization", format!("Bearer {}", auth_token))
@@ -888,7 +917,7 @@ async fn handle_chat_history_command(rift: &str, limit: i64) -> Result<()> {
 }
 
 async fn fetch_chat_messages(server_url: &str, auth_token: &str, rift_id: Uuid, limit: i64) -> Result<Vec<ChatMessage>> {
-    let response = reqwest::Client::new()
+    let response = http_client()
         .get(format!("{}/api/rifts/{}/chat", server_url, rift_id))
         .query(&[("limit", limit)])
         .header("Authorization", format!("Bearer {}", auth_token))
@@ -907,7 +936,7 @@ async fn fetch_chat_messages(server_url: &str, auth_token: &str, rift_id: Uuid, 
 }
 
 async fn post_chat_message(server_url: &str, auth_token: &str, rift_id: Uuid, content: &str) -> Result<ChatMessage> {
-    let response = reqwest::Client::new()
+    let response = http_client()
         .post(format!("{}/api/rifts/{}/chat", server_url, rift_id))
         .header("Authorization", format!("Bearer {}", auth_token))
         .json(&serde_json::json!({ "content": content }))
@@ -1029,7 +1058,7 @@ async fn get_rifts() -> Result<Vec<RiftInfo>> {
         .ok_or_else(|| anyhow!("Not authenticated. Please run 'mothership auth' first."))?;
     
     // Make API call to get rifts
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/api/rifts", active_server.url);
     
     let response = client
@@ -1070,7 +1099,7 @@ async fn create_rift(name: &str, description: Option<String>) -> Result<uuid::Uu
         .ok_or_else(|| anyhow!("Not authenticated. Please run 'mothership auth' first."))?;
     
     // Make API call to create rift
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/api/rifts", active_server.url);
     println!("DEBUG: Creating rift at {}", url);
     
@@ -1183,7 +1212,7 @@ async fn switch_to_rift(rift_name: &str) -> Result<()> {
         .ok_or_else(|| anyhow!("Not authenticated. Please run 'mothership auth' first."))?;
     
     // Make API call to switch rift
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/api/rifts/switch", active_server.url);
     
     #[derive(serde::Serialize)]
@@ -1249,7 +1278,7 @@ async fn get_rift_diffs(from_rift: &str, to_rift: &str) -> Result<Vec<RiftDiff>>
         .ok_or_else(|| anyhow!("Not authenticated. Please run 'mothership auth' first."))?;
     
     // Make API call to get rift diffs
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/api/rifts/diff", active_server.url);
     
     let response = client

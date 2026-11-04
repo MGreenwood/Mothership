@@ -147,7 +147,7 @@ async fn get_latest_version_direct(server_url: &str) -> Result<VersionInfo> {
     // Get authentication token
     let token = get_auth_token()?;
     
-    let client = reqwest::Client::new();
+    let client = crate::http_client();
     
     let url = format!("{}/cli/latest", server_url);
     let response = client
@@ -178,7 +178,7 @@ async fn check_for_updates(
     // Get authentication token
     let token = get_auth_token()?;
     
-    let client = reqwest::Client::new();
+    let client = crate::http_client();
     let binary_name = if cfg!(windows) { "mothership.exe" } else { "mothership" };
     
     let url = format!("{}/cli/update-check", server_url);
@@ -211,7 +211,7 @@ async fn list_available_versions(server_url: &str) -> Result<()> {
     // Get authentication token
     let token = get_auth_token()?;
     
-    let client = reqwest::Client::new();
+    let client = crate::http_client();
     
     let url = format!("{}/cli/versions", server_url);
     let response = client
@@ -266,7 +266,7 @@ async fn download_and_install_update(
     // Get authentication token
     let token = get_auth_token()?;
     
-    let client = reqwest::Client::new();
+    let client = crate::http_client();
     
     // Download CLI binary
     let cli_binary = if cfg!(windows) { "mothership.exe" } else { "mothership" };

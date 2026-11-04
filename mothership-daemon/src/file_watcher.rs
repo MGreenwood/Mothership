@@ -29,6 +29,7 @@ pub struct FileChangeEvent {
     pub project_id: Uuid,
     pub file_path: PathBuf,
     pub content: String,  // CRITICAL: Restored for sync functionality
+    pub content_hash: String,
     pub file_size: u64,
     pub timestamp: chrono::DateTime<chrono::Utc>,
     pub change_type: FileChangeType,
@@ -44,6 +45,7 @@ pub enum FileChangeType {
 /// Debouncing state for file events (deduplicates identical content bursts from OS watchers)
 struct FileDebouncer {
     last_content: HashMap<PathBuf, (String, Instant)>,
+    last_meta: HashMap<PathBuf, (Option<std::time::SystemTime>, u64, Instant)>,
     // Flood detection: track recent distinct-content change times per file
     recent_events: HashMap<PathBuf, VecDeque<Instant>>,
 }
@@ -52,8 +54,52 @@ impl FileDebouncer {
     fn new() -> Self {
         Self {
             last_content: HashMap::new(),
+            last_meta: HashMap::new(),
             recent_events: HashMap::new(),
         }
+    }
+
+    /// Pre-read check using metadata and debounce interval before reading/hashing the file.
+    /// Keeps a full-read fallback whenever the content-hash cache for `path` is cold.
+    fn should_read_file(
+        &self,
+        path: &PathBuf,
+        mtime: Option<std::time::SystemTime>,
+        file_size: u64,
+        change_type: &FileChangeType,
+    ) -> bool {
+        let Some((_, last_hash_time)) = self.last_content.get(path) else {
+            // Cold hash cache: always perform a full read and hash.
+            return true;
+        };
+
+        let now = Instant::now();
+        if let Some((last_mtime, last_size, last_meta_time)) = self.last_meta.get(path) {
+            if matches!(change_type, FileChangeType::Modified)
+                && mtime.is_some()
+                && *last_mtime == mtime
+                && *last_size == file_size
+            {
+                debug!("Skipping read for {} (mtime and size unchanged)", path.display());
+                return false;
+            }
+            if now.duration_since(*last_meta_time) < DEBOUNCE_INTERVAL
+                && *last_mtime == mtime
+                && *last_size == file_size
+            {
+                debug!("Skipping debounced event before read/hash for {}", path.display());
+                return false;
+            }
+        } else if now.duration_since(*last_hash_time) < DEBOUNCE_INTERVAL {
+            debug!("Skipping rapid repeat event within debounce interval for {}", path.display());
+            return false;
+        }
+
+        true
+    }
+
+    fn record_metadata(&mut self, path: &PathBuf, mtime: Option<std::time::SystemTime>, file_size: u64) {
+        self.last_meta.insert(path.clone(), (mtime, file_size, Instant::now()));
     }
 
     /// Returns true when this event has new content or enough time has passed since the same content was sent.
@@ -92,6 +138,9 @@ impl FileDebouncer {
         let cutoff = Duration::from_secs(300); // 5 minutes
         
         self.last_content.retain(|_, (_, last_time)| {
+            now.duration_since(*last_time) < cutoff
+        });
+        self.last_meta.retain(|_, (_, _, last_time)| {
             now.duration_since(*last_time) < cutoff
         });
 
@@ -161,6 +210,7 @@ impl FileWatcher {
         
         // Spawn background task to handle file system events
         let project_path_clone = project_path.clone();
+        let runtime_handle = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || {
             info!("File watcher blocking task started for project {}", project_id);
             let mut debouncer = FileDebouncer::new();
@@ -177,6 +227,7 @@ impl FileWatcher {
                             &sync_tx,  // Use sync channel here!
                             &mut debouncer,
                             &ignore,
+                            &runtime_handle,
                         ) {
                             error!("Error handling file event in project {}: {}", project_id, e);
                         }
@@ -212,6 +263,7 @@ fn handle_file_event(
     change_sender: &mpsc::Sender<FileChangeEvent>,  // Now using sync channel!
     debouncer: &mut FileDebouncer,
     ignore: &IgnoreRules,
+    runtime_handle: &tokio::runtime::Handle,
 ) -> Result<()> {
     // Determine change type and filter events
     let change_type = match event.kind {
@@ -224,7 +276,7 @@ fn handle_file_event(
     };
     
     for path in &event.paths {
-        info!("Raw watcher event {:?}: {}", event.kind, path.display());
+        debug!("Raw watcher event {:?}: {}", event.kind, path.display());
 
         // Skip directories
         if path.is_dir() {
@@ -276,12 +328,19 @@ fn handle_file_event(
             continue;
         }
         let file_size = metadata.len();
+        let mtime = metadata.modified().ok();
+
+        // Check debounce and unchanged (mtime, size) before reading or hashing the file
+        if !debouncer.should_read_file(&relative_path, mtime, file_size, &change_type) {
+            continue;
+        }
         
         // Check file size and determine sync strategy
         if file_size > MAX_DIRECT_SYNC_SIZE {
             if !debouncer.should_process_content(&relative_path, &format!("stream:{file_size}")) {
                 continue;
             }
+            debouncer.record_metadata(&relative_path, mtime, file_size);
             debug!("File {} ({} bytes) exceeds direct sync limit of {} bytes, will use streaming",
                 path.display(), file_size, MAX_DIRECT_SYNC_SIZE);
             
@@ -290,6 +349,7 @@ fn handle_file_event(
                 project_id,
                 file_path: relative_path.clone(),
                 content: String::new(), // Empty content for streaming files
+                content_hash: String::new(),
                 file_size,
                 timestamp: chrono::Utc::now(),
                 change_type: convert_event_kind_to_change_type(event.kind),
@@ -302,14 +362,36 @@ fn handle_file_event(
             continue;
         }
         
-        // Editors and shells often truncate before writing; wait briefly so an
-        // empty read isn't sent as the file's final state
-        let file_size = if file_size == 0 && matches!(change_type, FileChangeType::Modified | FileChangeType::Created | FileChangeType::Deleted) {
-            std::thread::sleep(EMPTY_WRITE_SETTLE);
-            std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
-        } else {
-            file_size
-        };
+        // Editors and shells often truncate before writing; settle on an async timer instead
+        // of blocking the watcher thread for EMPTY_WRITE_SETTLE (250ms).
+        if file_size == 0 && matches!(change_type, FileChangeType::Modified | FileChangeType::Created | FileChangeType::Deleted) {
+            let path_owned = path.clone();
+            let relative_path_owned = relative_path.clone();
+            let sender_clone = change_sender.clone();
+            runtime_handle.spawn(async move {
+                tokio::time::sleep(EMPTY_WRITE_SETTLE).await;
+                let Ok(meta) = tokio::fs::metadata(&path_owned).await else {
+                    return;
+                };
+                if meta.is_dir() || meta.len() > MAX_DIRECT_SYNC_SIZE {
+                    return;
+                }
+                if let Ok(settled_content) = tokio::fs::read_to_string(&path_owned).await {
+                    let settled_size = settled_content.len() as u64;
+                    let settled_hash = mothership_common::content_hash(&settled_content);
+                    let _ = sender_clone.send(FileChangeEvent {
+                        project_id,
+                        file_path: relative_path_owned,
+                        content: settled_content,
+                        content_hash: settled_hash,
+                        file_size: settled_size,
+                        timestamp: chrono::Utc::now(),
+                        change_type: FileChangeType::Modified,
+                    });
+                }
+            });
+            continue;
+        }
 
         // Read file content for direct sync (files <= MAX_DIRECT_SYNC_SIZE; larger files stream above)
         let mut attempts = 0;
@@ -330,6 +412,7 @@ fn handle_file_event(
             continue;
         };
 
+        debouncer.record_metadata(&relative_path, mtime, file_size);
         let content_hash = mothership_common::content_hash(&content);
         if !debouncer.should_process_content(&relative_path, &content_hash) {
             continue;
@@ -346,6 +429,7 @@ fn handle_file_event(
             project_id,
             file_path: relative_path,
             content,
+            content_hash,
             file_size,
             timestamp: chrono::Utc::now(),
             change_type: FileChangeType::Modified,
@@ -367,4 +451,32 @@ fn convert_event_kind_to_change_type(kind: EventKind) -> FileChangeType {
         EventKind::Remove(_) => FileChangeType::Deleted,
         _ => FileChangeType::Modified, // Default fallback
     }
-} 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::SystemTime;
+
+    #[test]
+    fn debouncer_skips_read_when_mtime_and_size_unchanged_and_warm() {
+        let mut debouncer = FileDebouncer::new();
+        let path = PathBuf::from("src/lib.rs");
+        let mtime = Some(SystemTime::now());
+
+        // Cold cache: must read even on Modify.
+        assert!(debouncer.should_read_file(&path, mtime, 42, &FileChangeType::Modified));
+
+        // Warm the cache.
+        debouncer.record_metadata(&path, mtime, 42);
+        assert!(debouncer.should_process_content(&path, "hash-1"));
+
+        // Unchanged mtime + size on Modify should skip reading.
+        assert!(!debouncer.should_read_file(&path, mtime, 42, &FileChangeType::Modified));
+
+        // Different size or mtime must trigger a read.
+        assert!(debouncer.should_read_file(&path, mtime, 43, &FileChangeType::Modified));
+        let later_mtime = mtime.map(|t| t + Duration::from_secs(1));
+        assert!(debouncer.should_read_file(&path, later_mtime, 42, &FileChangeType::Modified));
+    }
+}

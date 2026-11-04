@@ -198,11 +198,13 @@ async fn register_project_internal(
         }
     }
 
+    let rift_id = crate::daemon::load_project_rift_id(&project_path).ok().flatten();
     let tracked_project = TrackedProject {
         project_id,
         project_name: project_name.clone(),
         project_path: project_path.clone(),
         added_at: chrono::Utc::now(),
+        rift_id,
     };
 
     {

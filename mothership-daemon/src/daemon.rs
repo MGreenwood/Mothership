@@ -51,6 +51,25 @@ pub struct TrackedProject {
     pub project_name: String,
     pub project_path: PathBuf,
     pub added_at: chrono::DateTime<chrono::Utc>,
+    #[serde(default)]
+    pub rift_id: Option<Uuid>,
+}
+
+/// Reads and parses `rift_id` from `<project_path>/.mothership/project.json`.
+pub(crate) fn load_project_rift_id(project_path: &std::path::Path) -> Result<Option<Uuid>> {
+    let metadata_file = project_path.join(".mothership").join("project.json");
+    let metadata_content = std::fs::read_to_string(&metadata_file)
+        .map_err(|e| anyhow::anyhow!("Failed to read project metadata: {}", e))?;
+    let metadata: ProjectMetadata = serde_json::from_str(&metadata_content)
+        .map_err(|e| anyhow::anyhow!("Failed to parse project metadata: {}", e))?;
+    match &metadata.rift_id {
+        Some(rift_id_str) => {
+            let parsed = uuid::Uuid::parse_str(rift_id_str)
+                .map_err(|e| anyhow::anyhow!("Invalid rift_id in metadata: {}", e))?;
+            Ok(Some(parsed))
+        }
+        None => Ok(None),
+    }
 }
 
 fn tracked_projects_path() -> Option<PathBuf> {
@@ -68,6 +87,12 @@ pub fn load_persisted_projects() -> Vec<TrackedProject> {
         .unwrap_or_default()
         .into_iter()
         .filter(|p| p.project_path.join(".mothership").join("project.json").is_file())
+        .map(|mut p| {
+            if let Ok(disk_rift) = load_project_rift_id(&p.project_path) {
+                p.rift_id = disk_rift.or(p.rift_id);
+            }
+            p
+        })
         .collect()
 }
 
@@ -96,11 +121,15 @@ pub struct SyncBase {
 }
 
 impl SyncBase {
-    fn from_content(content: &str) -> Self {
+    fn from_parts(hash: String, content: &str) -> Self {
         Self {
-            hash: content_hash(content),
+            hash,
             content: (content.len() <= BASE_CONTENT_CACHE_LIMIT).then(|| content.to_string()),
         }
+    }
+
+    fn from_content(content: &str) -> Self {
+        Self::from_parts(content_hash(content), content)
     }
 
     fn hash_only(hash: String) -> Self {
@@ -425,6 +454,29 @@ impl MothershipDaemon {
                 return Ok(());
             }
         }
+
+        // Suppress watcher echoes of incoming server writes by comparing against the synced base hash
+        if !event.content.is_empty() || event.file_size == 0 {
+            let norm_rel = mothership_common::normalize_rel_path(&event.file_path);
+            let event_hash = if event.content_hash.is_empty() {
+                content_hash(&event.content)
+            } else {
+                event.content_hash.clone()
+            };
+            if base_hashes
+                .read()
+                .await
+                .get(&(event.project_id, norm_rel))
+                .is_some_and(|b| b.hash == event_hash)
+            {
+                debug!(
+                    "Skipping watcher echo matching synced base: {} in project {}",
+                    event.file_path.display(),
+                    event.project_id
+                );
+                return Ok(());
+            }
+        }
         
         // Get project info for better logging
         let project_name = {
@@ -482,27 +534,8 @@ impl MothershipDaemon {
             return Self::send_file_via_streaming(event, tracked_projects, outgoing_channels, base_hashes).await;
         }
         
-        // Get project metadata to determine rift_id
-        let rift_id = {
-            let projects = tracked_projects.read().await;
-            let project = projects.get(&event.project_id)
-                .ok_or_else(|| anyhow::anyhow!("Project not found in tracked projects: {}", event.project_id))?;
-            
-            // Load project metadata to get rift_id
-            let metadata_file = project.project_path.join(".mothership").join("project.json");
-            let metadata_content = tokio::fs::read_to_string(&metadata_file).await
-                .map_err(|e| anyhow::anyhow!("Failed to read project metadata: {}", e))?;
-            
-            let metadata: ProjectMetadata = serde_json::from_str(&metadata_content)
-                .map_err(|e| anyhow::anyhow!("Failed to parse project metadata: {}", e))?;
-            
-            if let Some(rift_id_str) = &metadata.rift_id {
-                uuid::Uuid::parse_str(rift_id_str)
-                    .map_err(|e| anyhow::anyhow!("Invalid rift_id in metadata: {}", e))?
-            } else {
-                event.project_id // Fallback to project_id
-            }
-        };
+        // Get cached rift_id from TrackedProject, falling back to project.json only when not yet cached
+        let rift_id = Self::resolve_project_rift_id(event.project_id, tracked_projects).await?;
         
         // Base is the content this client last synced for the path; the server rejects edits made against a stale base
         let norm_rel = mothership_common::normalize_rel_path(&event.file_path);
@@ -510,9 +543,14 @@ impl MothershipDaemon {
         let base_key = (event.project_id, norm_rel);
         let base = base_hashes.read().await.get(&base_key).cloned();
         let base_hash = base.as_ref().map(|b| b.hash.clone());
+        let event_hash = if event.content_hash.is_empty() {
+            content_hash(&event.content)
+        } else {
+            event.content_hash.clone()
+        };
 
         // Content already matches the last synced base (e.g. a watcher echo of a write we just applied): nothing new to send
-        if base_hash.as_deref() == Some(content_hash(&event.content).as_str()) {
+        if base_hash.as_deref() == Some(event_hash.as_str()) {
             debug!("Skipping unchanged content for {}", event.file_path.display());
             return Ok(());
         }
@@ -555,9 +593,58 @@ impl MothershipDaemon {
         }
 
         // The local file now matches what we just sent, so it becomes the new base
-        base_hashes.write().await.insert(base_key, SyncBase::from_content(&event.content));
+        base_hashes.write().await.insert(base_key, SyncBase::from_parts(event_hash, &event.content));
         
         Ok(())
+    }
+
+    /// Resolves `rift_id` for a tracked project using the cached value on `TrackedProject`,
+    /// reading `.mothership/project.json` only when the cache is empty.
+    async fn resolve_project_rift_id(
+        project_id: Uuid,
+        tracked_projects: &Arc<RwLock<HashMap<Uuid, TrackedProject>>>,
+    ) -> Result<Uuid> {
+        let project_path = {
+            let projects = tracked_projects.read().await;
+            let project = projects
+                .get(&project_id)
+                .ok_or_else(|| anyhow::anyhow!("Project not found in tracked projects: {}", project_id))?;
+            if let Some(cached) = project.rift_id {
+                return Ok(cached);
+            }
+            project.project_path.clone()
+        };
+
+        let disk_rift = load_project_rift_id(&project_path)?;
+        if let Some(parsed) = disk_rift {
+            if let Some(proj) = tracked_projects.write().await.get_mut(&project_id) {
+                proj.rift_id = Some(parsed);
+            }
+            Ok(parsed)
+        } else {
+            Ok(project_id)
+        }
+    }
+
+    /// Reloads `rift_id` from `.mothership/project.json` and updates the cached value on `TrackedProject`.
+    pub(crate) async fn refresh_project_rift_id(
+        project_id: Uuid,
+        tracked_projects: &Arc<RwLock<HashMap<Uuid, TrackedProject>>>,
+    ) -> Result<(PathBuf, Uuid)> {
+        let project_path = {
+            let projects = tracked_projects.read().await;
+            let project = projects
+                .get(&project_id)
+                .ok_or_else(|| anyhow::anyhow!("Project not found: {}", project_id))?;
+            project.project_path.clone()
+        };
+
+        let disk_rift = load_project_rift_id(&project_path)?;
+        let resolved = disk_rift.unwrap_or(project_id);
+        if let Some(proj) = tracked_projects.write().await.get_mut(&project_id) {
+            proj.rift_id = disk_rift;
+        }
+        Ok((project_path, resolved))
     }
 
     /// Scans `project_path` and queues any local file edits that haven't been synced yet on the current WebSocket.
@@ -594,6 +681,7 @@ impl MothershipDaemon {
                     project_id,
                     file_path: PathBuf::from(&norm),
                     content,
+                    content_hash: current_hash,
                     file_size: 0,
                     timestamp: chrono::Utc::now(),
                     change_type: crate::file_watcher::FileChangeType::Modified,
@@ -621,30 +709,15 @@ impl MothershipDaemon {
         outgoing_channels: &Arc<RwLock<HashMap<Uuid, mpsc::UnboundedSender<SyncMessage>>>>,
         base_hashes: &BaseHashes,
     ) -> Result<()> {
-        // Get project metadata to determine rift_id and construct full file path
-        let (rift_id, full_path) = {
+        // Get cached rift_id and construct full file path
+        let project_path = {
             let projects = tracked_projects.read().await;
             let project = projects.get(&event.project_id)
                 .ok_or_else(|| anyhow::anyhow!("Project not found in tracked projects: {}", event.project_id))?;
-            
-            // Load project metadata to get rift_id
-            let metadata_file = project.project_path.join(".mothership").join("project.json");
-            let metadata_content = tokio::fs::read_to_string(&metadata_file).await
-                .map_err(|e| anyhow::anyhow!("Failed to read project metadata: {}", e))?;
-            
-            let metadata: ProjectMetadata = serde_json::from_str(&metadata_content)
-                .map_err(|e| anyhow::anyhow!("Failed to parse project metadata: {}", e))?;
-            
-            let rift_id = if let Some(rift_id_str) = &metadata.rift_id {
-                uuid::Uuid::parse_str(rift_id_str)
-                    .map_err(|e| anyhow::anyhow!("Invalid rift_id in metadata: {}", e))?
-            } else {
-                event.project_id // Fallback to project_id
-            };
-            
-            let full_path = project.project_path.join(&event.file_path);
-            (rift_id, full_path)
+            project.project_path.clone()
         };
+        let rift_id = Self::resolve_project_rift_id(event.project_id, tracked_projects).await?;
+        let full_path = project_path.join(&event.file_path);
         
         info!("Starting file stream for {} ({} bytes)", event.file_path.display(), event.file_size);
         
@@ -672,7 +745,7 @@ impl MothershipDaemon {
             path: event.file_path.clone(),
             total_size: event.file_size,
             chunk_size: config.chunk_size,
-            content_hash: String::new(), // Will be calculated during streaming
+            content_hash: event.content_hash.clone(), // Calculated during streaming if empty
             is_binary: !event.file_path.to_string_lossy().ends_with(".txt"), // Simple heuristic
             timestamp: event.timestamp,
             base_hash,
@@ -849,11 +922,13 @@ impl MothershipDaemon {
         ).await?;
         
         // Add to tracked projects registry
+        let rift_id = load_project_rift_id(&project_path).ok().flatten();
         let tracked_project = TrackedProject {
             project_id,
             project_name: project_name.clone(),
             project_path: project_path.clone(),
             added_at: chrono::Utc::now(),
+            rift_id,
         };
         
         {
@@ -1016,54 +1091,15 @@ impl MothershipDaemon {
         outgoing_channels: &Arc<RwLock<HashMap<Uuid, mpsc::UnboundedSender<SyncMessage>>>>,
         base_hashes: &BaseHashes,
     ) -> Result<usize> {
-        let mut file_count = 0;
-        
-        // Walk through all files in the project directory
-        let mut entries = tokio::fs::read_dir(&project.project_path).await?;
-        while let Some(entry) = entries.next_entry().await? {
-            let path = entry.path();
-            
-            // Skip hidden directories and files (like .git, .mothership)
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if name.starts_with('.') {
-                    continue;
-                }
-            }
-            
-            if path.is_file() {
-                // Read file content
-                if let Ok(content) = tokio::fs::read_to_string(&path).await {
-                    // Create a synthetic file change event to trigger sync
-                    let relative_path = path.strip_prefix(&project.project_path)
-                        .unwrap_or(&path)
-                        .to_path_buf();
-                    
-                    let event = FileChangeEvent {
-                        project_id: *project_id,
-                        file_path: relative_path,
-                        change_type: crate::file_watcher::FileChangeType::Modified,
-                        content,
-                        file_size: entry.metadata().await.map(|m| m.len()).unwrap_or(0),
-                        timestamp: chrono::Utc::now(),
-                    };
-                    
-                    // Send the change via the existing sync mechanism
-                    if let Err(e) = Self::send_file_change_via_persistent_websocket(&event, tracked_projects, outgoing_channels, base_hashes).await {
-                        warn!("Failed to sync file {}: {}", path.display(), e);
-                    } else {
-                        file_count += 1;
-                    }
-                }
-            } else if path.is_dir() {
-                // Recursively sync subdirectories
-                match Self::force_sync_directory_static(&path, project_id, &project.project_path, tracked_projects, outgoing_channels, base_hashes).await {
-                    Ok(sub_count) => file_count += sub_count,
-                    Err(e) => warn!("Failed to sync directory {}: {}", path.display(), e),
-                }
-            }
-        }
-        
-        Ok(file_count)
+        Self::force_sync_directory_static(
+            &project.project_path,
+            project_id,
+            &project.project_path,
+            tracked_projects,
+            outgoing_channels,
+            base_hashes,
+        )
+        .await
     }
     
     /// Recursively force sync a directory
@@ -1071,7 +1107,7 @@ impl MothershipDaemon {
         Self::force_sync_directory_static(dir_path, project_id, project_root, &self.tracked_projects, &self.outgoing_channels, &self.base_hashes).await
     }
     
-    /// Recursively force sync a directory (static version with boxing to handle recursion)
+    /// Recursively force sync a directory using `.mothershipignore` rules to prune ignored trees
     fn force_sync_directory_static<'a>(
         dir_path: &'a std::path::Path, 
         project_id: &'a Uuid, 
@@ -1082,43 +1118,47 @@ impl MothershipDaemon {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<usize>> + Send + 'a>> {
         Box::pin(async move {
             let mut file_count = 0;
-            
-            let mut entries = tokio::fs::read_dir(dir_path).await?;
-            while let Some(entry) = entries.next_entry().await? {
-                let path = entry.path();
-                
-                // Skip hidden directories and files
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    if name.starts_with('.') {
-                        continue;
+            let rules = mothership_common::ignore::IgnoreRules::load(project_root)?;
+
+            let files: Vec<PathBuf> = walkdir::WalkDir::new(dir_path)
+                .follow_links(false)
+                .into_iter()
+                .filter_entry(|entry| {
+                    if entry.depth() == 0 {
+                        return true;
                     }
-                }
-                
-                if path.is_file() {
-                    if let Ok(content) = tokio::fs::read_to_string(&path).await {
-                        let relative_path = path.strip_prefix(project_root)
-                            .unwrap_or(&path)
-                            .to_path_buf();
-                        
-                        let event = FileChangeEvent {
-                            project_id: *project_id,
-                            file_path: relative_path,
-                            change_type: crate::file_watcher::FileChangeType::Modified,
-                            content,
-                            file_size: entry.metadata().await.map(|m| m.len()).unwrap_or(0),
-                            timestamp: chrono::Utc::now(),
-                        };
-                        
-                        if let Err(e) = Self::send_file_change_via_persistent_websocket(&event, tracked_projects, outgoing_channels, base_hashes).await {
-                            warn!("Failed to sync file {}: {}", path.display(), e);
-                        } else {
-                            file_count += 1;
-                        }
+                    if entry.file_name().to_str().is_some_and(|n| n.starts_with('.')) {
+                        return false;
                     }
-                } else if path.is_dir() {
-                    match Self::force_sync_directory_static(&path, project_id, project_root, tracked_projects, outgoing_channels, base_hashes).await {
-                        Ok(sub_count) => file_count += sub_count,
-                        Err(e) => warn!("Failed to sync subdirectory {}: {}", path.display(), e),
+                    !rules.is_ignored(entry.path(), entry.file_type().is_dir())
+                })
+                .filter_map(|e| e.ok())
+                .filter(|entry| entry.file_type().is_file())
+                .map(|entry| entry.into_path())
+                .collect();
+
+            for path in files {
+                if let Ok(content) = tokio::fs::read_to_string(&path).await {
+                    let relative_path = path.strip_prefix(project_root)
+                        .unwrap_or(&path)
+                        .to_path_buf();
+                    let file_size = content.len() as u64;
+                    let hash = content_hash(&content);
+                    
+                    let event = FileChangeEvent {
+                        project_id: *project_id,
+                        file_path: relative_path,
+                        change_type: crate::file_watcher::FileChangeType::Modified,
+                        content,
+                        content_hash: hash,
+                        file_size,
+                        timestamp: chrono::Utc::now(),
+                    };
+                    
+                    if let Err(e) = Self::send_file_change_via_persistent_websocket(&event, tracked_projects, outgoing_channels, base_hashes).await {
+                        warn!("Failed to sync file {}: {}", path.display(), e);
+                    } else {
+                        file_count += 1;
                     }
                 }
             }
@@ -1129,11 +1169,14 @@ impl MothershipDaemon {
     
     /// Check server connectivity by making a simple HTTP health check
     async fn check_server_connectivity() -> bool {
+        static HEALTH_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
         if let Some(server_url) = get_active_server_url() {
-            let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(5))
-                .build()
-                .unwrap_or_default();
+            let client = HEALTH_CLIENT.get_or_init(|| {
+                reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(5))
+                    .build()
+                    .unwrap_or_default()
+            });
             
             let health_url = format!("{}/health", server_url);
             
@@ -1168,29 +1211,8 @@ impl MothershipDaemon {
         server_write_flags: Arc<RwLock<HashMap<Uuid, bool>>>,
         base_hashes: BaseHashes,
     ) -> Result<()> {
-        // Get project information
-        let (project_path, rift_id) = {
-            let projects = tracked_projects.read().await;
-            let project = projects.get(&project_id)
-                .ok_or_else(|| anyhow::anyhow!("Project not found: {}", project_id))?;
-            
-            // Load project metadata to get rift_id
-            let metadata_file = project.project_path.join(".mothership").join("project.json");
-            let metadata_content = tokio::fs::read_to_string(&metadata_file).await
-                .map_err(|e| anyhow::anyhow!("Failed to read project metadata: {}", e))?;
-            
-            let metadata: ProjectMetadata = serde_json::from_str(&metadata_content)
-                .map_err(|e| anyhow::anyhow!("Failed to parse project metadata: {}", e))?;
-            
-            let rift_id = if let Some(rift_id_str) = &metadata.rift_id {
-                uuid::Uuid::parse_str(rift_id_str)
-                    .map_err(|e| anyhow::anyhow!("Invalid rift_id in metadata: {}", e))?
-            } else {
-                project_id // Fallback to project_id
-            };
-            
-            (project.project_path.clone(), rift_id)
-        };
+        // Reload project metadata and refresh cached rift_id on TrackedProject
+        let (project_path, rift_id) = Self::refresh_project_rift_id(project_id, &tracked_projects).await?;
         
         // Get authentication token
         let auth_token = load_auth_token()
@@ -1316,7 +1338,6 @@ impl MothershipDaemon {
                                             };
                                             let _ = ws_sender.send(tokio_tungstenite::tungstenite::Message::Close(Some(close_frame))).await;
                                             let _ = ws_sender.close().await;
-                                            tokio::time::sleep(Duration::from_millis(100)).await;
                                             channel_closed = true;
                                             break;
                                         }
@@ -1616,7 +1637,7 @@ impl MothershipDaemon {
                 let mut tx_manager = state.transaction_manager.lock().await;
                 let current_content = tokio::fs::read_to_string(&path).await?;
                 
-                if crypto_hash(&current_content) != previous_hash {
+                if content_hash(&current_content) != previous_hash {
                     return Err(anyhow!("File content changed since transaction started"));
                 }
                 
@@ -1731,7 +1752,6 @@ impl MothershipDaemon {
                 // Write file content
                 tokio::fs::write(&file_path, &content).await?;
                 info!("Applied file change from collaborator: {}", norm);
-                tokio::time::sleep(Duration::from_millis(120)).await;
                 {
                     let mut flags = server_write_flags.write().await;
                     flags.remove(&project_id);
@@ -1784,7 +1804,6 @@ impl MothershipDaemon {
                     }
                 }
                 
-                tokio::time::sleep(Duration::from_millis(120)).await;
                 // Clear server write flag
                 {
                     let mut flags = server_write_flags.write().await;
@@ -1881,43 +1900,52 @@ impl MothershipDaemon {
                     }
                 }
 
-                // Write all current files (initial sync)
+                // Write all current files (initial sync), skipping unchanged files to avoid watcher echoes
                 for (rel_path, norm, content) in valid_files {
                     let file_path = project_path.join(&rel_path);
+                    let incoming_hash = content_hash(&content);
                     
-                    if let Some(parent) = file_path.parent() {
-                        tokio::fs::create_dir_all(parent).await?;
-                    }
-                    
-                    // Only back up local file if it differs from the incoming rift content AND wasn't already synced on the old rift
+                    // Check existing file on disk first
                     if let Ok(local_bytes) = tokio::fs::read(&file_path).await {
-                        if local_bytes.as_slice() != content.as_bytes() {
-                            let was_synced_on_old_rift = std::str::from_utf8(&local_bytes)
-                                .ok()
-                                .is_some_and(|s| old_bases.get(&norm) == Some(&content_hash(s)));
-                            if !was_synced_on_old_rift {
-                                let backup = project_path
-                                    .join(".mothership")
-                                    .join("local-backup")
-                                    .join(&recovery_stamp)
-                                    .join(&rel_path);
-                                if let Some(parent) = backup.parent() {
-                                    tokio::fs::create_dir_all(parent).await?;
-                                }
-                                tokio::fs::write(&backup, &local_bytes).await?;
-                                warn!("Backed up unsynced local {} to {} before overwriting", norm, backup.display());
+                        if local_bytes.as_slice() == content.as_bytes() {
+                            base_hashes.write().await.insert(
+                                (project_id, norm.clone()),
+                                SyncBase::from_parts(incoming_hash, &content),
+                            );
+                            debug!("Skipping write for unchanged initial file: {}", norm);
+                            continue;
+                        }
+
+                        let was_synced_on_old_rift = std::str::from_utf8(&local_bytes)
+                            .ok()
+                            .is_some_and(|s| old_bases.get(&norm) == Some(&content_hash(s)));
+                        if !was_synced_on_old_rift {
+                            let backup = project_path
+                                .join(".mothership")
+                                .join("local-backup")
+                                .join(&recovery_stamp)
+                                .join(&rel_path);
+                            if let Some(parent) = backup.parent() {
+                                tokio::fs::create_dir_all(parent).await?;
                             }
+                            tokio::fs::write(&backup, &local_bytes).await?;
+                            warn!("Backed up unsynced local {} to {} before overwriting", norm, backup.display());
                         }
                     }
 
+                    if let Some(parent) = file_path.parent() {
+                        tokio::fs::create_dir_all(parent).await?;
+                    }
+
                     // Set base_hash BEFORE writing to disk so any watcher echo sees matching base_hash
-                    base_hashes.write().await.insert((project_id, norm.clone()), SyncBase::from_content(&content));
+                    base_hashes.write().await.insert(
+                        (project_id, norm.clone()),
+                        SyncBase::from_parts(incoming_hash, &content),
+                    );
                     tokio::fs::write(&file_path, &content).await?;
                     info!("Wrote initial file: {}", norm);
                 }
                 
-                // Keep server_write_flags set while asynchronous OS watcher notifications settle
-                tokio::time::sleep(Duration::from_millis(150)).await;
                 {
                     let mut flags = server_write_flags.write().await;
                     flags.remove(&project_id);
@@ -2054,7 +2082,6 @@ impl MothershipDaemon {
                     Err(e) => warn!("Could not back up local {} before overwrite: {}", norm, e),
                 }
                 tokio::fs::write(&file_path, &server_content).await?;
-                tokio::time::sleep(Duration::from_millis(120)).await;
                 {
                     let mut flags = server_write_flags.write().await;
                     flags.remove(&project_id);
@@ -2325,9 +2352,247 @@ impl ConnectionHealth {
     }
 }
 
-fn crypto_hash(content: &str) -> String {
-    use sha2::{Sha256, Digest};
-    let mut hasher = Sha256::new();
-    hasher.update(content.as_bytes());
-    format!("{:x}", hasher.finalize())
-} 
+#[cfg(test)]
+mod profiling_tests {
+    use super::*;
+    use std::time::Instant;
+
+    struct TempDir(std::path::PathBuf);
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Hashing cost per local edit. With Phase 3, content_hash is computed once in the watcher
+    /// and passed into SyncBase::from_parts instead of hashing three times.
+    #[test]
+    #[ignore = "profiling: run with --ignored --nocapture --release"]
+    fn profile_content_hash_passes() {
+        let content = "x".repeat(256 * 1024);
+        const ITERS: u32 = 200;
+
+        let start = Instant::now();
+        for _ in 0..ITERS {
+            std::hint::black_box(content_hash(&content));
+        }
+        let one_pass = start.elapsed();
+
+        let start = Instant::now();
+        for _ in 0..ITERS {
+            let hash = content_hash(&content);
+            std::hint::black_box(SyncBase::from_parts(hash, &content));
+        }
+        let single_hash_edit = start.elapsed();
+
+        let start = Instant::now();
+        for _ in 0..ITERS {
+            for _ in 0..3 {
+                std::hint::black_box(content_hash(&content));
+            }
+        }
+        let three_passes = start.elapsed();
+
+        eprintln!(
+            "[profile] hashing 256 KiB x {ITERS}: 1 hash = {:?}/edit, 1-hash edit path (hash + SyncBase::from_parts) = {:?}/edit, \
+             legacy 3-hash path = {:?}/edit",
+            one_pass / ITERS,
+            single_hash_edit / ITERS,
+            three_passes / ITERS,
+        );
+    }
+
+    /// Cost of one force sync. With Phase 5, `.mothershipignore` rules prune `node_modules`
+    /// and `entry.file_type()` avoids redundant stat calls.
+    #[tokio::test]
+    #[ignore = "profiling: run with --ignored --nocapture"]
+    async fn profile_force_sync_walk() {
+        let root = TempDir(std::env::temp_dir().join(format!("mothership-profile-daemon-{}", Uuid::new_v4())));
+        std::fs::create_dir_all(root.0.join(".mothership")).unwrap();
+        std::fs::write(root.0.join(".mothership").join("project.json"), "{}").unwrap();
+        for i in 0..50 {
+            let src = root.0.join("src");
+            std::fs::create_dir_all(&src).unwrap();
+            std::fs::write(src.join(format!("file-{i:03}.rs")), "fn main() {}\n".repeat(80)).unwrap();
+        }
+        for p in 0..200 {
+            let pkg = root.0.join("node_modules").join(format!("pkg-{p:04}"));
+            std::fs::create_dir_all(&pkg).unwrap();
+            std::fs::write(pkg.join("index.js"), "module.exports = {};").unwrap();
+        }
+
+        let rules = mothership_common::ignore::IgnoreRules::load(&root.0).unwrap();
+        let non_ignored_files = walkdir::WalkDir::new(&root.0)
+            .into_iter()
+            .filter_entry(|e| e.depth() == 0 || !rules.is_ignored(e.path(), e.file_type().is_dir()))
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_file())
+            .filter(|e| !e.path().strip_prefix(&root.0).unwrap().components().any(|c| c.as_os_str().to_string_lossy().starts_with('.')))
+            .count();
+
+        let tracked_projects = Arc::new(RwLock::new(HashMap::new()));
+        let outgoing_channels = Arc::new(RwLock::new(HashMap::new()));
+        let base_hashes: BaseHashes = Arc::new(RwLock::new(HashMap::new()));
+        let project_id = Uuid::new_v4();
+
+        let start = Instant::now();
+        MothershipDaemon::force_sync_directory_static(
+            &root.0,
+            &project_id,
+            &root.0,
+            &tracked_projects,
+            &outgoing_channels,
+            &base_hashes,
+        )
+        .await
+        .unwrap();
+        let elapsed = start.elapsed();
+
+        eprintln!(
+            "[profile] force sync walk: {non_ignored_files} non-ignored files read (node_modules pruned), took {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rift_id_cache_loads_and_updates_on_switch() {
+        let root = TempDir(std::env::temp_dir().join(format!("mothership-rift-cache-{}", Uuid::new_v4())));
+        let meta_dir = root.0.join(".mothership");
+        std::fs::create_dir_all(&meta_dir).unwrap();
+
+        let project_id = Uuid::new_v4();
+        let rift_a = Uuid::new_v4();
+        let rift_b = Uuid::new_v4();
+
+        let write_meta = |rift: Uuid| {
+            let json = serde_json::json!({
+                "project_id": project_id.to_string(),
+                "project_name": "demo",
+                "created_at": "2026-01-01T00:00:00Z",
+                "mothership_url": "http://localhost",
+                "rift_id": rift.to_string(),
+            });
+            std::fs::write(meta_dir.join("project.json"), json.to_string()).unwrap();
+        };
+
+        write_meta(rift_a);
+
+        let tracked_projects = Arc::new(RwLock::new(HashMap::new()));
+        tracked_projects.write().await.insert(
+            project_id,
+            TrackedProject {
+                project_id,
+                project_name: "demo".to_string(),
+                project_path: root.0.clone(),
+                added_at: chrono::Utc::now(),
+                rift_id: load_project_rift_id(&root.0).unwrap(),
+            },
+        );
+
+        assert_eq!(
+            MothershipDaemon::resolve_project_rift_id(project_id, &tracked_projects).await.unwrap(),
+            rift_a
+        );
+
+        // Simulate a rift switch updating project.json on disk, followed by refresh_project_rift_id.
+        write_meta(rift_b);
+        // Cached value is still returned before refresh (no disk read per event):
+        assert_eq!(
+            MothershipDaemon::resolve_project_rift_id(project_id, &tracked_projects).await.unwrap(),
+            rift_a
+        );
+        // Refresh updates the cache to the switched rift:
+        let (_, refreshed) = MothershipDaemon::refresh_project_rift_id(project_id, &tracked_projects).await.unwrap();
+        assert_eq!(refreshed, rift_b);
+        assert_eq!(
+            MothershipDaemon::resolve_project_rift_id(project_id, &tracked_projects).await.unwrap(),
+            rift_b
+        );
+    }
+
+    #[tokio::test]
+    async fn rift_joined_skips_unchanged_writes_and_echo_is_suppressed() {
+        let root = TempDir(std::env::temp_dir().join(format!("mothership-rift-joined-{}", Uuid::new_v4())));
+        std::fs::create_dir_all(root.0.join(".mothership")).unwrap();
+        let project_id = Uuid::new_v4();
+        std::fs::write(
+            root.0.join(".mothership").join("project.json"),
+            serde_json::json!({
+                "project_id": project_id.to_string(),
+                "project_name": "demo",
+                "created_at": "2026-01-01T00:00:00Z",
+                "mothership_url": "http://localhost",
+                "rift_id": project_id.to_string(),
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let existing_file = root.0.join("same.txt");
+        std::fs::write(&existing_file, "unchanged content").unwrap();
+
+        let server_write_flags = Arc::new(RwLock::new(HashMap::new()));
+        let base_hashes: BaseHashes = Arc::new(RwLock::new(HashMap::new()));
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let outgoing_channels = Arc::new(RwLock::new(HashMap::from([(project_id, tx)])));
+        let tracked_projects = Arc::new(RwLock::new(HashMap::from([(
+            project_id,
+            TrackedProject {
+                project_id,
+                project_name: "demo".to_string(),
+                project_path: root.0.clone(),
+                added_at: chrono::Utc::now(),
+                rift_id: Some(project_id),
+            },
+        )])));
+        let status = Arc::new(RwLock::new(DaemonStatus::default()));
+
+        let mut files = HashMap::new();
+        files.insert(PathBuf::from("same.txt"), "unchanged content".to_string());
+        files.insert(PathBuf::from("new.txt"), "new content".to_string());
+        let msg = SyncMessage::RiftJoined {
+            rift_id: project_id,
+            current_files: files,
+            participants: Vec::new(),
+            last_checkpoint: None,
+        };
+        let text = serde_json::to_string(&msg).unwrap();
+
+        MothershipDaemon::handle_websocket_sync_message(
+            &text,
+            &root.0,
+            &server_write_flags,
+            &base_hashes,
+            &outgoing_channels,
+            project_id,
+        )
+        .await
+        .unwrap();
+
+        // Simulate a late watcher echo for `new.txt` after server_write_flags is already cleared.
+        let echo_content = "new content".to_string();
+        let echo_event = FileChangeEvent {
+            project_id,
+            file_path: PathBuf::from("new.txt"),
+            content_hash: content_hash(&echo_content),
+            content: echo_content,
+            file_size: 11,
+            timestamp: chrono::Utc::now(),
+            change_type: crate::file_watcher::FileChangeType::Modified,
+        };
+        MothershipDaemon::handle_file_change_static(
+            echo_event,
+            &tracked_projects,
+            &status,
+            &outgoing_channels,
+            &server_write_flags,
+            &base_hashes,
+        )
+        .await
+        .unwrap();
+
+        // Echo must not queue an outgoing message or increment files_synced.
+        assert!(rx.try_recv().is_err());
+        assert_eq!(status.read().await.files_synced, 0);
+    }
+}

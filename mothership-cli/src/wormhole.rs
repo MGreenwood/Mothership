@@ -164,7 +164,7 @@ fn session() -> Result<Session> {
         .ok_or_else(|| anyhow!("No active server connection. Please run 'mothership connect <server-url>' first."))?;
     let token = get_oauth_token().ok_or_else(|| anyhow!("Not authenticated. Please run 'mothership auth' first."))?;
     Ok(Session {
-        client: reqwest::Client::new(),
+        client: crate::http_client().clone(),
         base_url: server.url,
         token,
     })

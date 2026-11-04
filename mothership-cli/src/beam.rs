@@ -120,13 +120,23 @@ pub async fn ensure_daemon_running() -> Result<()> {
     Err(anyhow!("Daemon started but failed to respond within 5 seconds"))
 }
 
+fn daemon_http_client() -> &'static reqwest::Client {
+    static DAEMON_HTTP: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    DAEMON_HTTP.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap_or_else(|_| crate::http_client().clone())
+    })
+}
+
 /// Register a project with the Mothership daemon for background file tracking
 async fn register_project_with_daemon(
     project_id: &Uuid,
     project_name: &str,
     project_path: &PathBuf,
 ) -> Result<()> {
-    let daemon_client = reqwest::Client::new();
+    let daemon_client = crate::http_client();
     
     #[derive(serde::Serialize)]
     struct AddProjectRequest {
@@ -155,57 +165,12 @@ async fn register_project_with_daemon(
     }
 }
 
-/// Check if a project exists locally
-fn is_project_local(project_name: &str) -> bool {
-    // Use the same search logic as check_project_local_status in gateway.rs
-    let search_paths = vec![
-        std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-        PathBuf::from(std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string())).join("mothership"),
-        PathBuf::from(std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string())),
-    ];
-    
-    for base_path in search_paths {
-        if find_project_by_metadata(&base_path, project_name).is_ok() {
-            return true;
-        }
-    }
-    
-    false
-}
-
-/// Recursively search for a project by scanning .mothership metadata files
-fn find_project_by_metadata(search_dir: &PathBuf, target_project_name: &str) -> Result<PathBuf> {
-    if !search_dir.exists() {
-        return Err(anyhow!("Search directory does not exist"));
-    }
-    
-    // Use walkdir to recursively search for .mothership directories
-    for entry in walkdir::WalkDir::new(search_dir)
-        .max_depth(3) // Limit depth to avoid performance issues
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
-        let path = entry.path();
-        
-        // Look for .mothership directories
-        if path.is_dir() && path.file_name() == Some(std::ffi::OsStr::new(".mothership")) {
-            let project_dir = path.parent().unwrap();
-            let metadata_file = path.join("project.json");
-            
-            if metadata_file.exists() {
-                // Try to read and parse the metadata
-                if let Ok(metadata_content) = std::fs::read_to_string(&metadata_file) {
-                    if let Ok(metadata) = serde_json::from_str::<ProjectMetadata>(&metadata_content) {
-                        if metadata.project_name == target_project_name {
-                            return Ok(project_dir.to_path_buf());
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    Err(anyhow!("Project not found in search directory"))
+/// Check if a project exists locally using a pre-built project index
+fn is_project_local(
+    project_name: &str,
+    project_index: &std::collections::HashMap<String, PathBuf>,
+) -> bool {
+    project_index.contains_key(project_name)
 }
 
 /// Local project metadata stored in .mothership directory
@@ -481,6 +446,9 @@ pub async fn handle_beam(
     local_dir: Option<std::path::PathBuf>,
     force_sync: bool,
 ) -> Result<()> {
+    // Build local project index once per command invocation
+    let project_index = crate::project_index::build_index(&crate::project_index::default_search_roots());
+
     // If no project specified (empty string), try to detect from current directory
     let (project_name, project_path) = if project.is_empty() {
         if let Some(metadata) = get_current_project_metadata() {
@@ -491,7 +459,7 @@ pub async fn handle_beam(
         }
     } else {
         // Check if project exists locally first
-        let is_local = is_project_local(&project);
+        let is_local = is_project_local(&project, &project_index);
         
         // Determine project path based on local_dir or existing project
         let path = if let Some(ref dir) = local_dir {
@@ -509,22 +477,8 @@ pub async fn handle_beam(
                 dir.join(&project)
             }
         } else if is_local {
-            // If project exists locally, find its actual path
-            let search_paths = vec![
-                std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-                PathBuf::from(std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string())).join("mothership"),
-                PathBuf::from(std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string())),
-            ];
-            
-            let mut found_path = None;
-            for base_path in search_paths {
-                if let Ok(project_path) = find_project_by_metadata(&base_path, &project) {
-                    found_path = Some(project_path);
-                    break;
-                }
-            }
-            
-            found_path.unwrap_or_else(|| {
+            // If project exists locally, resolve its path from the pre-built index
+            project_index.get(&project).cloned().unwrap_or_else(|| {
                 // Fallback to current directory behavior
                 let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
                 if current_dir.file_name().and_then(|n| n.to_str()) == Some(&project) {
@@ -576,7 +530,7 @@ pub async fn handle_beam(
         })?;
         
         // Now check if this project is local (we have the name now)
-        let project_is_local = is_project_local(&project_data.name);
+        let project_is_local = is_project_local(&project_data.name, &project_index);
         if !project_is_local && local_dir.is_none() {
             print_api_error(&format!(
                 "Project '{}' is not available locally. Please specify where to clone it:",
@@ -721,9 +675,7 @@ pub async fn handle_disconnect(
     project: Option<String>,
 ) -> Result<()> {
     // Check if daemon is running
-    let daemon_client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()?;
+    let daemon_client = daemon_http_client();
     
     match daemon_client.get("http://localhost:7525/health").send().await {
         Ok(response) if response.status().is_success() => {
@@ -802,9 +754,7 @@ pub async fn handle_disconnect(
 
 /// Handle daemon status command
 pub async fn handle_daemon_status() -> Result<()> {
-    let daemon_client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()?;
+    let daemon_client = daemon_http_client();
     
     match daemon_client.get("http://localhost:7525/health").send().await {
         Ok(response) if response.status().is_success() => {
@@ -845,9 +795,7 @@ pub async fn handle_daemon_status() -> Result<()> {
 
 /// Handle daemon stop command
 pub async fn handle_daemon_stop() -> Result<()> {
-    let daemon_client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()?;
+    let daemon_client = daemon_http_client();
     
     match daemon_client.get("http://localhost:7525/health").send().await {
         Ok(response) if response.status().is_success() => {
@@ -892,3 +840,43 @@ pub async fn handle_daemon_restart() -> Result<()> {
     
     Ok(())
 } 
+
+#[cfg(test)]
+mod profiling_tests {
+    use super::*;
+    use crate::profiling::{build_project_tree, walk_entry_count, TempTree};
+    use std::time::Instant;
+
+    #[test]
+    #[ignore = "profiling: run with --ignored --nocapture"]
+    fn profile_beam_project_lookup() {
+        let tree = TempTree::new("beam");
+        let root = tree.0.clone();
+        let names = build_project_tree(&root, 20, 200);
+        let entries = walk_entry_count(&root, 3);
+        let roots = vec![root];
+
+        const ITERS: u32 = 5;
+        let start = Instant::now();
+        for _ in 0..ITERS {
+            let index = crate::project_index::build_index(&roots);
+            assert!(!is_project_local("missing", &index));
+        }
+        let per_walk = start.elapsed() / ITERS;
+
+        // beam builds the index once, then checks local status and resolves the path from the map.
+        let start = Instant::now();
+        let index = crate::project_index::build_index(&roots);
+        for name in &names {
+            assert!(is_project_local(name, &index));
+            assert!(index.get(name).is_some());
+        }
+        let resolve_twice = start.elapsed();
+
+        eprintln!(
+            "[profile] beam lookup: {} projects, {entries} total entries in tree, pruned index walk = {per_walk:?}, \
+             check+resolve for all projects = {resolve_twice:?} (1 walk total)",
+            names.len(),
+        );
+    }
+}

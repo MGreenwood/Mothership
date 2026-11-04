@@ -21,57 +21,16 @@ enum LocalStatus {
     NotLocal,
 }
 
-/// Check if a project exists locally by scanning for .mothership metadata
-fn check_project_local_status(project_name: &str) -> (LocalStatus, String) {
-    // Search common project locations and scan for .mothership directories
-    let search_paths = vec![
-        std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-        PathBuf::from(std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string())).join("mothership"),
-        PathBuf::from(std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string())),
-    ];
-    
-    for base_path in search_paths {
-        if let Ok(found_path) = find_project_by_metadata(&base_path, project_name) {
-            return (LocalStatus::Local, format!("(local at {})", found_path.display()));
-        }
+/// Check if a project exists locally using a pre-built project index
+fn check_project_local_status(
+    project_name: &str,
+    project_index: &HashMap<String, PathBuf>,
+) -> (LocalStatus, String) {
+    if let Some(found_path) = project_index.get(project_name) {
+        (LocalStatus::Local, format!("(local at {})", found_path.display()))
+    } else {
+        (LocalStatus::NotLocal, "(not local)".to_string())
     }
-    
-    (LocalStatus::NotLocal, "(not local)".to_string())
-}
-
-/// Recursively search for a project by scanning .mothership metadata files
-fn find_project_by_metadata(search_dir: &PathBuf, target_project_name: &str) -> Result<PathBuf> {
-    if !search_dir.exists() {
-        return Err(anyhow!("Search directory does not exist"));
-    }
-    
-    // Use walkdir to recursively search for .mothership directories
-    for entry in walkdir::WalkDir::new(search_dir)
-        .max_depth(3) // Limit depth to avoid performance issues
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
-        let path = entry.path();
-        
-        // Look for .mothership directories
-        if path.is_dir() && path.file_name() == Some(std::ffi::OsStr::new(".mothership")) {
-            let project_dir = path.parent().unwrap();
-            let metadata_file = path.join("project.json");
-            
-            if metadata_file.exists() {
-                // Try to read and parse the metadata
-                if let Ok(metadata_content) = std::fs::read_to_string(&metadata_file) {
-                    if let Ok(metadata) = serde_json::from_str::<ProjectMetadata>(&metadata_content) {
-                        if metadata.project_name == target_project_name {
-                            return Ok(project_dir.to_path_buf());
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    Err(anyhow!("Project not found in search directory"))
 }
 
 pub async fn handle_gateway(config_manager: &ConfigManager, include_inactive: bool) -> Result<()> {
@@ -114,6 +73,9 @@ pub async fn handle_gateway(config_manager: &ConfigManager, include_inactive: bo
         return Ok(());
     }
 
+    // Build local project index once per command invocation
+    let project_index = crate::project_index::build_index(&crate::project_index::default_search_roots());
+
     // Display projects
     println!("\n{}", "Your Development Gateway".cyan().bold());
     println!("{}", "Available projects:".white());
@@ -122,7 +84,7 @@ pub async fn handle_gateway(config_manager: &ConfigManager, include_inactive: bo
         let project = &gateway_project.project;
         
         // Check if project exists locally
-        let (local_status, local_info) = check_project_local_status(&project.name);
+        let (local_status, local_info) = check_project_local_status(&project.name, &project_index);
         let (status_indicator, project_name_colored) = match local_status {
             LocalStatus::Local => ("".green(), project.name.green().bold()),
             LocalStatus::NotLocal => ("".red(), project.name.red().bold()),
@@ -578,3 +540,44 @@ struct UploadInitialFilesRequest {
     project_id: uuid::Uuid,
     files: HashMap<PathBuf, String>,
 } 
+
+#[cfg(test)]
+mod profiling_tests {
+    use super::*;
+    use crate::profiling::{build_project_tree, walk_entry_count, TempTree};
+    use std::time::Instant;
+
+    #[test]
+    #[ignore = "profiling: run with --ignored --nocapture"]
+    fn profile_gateway_project_lookup() {
+        let tree = TempTree::new("gateway");
+        let root = tree.0.clone();
+        let names = build_project_tree(&root, 20, 200);
+        let entries = walk_entry_count(&root, 3);
+        let roots = vec![root];
+
+        // Single pruned index walk (equivalent to a miss check or full index build).
+        const ITERS: u32 = 5;
+        let start = Instant::now();
+        for _ in 0..ITERS {
+            let index = crate::project_index::build_index(&roots);
+            assert!(!index.contains_key("missing"));
+        }
+        let per_walk = start.elapsed() / ITERS;
+
+        // Listing pattern: build the index once, then look up every project from the map.
+        let start = Instant::now();
+        let index = crate::project_index::build_index(&roots);
+        for name in &names {
+            let (status, _) = check_project_local_status(name, &index);
+            assert!(matches!(status, LocalStatus::Local));
+        }
+        let listing = start.elapsed();
+
+        eprintln!(
+            "[profile] gateway lookup: {} projects, {entries} total entries in tree, pruned index walk = {per_walk:?}, \
+             listing all projects = {listing:?} (1 walk total)",
+            names.len(),
+        );
+    }
+}

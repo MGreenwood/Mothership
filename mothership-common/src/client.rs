@@ -196,6 +196,13 @@ pub fn active_server_url() -> String {
     crate::ClientConfig::default().mothership_url
 }
 
+static SHARED_HTTP: std::sync::OnceLock<Client> = std::sync::OnceLock::new();
+
+/// Process-wide shared `reqwest::Client` for connection-pool reuse.
+pub fn shared_http_client() -> &'static Client {
+    SHARED_HTTP.get_or_init(Client::new)
+}
+
 /// Starts the browser login flow, same as `mothership auth`. The caller opens `auth_url`.
 pub async fn start_oauth_login(base_url: &str, provider: OAuthProvider) -> Result<OAuthResponse> {
     let hostname = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "unknown".to_string());
@@ -209,7 +216,7 @@ pub async fn start_oauth_login(base_url: &str, provider: OAuthProvider) -> Resul
         callback_url: None,
     };
     let url = format!("{}/auth/oauth/start", base_url.trim_end_matches('/'));
-    let body: ApiResponse<OAuthResponse> = Client::new()
+    let body: ApiResponse<OAuthResponse> = shared_http_client()
         .post(url)
         .json(&request)
         .send()
@@ -225,7 +232,7 @@ pub async fn start_oauth_login(base_url: &str, provider: OAuthProvider) -> Resul
 /// Confirms a pasted token with the server before it is saved.
 pub async fn verify_oauth_token(base_url: &str, token: &str) -> Result<()> {
     let url = format!("{}/auth/check", base_url.trim_end_matches('/'));
-    let response = Client::new().get(url).bearer_auth(token).send().await?;
+    let response = shared_http_client().get(url).bearer_auth(token).send().await?;
     if !response.status().is_success() {
         return Err(anyhow!("Invalid token. Please try the authentication process again."));
     }
@@ -416,7 +423,7 @@ impl MothershipClient {
     pub fn new(base_url: &str, token: Option<String>) -> Result<Self> {
         let base = Url::parse(base_url.trim_end_matches('/')).context("invalid server URL")?;
         Ok(Self {
-            http: Client::new(),
+            http: shared_http_client().clone(),
             base,
             token,
         })
