@@ -42,7 +42,7 @@ Mothership is a **frictionless version control system** that eliminates the comp
 ### **Production-Ready Authentication**
 - **OAuth Integration**: Google and GitHub OAuth flows (`mothership auth google`, `mothership auth github`) with browser-based authorization and PostgreSQL user persistence
 - **Cross-Platform GUI**: Tauri-based desktop hub (`mothership-gui`) for managing projects, rifts, checkpoints, and wormholes
-- **JWT Security**: Machine certificates with automatic token refresh, validation, and PostgreSQL user recreation
+- **JWT Security**: Machine certificates with automatic token refresh and validation. Tokens for users missing from the database are rejected (401) and never recreate the user; re-login issues a fresh server-generated ID
 - **Multi-Role System**: User/Admin/SuperAdmin with PostgreSQL-backed secure role management and ACID compliance
 
 ### **Real-Time Collaboration Engine**
@@ -208,7 +208,7 @@ Mothership consists of several key components:
 #### **Authentication System**
 - Complete OAuth flow with Google and GitHub integration and PostgreSQL user persistence
 - Browser-based device authorization (ports 7523 + 3001) with database validation
-- JWT token management with automatic refresh and PostgreSQL user recreation
+- JWT token management with automatic refresh; tokens for users missing from the database are rejected and require re-login
 - Cross-platform GUI for seamless authentication with database integration
 - Multi-role user system (User/Admin/SuperAdmin) with PostgreSQL role management
 
@@ -271,7 +271,7 @@ SyncMessage::FileUpdate {
 
 ### **Project & Gateway Management**
 ```bash
-mothership init [name]                                # Initialize current directory as a project (writes .mothershipignore)
+mothership init [name] [-p|--private]                 # Initialize current directory as a project (writes .mothershipignore); -p makes it private
 mothership gateway list [--include-inactive]          # List all accessible projects and local status
 mothership beam [project] [--local-dir <path>]        # Beam into a project and start background sync
 mothership gateway release [project]                  # Stop background tracking for a project (defaults to current dir)
@@ -281,9 +281,11 @@ mothership delete <project-name> [--force]            # Delete a project from th
 ### **Rift & Checkpoint Management**
 ```bash
 mothership rift list [--detailed]                     # List rifts in the current project
-mothership rift new <name> [-d <description>]         # Create a new rift forked from the current rift
-mothership rift switch <name>                         # Switch local workspace and daemon to another rift
-mothership rift status                                # Show current rift status
+mothership rift new <name> [-d <description>] [-p]    # Create a new rift forked from the current rift; -p makes it private
+mothership rift switch <name>                         # Switch local workspace and daemon to another rift (non-members are offered an access request)
+mothership rift status                                # Show current rift status; owners also see pending access requests
+mothership rift users <username> -a|--add             # Owner: grant a user access to the rift (also adds them to the gateway)
+mothership rift users <username> -r|--remove          # Owner: remove a user's access to the rift
 mothership rift diff [from] [to]                      # Compare changes between rifts
 mothership rift purge                                 # List and clean up .mothership/local-backup files
 mothership rift chat send -r <rift> <message...>      # Send a chat message to a rift
@@ -297,7 +299,7 @@ mothership restore <checkpoint-id> [--force]          # Restore workspace to a c
 
 ### **Wormholes (Live Multi-Rift Merge Previews)**
 ```bash
-mothership wormhole create <name> <rift1> <rift2>...  # Create a live merge preview across two or more rifts
+mothership wormhole create <name> <rift1> <rift2>... [-p|--private]  # Create a live merge preview across two or more rifts; -p makes it private
 mothership wormhole list                              # List wormholes in the current project
 mothership wormhole show <wormhole>                   # Inspect merged state, active/muted rifts, and conflicts
 mothership wormhole toggle <wormhole> <rift> [--enable|--disable] # Toggle a developer's rift on or off in the wormhole

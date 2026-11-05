@@ -406,6 +406,37 @@ struct CreateRiftRequest<'a> {
     description: Option<&'a str>,
     project_id: Option<Uuid>,
     fork_from: Option<Uuid>,
+    is_private: bool,
+}
+
+#[derive(Serialize)]
+struct RiftAccessRequestBody<'a> {
+    rift_name: &'a str,
+    project_id: Uuid,
+}
+
+#[derive(Serialize)]
+struct RiftMemberBody<'a> {
+    rift_name: &'a str,
+    project_id: Uuid,
+    username: &'a str,
+    remove: bool,
+}
+
+/// A pending request to join a private rift, as shown to the rift owner.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RiftAccessRequestInfo {
+    pub user_id: Uuid,
+    pub username: String,
+    pub requested_at: DateTime<Utc>,
+}
+
+/// Result of asking the server to switch to a rift.
+#[derive(Debug, Clone)]
+pub enum SwitchOutcome {
+    Switched(String),
+    /// The rift exists in the project but the caller is not a member.
+    NotMember(String),
 }
 
 #[derive(Serialize)]
@@ -592,12 +623,14 @@ impl MothershipClient {
         description: Option<&str>,
         project_id: Uuid,
         fork_from: Option<Uuid>,
+        is_private: bool,
     ) -> Result<Uuid> {
         let body = CreateRiftRequest {
             name,
             description,
             project_id: Some(project_id),
             fork_from,
+            is_private,
         };
         let resp: ApiResponse<Uuid> = self.post_api(&["api", "rifts"], &body).await?;
         Self::unwrap_api(resp)
@@ -605,11 +638,79 @@ impl MothershipClient {
 
     /// Switches the user's active rift on the server. The daemon must reconnect separately.
     pub async fn switch_rift(&self, project_id: Uuid, rift_name: &str) -> Result<String> {
+        match self.switch_rift_outcome(project_id, rift_name).await? {
+            SwitchOutcome::Switched(msg) => Ok(msg),
+            SwitchOutcome::NotMember(msg) => Err(anyhow!("{}", msg)),
+        }
+    }
+
+    /// Like [`switch_rift`](Self::switch_rift), but reports a non-member 403 as `SwitchOutcome::NotMember`
+    /// so the caller can offer to request access.
+    pub async fn switch_rift_outcome(&self, project_id: Uuid, rift_name: &str) -> Result<SwitchOutcome> {
         let body = SwitchRiftRequest {
             rift_name,
             project_id: Some(project_id),
         };
-        let resp: ApiResponse<String> = self.post_api(&["api", "rifts", "switch"], &body).await?;
+        let url = self.endpoint(&["api", "rifts", "switch"])?;
+        let response = self.authed(self.http.post(url).json(&body)).send().await?;
+        let forbidden = response.status() == reqwest::StatusCode::FORBIDDEN;
+        if !response.status().is_success() && !forbidden {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            return Err(anyhow!("server returned {}: {}", status, text));
+        }
+        let resp: ApiResponse<String> = response.json().await?;
+        if forbidden {
+            return Ok(SwitchOutcome::NotMember(
+                resp.error.unwrap_or_else(|| "You are not a member of this rift".to_string()),
+            ));
+        }
+        Self::unwrap_api(resp).map(SwitchOutcome::Switched)
+    }
+
+    /// Asks the rift owner for access to a private rift in `project_id`. The caller must be a project member.
+    pub async fn request_rift_access(&self, project_id: Uuid, rift_name: &str) -> Result<String> {
+        let body = RiftAccessRequestBody { rift_name, project_id };
+        let resp: ApiResponse<String> = self.post_api(&["api", "rifts", "access-requests"], &body).await?;
+        Self::unwrap_api(resp)
+    }
+
+    /// Lists pending access requests for a rift. Only the rift owner may call this.
+    pub async fn list_rift_access_requests(
+        &self,
+        project_id: Uuid,
+        rift_name: &str,
+    ) -> Result<Vec<RiftAccessRequestInfo>> {
+        let url = self.endpoint(&["api", "rifts", "access-requests"])?;
+        let project_id = project_id.to_string();
+        let response = self
+            .authed(
+                self.http
+                    .get(url)
+                    .query(&[("rift_name", rift_name), ("project_id", project_id.as_str())]),
+            )
+            .send()
+            .await?;
+        let response = Self::ensure_success(response).await?;
+        let resp: ApiResponse<Vec<RiftAccessRequestInfo>> = response.json().await?;
+        Self::unwrap_api(resp)
+    }
+
+    /// Adds (or removes, when `remove` is true) a user as a member of a rift. Owner only.
+    pub async fn manage_rift_member(
+        &self,
+        project_id: Uuid,
+        rift_name: &str,
+        username: &str,
+        remove: bool,
+    ) -> Result<String> {
+        let body = RiftMemberBody {
+            rift_name,
+            project_id,
+            username,
+            remove,
+        };
+        let resp: ApiResponse<String> = self.post_api(&["api", "rifts", "members"], &body).await?;
         Self::unwrap_api(resp)
     }
 
@@ -669,11 +770,18 @@ impl MothershipClient {
     }
 
     /// Creates a wormhole across at least two rifts in the same project.
-    pub async fn create_wormhole(&self, project_id: Uuid, name: &str, rift_ids: &[Uuid]) -> Result<WormholeSummary> {
+    pub async fn create_wormhole(
+        &self,
+        project_id: Uuid,
+        name: &str,
+        rift_ids: &[Uuid],
+        is_private: bool,
+    ) -> Result<WormholeSummary> {
         let body = CreateWormholeRequest {
             project_id,
             name,
             rift_ids,
+            is_private,
         };
         let resp: ApiResponse<WormholeSummary> = self.post_api(&["api", "wormholes"], &body).await?;
         Self::unwrap_api(resp)
@@ -774,6 +882,7 @@ struct CreateWormholeRequest<'a> {
     project_id: Uuid,
     name: &'a str,
     rift_ids: &'a [Uuid],
+    is_private: bool,
 }
 
 #[derive(Serialize)]

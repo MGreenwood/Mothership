@@ -136,7 +136,7 @@ async fn e2e_rifts_fork_switch_checkpoints_and_restore() {
     let rifts = client.list_rifts(project.id).await.unwrap();
     let main_id = rifts.iter().find(|r| r.name == "main").unwrap().id;
     let feat_id = client
-        .create_rift("feature-branch", Some("New work"), project.id, Some(main_id))
+        .create_rift("feature-branch", Some("New work"), project.id, Some(main_id), false)
         .await
         .unwrap();
     assert_ne!(feat_id, main_id);

@@ -29,12 +29,12 @@ async fn e2e_wormhole_conflict_resolution_and_converge() {
     client.upload_files(project.id, base_files).await.unwrap();
 
     let main_id = client.list_rifts(project.id).await.unwrap()[0].id;
-    let alice_id = client.create_rift("alice", None, project.id, Some(main_id)).await.unwrap();
-    let bob_id = client.create_rift("bob", None, project.id, Some(main_id)).await.unwrap();
+    let alice_id = client.create_rift("alice", None, project.id, Some(main_id), false).await.unwrap();
+    let bob_id = client.create_rift("bob", None, project.id, Some(main_id), false).await.unwrap();
 
     // Create the wormhole while alice and bob share the common base from `main`
     let wh = client
-        .create_wormhole(project.id, "release-preview", &[alice_id, bob_id])
+        .create_wormhole(project.id, "release-preview", &[alice_id, bob_id], false)
         .await
         .unwrap();
     assert_eq!(wh.unresolved_conflicts, 0);
@@ -88,7 +88,7 @@ async fn e2e_wormhole_conflict_resolution_and_converge() {
     // Also verify creating a wormhole AFTER rifts have already diverged from `main`
     // uses `main` as the fallback base so non-overlapping edits still merge cleanly.
     let post_diverge_wh = client
-        .create_wormhole(project.id, "post-diverge-preview", &[alice_id, bob_id])
+        .create_wormhole(project.id, "post-diverge-preview", &[alice_id, bob_id], false)
         .await
         .unwrap();
     assert_eq!(post_diverge_wh.unresolved_conflicts, 1);
@@ -127,13 +127,13 @@ async fn e2e_wormhole_modular_rift_toggle_and_live_watch() {
     client.upload_files(project.id, base_files).await.unwrap();
 
     let main_id = client.list_rifts(project.id).await.unwrap()[0].id;
-    let alice_id = client.create_rift("alice-auth", None, project.id, Some(main_id)).await.unwrap();
-    let bob_id = client.create_rift("bob-payments", None, project.id, Some(main_id)).await.unwrap();
-    let carol_id = client.create_rift("carol-ui", None, project.id, Some(main_id)).await.unwrap();
+    let alice_id = client.create_rift("alice-auth", None, project.id, Some(main_id), false).await.unwrap();
+    let bob_id = client.create_rift("bob-payments", None, project.id, Some(main_id), false).await.unwrap();
+    let carol_id = client.create_rift("carol-ui", None, project.id, Some(main_id), false).await.unwrap();
 
     // Create the live integration wormhole across the three developer rifts
     let wh = client
-        .create_wormhole(project.id, "dev-board", &[alice_id, bob_id, carol_id])
+        .create_wormhole(project.id, "dev-board", &[alice_id, bob_id, carol_id], false)
         .await
         .unwrap();
     assert_eq!(wh.unresolved_conflicts, 0);
@@ -244,10 +244,10 @@ async fn e2e_wormhole_dissolve_and_permanent_delete() {
     let dir = TempDir::new("wh-delete");
     let project = client.create_gateway("del-proj", "Delete test", &dir.0).await.unwrap();
     let main_id = client.list_rifts(project.id).await.unwrap()[0].id;
-    let r2 = client.create_rift("r2", None, project.id, Some(main_id)).await.unwrap();
+    let r2 = client.create_rift("r2", None, project.id, Some(main_id), false).await.unwrap();
 
     let wh = client
-        .create_wormhole(project.id, "temp-wormhole", &[main_id, r2])
+        .create_wormhole(project.id, "temp-wormhole", &[main_id, r2], false)
         .await
         .unwrap();
 

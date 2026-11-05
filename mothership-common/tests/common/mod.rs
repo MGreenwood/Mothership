@@ -2,24 +2,24 @@
 
 pub mod wormhole_handlers;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Path as AxPath, State,
+        Path as AxPath, Query, State,
     },
     http::{HeaderMap, StatusCode},
-    response::Response,
+    response::{IntoResponse, Response},
     routing::{delete, get, post},
     Json, Router,
 };
 use chrono::Utc;
 use mothership_common::{
     auth::{OAuthRequest, OAuthResponse},
-    client::{CheckpointData, RestoreData, RiftInfo},
+    client::{CheckpointData, RestoreData, RiftAccessRequestInfo, RiftInfo},
     merge::Resolution,
     protocol::{ApiResponse, BeamRequest, BeamResponse, SyncMessage},
     ChangeType, Checkpoint, FileChange, Project, ProjectSettings,
@@ -74,6 +74,32 @@ pub struct InnerState {
     pub checkpoints: HashMap<Uuid, Vec<(Checkpoint, HashMap<PathBuf, String>)>>,
     pub wormholes: HashMap<Uuid, StoredWormhole>,
     pub force_unsafe_path_on_join: bool,
+    /// Username of the caller. Tests switch this to act as another user.
+    pub caller: String,
+    pub private_rifts: HashSet<Uuid>,
+    pub rift_members: HashMap<Uuid, HashSet<String>>,
+    /// Pending access requests per rift: (username, requested_at).
+    pub access_requests: HashMap<Uuid, Vec<(String, chrono::DateTime<Utc>)>>,
+}
+
+/// A rift's owner is its author. Private rifts are visible to the owner and to members.
+fn can_access_rift(inner: &InnerState, rift_id: Uuid) -> bool {
+    let Some(rift) = inner.rifts.get(&rift_id) else {
+        return false;
+    };
+    if !inner.private_rifts.contains(&rift_id) {
+        return true;
+    }
+    rift.info.author == inner.caller
+        || inner.rift_members.get(&rift_id).is_some_and(|m| m.contains(&inner.caller))
+}
+
+fn find_rift_id(inner: &InnerState, project_id: Uuid, name: &str) -> Option<Uuid> {
+    inner
+        .rifts
+        .values()
+        .find(|r| r.info.project_id == Some(project_id) && r.info.name == name)
+        .map(|r| r.info.id)
 }
 
 #[derive(Clone)]
@@ -98,7 +124,10 @@ pub fn check_auth(headers: &HeaderMap) -> Result<(), (StatusCode, String)> {
 pub async fn spawn_test_server() -> (String, MockServerState) {
     let (tx, _) = broadcast::channel(256);
     let state = MockServerState {
-        inner: Arc::new(RwLock::new(InnerState::default())),
+        inner: Arc::new(RwLock::new(InnerState {
+            caller: "tester".into(),
+            ..Default::default()
+        })),
         tx,
         base_url: Arc::new(RwLock::new(String::new())),
     };
@@ -118,6 +147,8 @@ pub async fn spawn_test_server() -> (String, MockServerState) {
         .route("/projects/:id/checkpoints/:cid/restore", post(restore_checkpoint))
         .route("/api/rifts", get(list_rifts).post(create_rift))
         .route("/api/rifts/switch", post(switch_rift))
+        .route("/api/rifts/access-requests", get(list_access_requests).post(request_rift_access))
+        .route("/api/rifts/members", post(manage_rift_members))
         .route("/api/wormholes", get(wormhole_handlers::list_wormholes).post(wormhole_handlers::create_wormhole))
         .route("/api/wormholes/:id", get(wormhole_handlers::get_wormhole).delete(wormhole_handlers::delete_wormhole))
         .route("/api/wormholes/:id/resolve", post(wormhole_handlers::resolve_conflict))
@@ -281,6 +312,8 @@ struct CreateRiftReq {
     description: Option<String>,
     project_id: Option<Uuid>,
     fork_from: Option<Uuid>,
+    #[serde(default)]
+    is_private: bool,
 }
 
 async fn create_rift(
@@ -310,6 +343,9 @@ async fn create_rift(
             files: base_files,
         },
     );
+    if req.is_private {
+        inner.private_rifts.insert(new_id);
+    }
     Ok(Json(ApiResponse::success(new_id)))
 }
 
@@ -319,23 +355,119 @@ struct SwitchRiftReq {
     project_id: Option<Uuid>,
 }
 
-async fn switch_rift(
+async fn switch_rift(State(state): State<MockServerState>, headers: HeaderMap, Json(req): Json<SwitchRiftReq>) -> Response {
+    if let Err(e) = check_auth(&headers) {
+        return e.into_response();
+    }
+    let mut inner = state.inner.write().await;
+    let project_id = req.project_id.unwrap();
+    let Some(rift_id) = find_rift_id(&inner, project_id, &req.rift_name) else {
+        return (StatusCode::NOT_FOUND, "rift not found").into_response();
+    };
+    if !can_access_rift(&inner, rift_id) {
+        let body = ApiResponse::<String>::error("You are not a member of this rift".into());
+        return (StatusCode::FORBIDDEN, Json(body)).into_response();
+    }
+    inner.active_rift_by_project.insert(project_id, rift_id);
+    Json(ApiResponse::success(req.rift_name)).into_response()
+}
+
+#[derive(Deserialize)]
+struct AccessListQuery {
+    rift_name: String,
+    project_id: Uuid,
+}
+
+async fn list_access_requests(
     State(state): State<MockServerState>,
     headers: HeaderMap,
-    Json(req): Json<SwitchRiftReq>,
+    Query(q): Query<AccessListQuery>,
+) -> Result<Json<ApiResponse<Vec<RiftAccessRequestInfo>>>, (StatusCode, String)> {
+    check_auth(&headers)?;
+    let inner = state.inner.read().await;
+    let rift_id = find_rift_id(&inner, q.project_id, &q.rift_name)
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "rift not found".into()))?;
+    if inner.rifts[&rift_id].info.author != inner.caller {
+        return Err((StatusCode::FORBIDDEN, "only the rift owner can list access requests".into()));
+    }
+    let requests = inner
+        .access_requests
+        .get(&rift_id)
+        .map(|reqs| {
+            reqs.iter()
+                .map(|(username, requested_at)| RiftAccessRequestInfo {
+                    user_id: Uuid::new_v4(),
+                    username: username.clone(),
+                    requested_at: *requested_at,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(Json(ApiResponse::success(requests)))
+}
+
+#[derive(Deserialize)]
+struct AccessRequestBody {
+    rift_name: String,
+    project_id: Uuid,
+}
+
+async fn request_rift_access(
+    State(state): State<MockServerState>,
+    headers: HeaderMap,
+    Json(req): Json<AccessRequestBody>,
 ) -> Result<Json<ApiResponse<String>>, (StatusCode, String)> {
     check_auth(&headers)?;
     let mut inner = state.inner.write().await;
-    let project_id = req.project_id.unwrap();
-    let rift_id = inner
-        .rifts
-        .values()
-        .find(|r| r.info.project_id == Some(project_id) && r.info.name == req.rift_name)
-        .map(|r| r.info.id)
+    let rift_id = find_rift_id(&inner, req.project_id, &req.rift_name)
         .ok_or_else(|| (StatusCode::NOT_FOUND, "rift not found".into()))?;
-    inner.active_rift_by_project.insert(project_id, rift_id);
-    Ok(Json(ApiResponse::success(req.rift_name)))
+    if !inner.private_rifts.contains(&rift_id) {
+        return Err((StatusCode::BAD_REQUEST, "rift is not private".into()));
+    }
+    if can_access_rift(&inner, rift_id) {
+        return Ok(Json(ApiResponse::success("You already have access".into())));
+    }
+    let caller = inner.caller.clone();
+    let pending = inner.access_requests.entry(rift_id).or_default();
+    if !pending.iter().any(|(u, _)| *u == caller) {
+        pending.push((caller, Utc::now()));
+    }
+    Ok(Json(ApiResponse::success("Access request sent".into())))
 }
+
+#[derive(Deserialize)]
+struct RiftMemberBody {
+    rift_name: String,
+    project_id: Uuid,
+    username: String,
+    remove: bool,
+}
+
+async fn manage_rift_members(
+    State(state): State<MockServerState>,
+    headers: HeaderMap,
+    Json(req): Json<RiftMemberBody>,
+) -> Result<Json<ApiResponse<String>>, (StatusCode, String)> {
+    check_auth(&headers)?;
+    let mut inner = state.inner.write().await;
+    let rift_id = find_rift_id(&inner, req.project_id, &req.rift_name)
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "rift not found".into()))?;
+    if inner.rifts[&rift_id].info.author != inner.caller {
+        return Err((StatusCode::FORBIDDEN, "only the rift owner can manage members".into()));
+    }
+    if req.remove {
+        if let Some(members) = inner.rift_members.get_mut(&rift_id) {
+            members.remove(&req.username);
+        }
+    } else {
+        inner.rift_members.entry(rift_id).or_default().insert(req.username.clone());
+        if let Some(pending) = inner.access_requests.get_mut(&rift_id) {
+            pending.retain(|(u, _)| *u != req.username);
+        }
+    }
+    Ok(Json(ApiResponse::success("Member updated".into())))
+}
+
 
 #[derive(Deserialize)]
 struct CheckpointReq {

@@ -23,6 +23,8 @@ pub struct WormholeRecord {
     pub rift_ids: Vec<RiftId>,
     /// Rifts currently toggled off (muted) in this wormhole
     pub disabled_rift_ids: Vec<RiftId>,
+    /// Private wormholes are only visible to their creator
+    pub is_private: bool,
 }
 
 impl WormholeRecord {
@@ -31,10 +33,10 @@ impl WormholeRecord {
     }
 }
 
-type WormholeRow = (Uuid, Uuid, String, String, Uuid, DateTime<Utc>, Option<Uuid>, String);
+type WormholeRow = (Uuid, Uuid, String, String, Uuid, DateTime<Utc>, Option<Uuid>, String, bool);
 
 const WORMHOLE_COLUMNS: &str =
-    "id, project_id, name, status, created_by, created_at, converted_rift_id, base_files";
+    "id, project_id, name, status, created_by, created_at, converted_rift_id, base_files, is_private";
 
 /// PostgreSQL database implementation
 #[derive(Clone)]
@@ -162,6 +164,37 @@ impl Database {
                 conflict_id TEXT NOT NULL,
                 resolution TEXT NOT NULL,
                 PRIMARY KEY (wormhole_id, path, conflict_id)
+            )
+        "#).execute(&self.pool).await?;
+
+        // Privacy flags. Rifts and projects come from the migrations, so these run after them.
+        sqlx::query("ALTER TABLE projects ADD COLUMN IF NOT EXISTS is_private BOOLEAN NOT NULL DEFAULT FALSE")
+            .execute(&self.pool).await?;
+        sqlx::query("ALTER TABLE rifts ADD COLUMN IF NOT EXISTS is_private BOOLEAN NOT NULL DEFAULT FALSE")
+            .execute(&self.pool).await?;
+        sqlx::query("ALTER TABLE rifts ADD COLUMN IF NOT EXISTS created_by UUID REFERENCES users(id) ON DELETE SET NULL")
+            .execute(&self.pool).await?;
+        // Legacy rifts predate ownership. Assign the earliest collaborator as owner; rifts with no collaborators stay ownerless.
+        sqlx::query(r#"
+            UPDATE rifts r
+            SET created_by = (
+                SELECT rc.user_id FROM rift_collaborators rc
+                WHERE rc.rift_id = r.id
+                ORDER BY rc.joined_at ASC, rc.user_id ASC
+                LIMIT 1
+            )
+            WHERE r.created_by IS NULL
+        "#).execute(&self.pool).await?;
+        sqlx::query("ALTER TABLE wormholes ADD COLUMN IF NOT EXISTS is_private BOOLEAN NOT NULL DEFAULT FALSE")
+            .execute(&self.pool).await?;
+
+        // Pending requests from project members who want to join a rift
+        sqlx::query(r#"
+            CREATE TABLE IF NOT EXISTS rift_access_requests (
+                rift_id UUID NOT NULL REFERENCES rifts(id) ON DELETE CASCADE,
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (rift_id, user_id)
             )
         "#).execute(&self.pool).await?;
 
@@ -458,19 +491,29 @@ impl Database {
         user_id: UserId,
         rift_name: Option<String>,
     ) -> Result<Rift> {
+        self.create_rift_with_privacy(project_id, user_id, rift_name, false).await
+    }
+
+    /// Create a rift owned by `user_id`; private rifts are hidden from non-collaborators
+    pub async fn create_rift_with_privacy(
+        &self,
+        project_id: ProjectId,
+        user_id: UserId,
+        rift_name: Option<String>,
+        is_private: bool,
+    ) -> Result<Rift> {
         let rift_id = Uuid::new_v4();
         let name = rift_name.unwrap_or_else(|| "main".to_string());
         
         // Create the rift
-        sqlx::query!(
-            r#"
-            INSERT INTO rifts (id, project_id, name, is_active)
-            VALUES ($1, $2, $3, true)
-            "#,
-            rift_id,
-            project_id,
-            name
+        sqlx::query(
+            "INSERT INTO rifts (id, project_id, name, is_active, is_private, created_by) VALUES ($1, $2, $3, true, $4, $5)",
         )
+        .bind(rift_id)
+        .bind(project_id)
+        .bind(&name)
+        .bind(is_private)
+        .bind(user_id)
         .execute(&self.pool)
         .await?;
 
@@ -500,6 +543,102 @@ impl Database {
         })
     }
 
+    /// Look up an active rift by project and name, returning its id, owner, and privacy flag
+    pub async fn find_rift_access_info(
+        &self,
+        project_id: ProjectId,
+        name: &str,
+    ) -> Result<Option<(RiftId, Option<UserId>, bool)>> {
+        let row = sqlx::query_as::<_, (Uuid, Option<Uuid>, bool)>(
+            "SELECT id, created_by, is_private FROM rifts WHERE project_id = $1 AND name = $2 AND is_active = true",
+        )
+        .bind(project_id)
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    /// Ids of private rifts in a project, used to hide them from non-collaborators
+    pub async fn private_rift_ids_for_project(&self, project_id: ProjectId) -> Result<Vec<RiftId>> {
+        let ids: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM rifts WHERE project_id = $1 AND is_private = true")
+            .bind(project_id)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(ids)
+    }
+
+    /// Whether the user is a collaborator on the rift
+    pub async fn is_rift_collaborator(&self, rift_id: RiftId, user_id: UserId) -> Result<bool> {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM rift_collaborators WHERE rift_id = $1 AND user_id = $2)",
+        )
+        .bind(rift_id)
+        .bind(user_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(exists)
+    }
+
+    /// Record a pending request to join a rift; repeated requests are a no-op
+    pub async fn create_rift_access_request(&self, rift_id: RiftId, user_id: UserId) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO rift_access_requests (rift_id, user_id) VALUES ($1, $2) ON CONFLICT (rift_id, user_id) DO NOTHING",
+        )
+        .bind(rift_id)
+        .bind(user_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Pending access requests for a rift as (user id, username, requested at)
+    pub async fn list_rift_access_requests(
+        &self,
+        rift_id: RiftId,
+    ) -> Result<Vec<(UserId, String, DateTime<Utc>)>> {
+        let rows = sqlx::query_as::<_, (Uuid, String, DateTime<Utc>)>(
+            "SELECT u.id, u.username, r.created_at FROM rift_access_requests r \
+             JOIN users u ON u.id = r.user_id WHERE r.rift_id = $1 ORDER BY r.created_at",
+        )
+        .bind(rift_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Add a user to a rift and to its project, clearing any pending request
+    pub async fn add_rift_member(&self, project_id: ProjectId, rift_id: RiftId, user_id: UserId) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("INSERT INTO project_members (project_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING")
+            .bind(project_id)
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("INSERT INTO rift_collaborators (rift_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING")
+            .bind(rift_id)
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM rift_access_requests WHERE rift_id = $1 AND user_id = $2")
+            .bind(rift_id)
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Remove a user from a rift's collaborators; project membership is left unchanged
+    pub async fn remove_rift_member(&self, rift_id: RiftId, user_id: UserId) -> Result<()> {
+        sqlx::query("DELETE FROM rift_collaborators WHERE rift_id = $1 AND user_id = $2")
+            .bind(rift_id)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Whether an active wormhole with this name already exists in the project
     pub async fn active_wormhole_name_exists(&self, project_id: ProjectId, name: &str) -> Result<bool> {
         let exists: bool = sqlx::query_scalar(
@@ -520,19 +659,21 @@ impl Database {
         created_by: UserId,
         base_hashes: &HashMap<String, String>,
         rift_ids: &[RiftId],
+        is_private: bool,
     ) -> Result<WormholeRecord> {
         let id = Uuid::new_v4();
         let base_json = serde_json::to_string(base_hashes)?;
         let mut tx = self.pool.begin().await?;
 
         sqlx::query(
-            "INSERT INTO wormholes (id, project_id, name, created_by, base_files) VALUES ($1, $2, $3, $4, $5)",
+            "INSERT INTO wormholes (id, project_id, name, created_by, base_files, is_private) VALUES ($1, $2, $3, $4, $5, $6)",
         )
         .bind(id)
         .bind(project_id)
         .bind(name)
         .bind(created_by)
         .bind(base_json)
+        .bind(is_private)
         .execute(&mut *tx)
         .await?;
 
@@ -587,7 +728,7 @@ impl Database {
 
     async fn hydrate_wormholes(&self, rows: Vec<WormholeRow>) -> Result<Vec<WormholeRecord>> {
         let mut records = Vec::with_capacity(rows.len());
-        for (id, project_id, name, status, created_by, created_at, converted_rift_id, base_files) in rows {
+        for (id, project_id, name, status, created_by, created_at, converted_rift_id, base_files, is_private) in rows {
             let rift_rows: Vec<(Uuid, bool)> = sqlx::query_as(
                 "SELECT rift_id, enabled FROM wormhole_rifts WHERE wormhole_id = $1 ORDER BY rift_id",
             )
@@ -613,6 +754,7 @@ impl Database {
                 base_hashes: serde_json::from_str(&base_files)?,
                 rift_ids,
                 disabled_rift_ids,
+                is_private,
             });
         }
         Ok(records)
@@ -932,22 +1074,31 @@ impl Database {
 
     /// Create a new project
     pub async fn create_project(&self, name: String, description: String, members: Vec<UserId>) -> Result<Project> {
+        self.create_project_with_privacy(name, description, members, false).await
+    }
+
+    /// Create a project; private projects are only listed to their members
+    pub async fn create_project_with_privacy(
+        &self,
+        name: String,
+        description: String,
+        members: Vec<UserId>,
+        is_private: bool,
+    ) -> Result<Project> {
         let project_id = Uuid::new_v4();
         
         // Start transaction
         let mut tx = self.pool.begin().await?;
 
         // Create the project
-        let project = sqlx::query!(
-            r#"
-            INSERT INTO projects (id, name, description)
-            VALUES ($1, $2, $3)
-            RETURNING id, name, description, created_at
-            "#,
-            project_id,
-            name,
-            description
+        let project = sqlx::query_as::<_, (Uuid, String, Option<String>, DateTime<Utc>)>(
+            "INSERT INTO projects (id, name, description, is_private) VALUES ($1, $2, $3, $4) \
+             RETURNING id, name, description, created_at",
         )
+        .bind(project_id)
+        .bind(&name)
+        .bind(&description)
+        .bind(is_private)
         .fetch_one(&mut *tx)
         .await?;
 
@@ -965,11 +1116,11 @@ impl Database {
         tx.commit().await?;
 
         Ok(Project {
-            id: project.id,
-            name: project.name,
-            description: project.description.unwrap_or_default(),
+            id: project.0,
+            name: project.1,
+            description: project.2.unwrap_or_default(),
             members,
-            created_at: project.created_at,
+            created_at: project.3,
             settings: ProjectSettings::default(),
         })
     }

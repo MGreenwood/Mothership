@@ -55,6 +55,9 @@ enum Commands {
     Init {
         /// Project name (optional, defaults to directory name)
         name: Option<String>,
+        /// Create a private gateway (only visible to its members)
+        #[arg(short = 'p', long)]
+        private: bool,
     },
     /// Beam into a project for development
     Beam {
@@ -193,11 +196,26 @@ enum RiftAction {
         /// Description of the rift's purpose
         #[arg(short, long)]
         description: Option<String>,
+
+        /// Make the rift private (only members can see or switch to it)
+        #[arg(short = 'p', long)]
+        private: bool,
     },
     /// Switch to a different rift
     Switch {
         /// Name or ID of the rift to switch to
         name: String,
+    },
+    /// Add or remove a member of the current rift (owner only)
+    Users {
+        /// Add the user to the rift
+        #[arg(short = 'a', long, conflicts_with = "remove")]
+        add: bool,
+        /// Remove the user from the rift
+        #[arg(short = 'r', long, conflicts_with = "add")]
+        remove: bool,
+        /// Username to add or remove
+        username: String,
     },
     /// Show current rift status
     Status,
@@ -347,7 +365,7 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        Commands::Init { name } => {
+        Commands::Init { name, private } => {
             // Validate authentication before init operations
             if let Err(e) = validate_authentication(&config_manager).await {
                 print_auth_error(&e.to_string());
@@ -365,7 +383,7 @@ async fn main() -> Result<()> {
             println!("{}", format!("Initializing {}...", project_name).cyan().bold());
             
             // Create the gateway/project (CRITICAL FIX: Properly handle errors)
-            match gateway::handle_gateway_create(&config_manager, project_name.clone(), current_dir.clone()).await {
+            match gateway::handle_gateway_create(&config_manager, project_name.clone(), current_dir.clone(), private).await {
                 Ok(_project) => {
                     // Automatically beam into the newly created project
                     println!("\n{}", "Automatically beaming into your new project...".cyan().bold());
@@ -503,11 +521,14 @@ async fn main() -> Result<()> {
                 RiftAction::List { detailed } => {
                     handle_rifts_command(detailed).await?;
                 }
-                RiftAction::New { name, description } => {
-                    handle_create_rift_command(name, description).await?;
+                RiftAction::New { name, description, private } => {
+                    handle_create_rift_command(name, description, private).await?;
                 }
                 RiftAction::Switch { name } => {
                     handle_switch_rift_command(name).await?;
+                }
+                RiftAction::Users { add, remove, username } => {
+                    handle_rift_users_command(add, remove, username).await?;
                 }
                 RiftAction::Status => {
                     handle_rift_status_command().await?;
@@ -718,14 +739,14 @@ async fn handle_rifts_command(detailed: bool) -> Result<()> {
     Ok(())
 }
 
-async fn handle_create_rift_command(name: String, description: Option<String>) -> Result<()> {
+async fn handle_create_rift_command(name: String, description: Option<String>, private: bool) -> Result<()> {
     // Validate rift name
     if !is_valid_rift_name(&name) {
         anyhow::bail!("Invalid rift name. Use only letters, numbers, dashes, and underscores.");
     }
 
-    let _rift_id = create_rift(&name, description).await?;
-    println!("Created new rift: {}", name);
+    let _rift_id = create_rift(&name, description, private).await?;
+    println!("Created new {}rift: {}", if private { "private " } else { "" }, name);
     println!("Switch to it with: mothership rift switch \"{}\"", name);
 
     Ok(())
@@ -742,7 +763,9 @@ async fn handle_switch_rift_command(rift: String) -> Result<()> {
         }
     }
 
-    switch_to_rift(&rift).await?;
+    if !switch_to_rift(&rift).await? {
+        return Ok(());
+    }
     println!("Switched to rift: {}", rift);
     
     // If this is a conflict rift, show the README
@@ -770,12 +793,124 @@ async fn handle_rift_status_command() -> Result<()> {
                 println!("\nThis is a conflict resolution rift");
                 println!("Use 'mothership rift-diff --to main' to see differences from main rift");
             }
+
+            if let Some(requests) = fetch_rift_access_requests(&rift.name).await? {
+                if requests.is_empty() {
+                    println!("\nNo pending access requests");
+                } else {
+                    println!("\nPending access requests:");
+                    for request in requests {
+                        println!(
+                            "  {} (requested {})",
+                            request.username,
+                            request.requested_at.format("%Y-%m-%d %H:%M:%S")
+                        );
+                    }
+                }
+            }
         }
         None => println!("Not currently in any rift"),
     }
 
     Ok(())
 }
+
+async fn handle_rift_users_command(add: bool, remove: bool, username: String) -> Result<()> {
+    if add == remove {
+        anyhow::bail!("Specify exactly one of -a/--add or -r/--remove");
+    }
+
+    let rift = get_current_rift()
+        .await?
+        .ok_or_else(|| anyhow!("Not currently in any rift"))?;
+    let project_id = local_project_id().ok_or_else(|| anyhow!("Not in a project directory"))?;
+    let (server_url, auth_token) = active_server_and_token()?;
+
+    #[derive(serde::Serialize)]
+    struct RiftMemberRequest<'a> {
+        rift_name: &'a str,
+        project_id: Uuid,
+        username: &'a str,
+        remove: bool,
+    }
+
+    let response = http_client()
+        .post(format!("{}/api/rifts/members", server_url))
+        .header("Authorization", format!("Bearer {}", auth_token))
+        .json(&RiftMemberRequest {
+            rift_name: &rift.name,
+            project_id,
+            username: &username,
+            remove,
+        })
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        return Err(anyhow!("Failed to update rift members: {}", response_error_message(response).await));
+    }
+
+    let api_response: ApiResponse<String> = response.json().await?;
+    if !api_response.success {
+        let error_msg = api_response.error.unwrap_or_else(|| "Unknown error".to_string());
+        return Err(anyhow!("Server error: {}", error_msg));
+    }
+    println!("{}", api_response.data.unwrap_or_else(|| "Rift members updated".to_string()));
+
+    Ok(())
+}
+
+#[derive(serde::Deserialize)]
+struct RiftAccessRequestEntry {
+    username: String,
+    requested_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Pending access requests for a rift. Returns `None` when the caller is not the rift owner.
+async fn fetch_rift_access_requests(rift_name: &str) -> Result<Option<Vec<RiftAccessRequestEntry>>> {
+    let Some(project_id) = local_project_id() else {
+        return Ok(None);
+    };
+    let (server_url, auth_token) = active_server_and_token()?;
+    let project_id = project_id.to_string();
+
+    let response = http_client()
+        .get(format!("{}/api/rifts/access-requests", server_url))
+        .query(&[("rift_name", rift_name), ("project_id", project_id.as_str())])
+        .header("Authorization", format!("Bearer {}", auth_token))
+        .send()
+        .await?;
+
+    if response.status() == reqwest::StatusCode::FORBIDDEN {
+        return Ok(None);
+    }
+    if !response.status().is_success() {
+        return Err(anyhow!("Failed to list access requests: {}", response_error_message(response).await));
+    }
+
+    let api_response: ApiResponse<Vec<RiftAccessRequestEntry>> = response.json().await?;
+    Ok(api_response.data)
+}
+
+/// Asks a yes/no question on stdin. Anything other than "y" or "yes" counts as no.
+fn prompt_yes_no(question: &str) -> Result<bool> {
+    use std::io::{BufRead, Write};
+    print!("{} [y/N] ", question);
+    std::io::stdout().flush()?;
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line)?;
+    Ok(matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
+}
+
+/// Server URL and auth token for authenticated API calls
+fn active_server_and_token() -> Result<(String, String)> {
+    let active_server = connections::get_active_server()?
+        .ok_or_else(|| anyhow!("No active server connection. Please run 'mothership connect <server-url>' first."))?;
+    let auth_token = get_oauth_token()
+        .ok_or_else(|| anyhow!("Not authenticated. Please run 'mothership auth' first."))?;
+    Ok((active_server.url, auth_token))
+}
+
 
 async fn handle_rift_diff_command(from: Option<String>, to: Option<String>) -> Result<()> {
     let (from_rift, to_rift) = match (from, to) {
@@ -1086,7 +1221,7 @@ async fn get_rifts() -> Result<Vec<RiftInfo>> {
 }
 
 /// Create a new rift
-async fn create_rift(name: &str, description: Option<String>) -> Result<uuid::Uuid> {
+async fn create_rift(name: &str, description: Option<String>, is_private: bool) -> Result<uuid::Uuid> {
     // Check if we're in a project directory
     let project_metadata = get_current_project_metadata()?;
     
@@ -1109,6 +1244,7 @@ async fn create_rift(name: &str, description: Option<String>) -> Result<uuid::Uu
         description: Option<String>,
         project_id: Option<uuid::Uuid>,
         fork_from: Option<uuid::Uuid>,
+        is_private: bool,
     }
     
     let request = CreateRiftRequest {
@@ -1116,6 +1252,7 @@ async fn create_rift(name: &str, description: Option<String>) -> Result<uuid::Uu
         description,
         project_id: local_project_id(),
         fork_from: project_metadata.rift_id.as_deref().and_then(|id| Uuid::parse_str(id).ok()),
+        is_private,
     };
     
     let response = client
@@ -1198,8 +1335,8 @@ async fn get_current_rift() -> Result<Option<RiftInfo>> {
     Ok(None)
 }
 
-/// Switch to a different rift
-async fn switch_to_rift(rift_name: &str) -> Result<()> {
+/// Switch to a different rift. Returns `false` if the caller is not a member and chose not to request access.
+async fn switch_to_rift(rift_name: &str) -> Result<bool> {
     // Check if we're in a project directory
     let _project_metadata = get_current_project_metadata()?;
     
@@ -1233,6 +1370,34 @@ async fn switch_to_rift(rift_name: &str) -> Result<()> {
         .send()
         .await?;
     
+    if response.status() == reqwest::StatusCode::FORBIDDEN {
+        let message = response_error_message(response).await;
+        println!("{}", message);
+        if !prompt_yes_no(&format!("Request access to rift '{}'?", rift_name))? {
+            return Ok(false);
+        }
+        let project_id = local_project_id().ok_or_else(|| anyhow!("Not in a project directory"))?;
+
+        #[derive(serde::Serialize)]
+        struct RiftAccessRequestBody<'a> {
+            rift_name: &'a str,
+            project_id: Uuid,
+        }
+
+        let response = client
+            .post(format!("{}/api/rifts/access-requests", active_server.url))
+            .header("Authorization", format!("Bearer {}", auth_token))
+            .json(&RiftAccessRequestBody { rift_name, project_id })
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            return Err(anyhow!("Failed to request access: {}", response_error_message(response).await));
+        }
+        let api_response: ApiResponse<String> = response.json().await?;
+        println!("{}", api_response.data.unwrap_or_else(|| "Access request sent".to_string()));
+        return Ok(false);
+    }
+
     if !response.status().is_success() {
         return Err(anyhow!("Failed to switch rift: {}", response_error_message(response).await));
     }
@@ -1261,7 +1426,7 @@ async fn switch_to_rift(rift_name: &str) -> Result<()> {
         }
     }
     
-    Ok(())
+    Ok(true)
 }
 
 /// Get differences between two rifts

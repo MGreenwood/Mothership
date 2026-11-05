@@ -27,6 +27,9 @@ pub enum WormholeAction {
         /// Two or more rift names to merge
         #[arg(required = true, num_args = 2..)]
         rifts: Vec<String>,
+        /// Make the wormhole private (only visible to its creator)
+        #[arg(short = 'p', long)]
+        private: bool,
     },
     /// List wormholes in this project
     List,
@@ -244,7 +247,7 @@ pub async fn run(action: WormholeAction) -> Result<()> {
     let session = session()?;
 
     match action {
-        WormholeAction::Create { name, rifts } => create(&session, project_id, &name, &rifts).await,
+        WormholeAction::Create { name, rifts, private } => create(&session, project_id, &name, &rifts, private).await,
         WormholeAction::List => list(&session, project_id).await,
         WormholeAction::Show { wormhole } => {
             let id = resolve_wormhole_id(&session, project_id, &wormhole).await?;
@@ -505,7 +508,7 @@ async fn watch(session: &Session, id: Uuid) -> Result<()> {
     Ok(())
 }
 
-async fn create(session: &Session, project_id: Uuid, name: &str, rift_refs: &[String]) -> Result<()> {
+async fn create(session: &Session, project_id: Uuid, name: &str, rift_refs: &[String], is_private: bool) -> Result<()> {
     let rifts = get_rifts().await?;
     let mut rift_ids = Vec::with_capacity(rift_refs.len());
     for reference in rift_refs {
@@ -516,6 +519,7 @@ async fn create(session: &Session, project_id: Uuid, name: &str, rift_refs: &[St
         "project_id": project_id,
         "name": name,
         "rift_ids": rift_ids,
+        "is_private": is_private,
     });
     let summary: WormholeSummary = session.post("/api/wormholes", &body).await?;
     println!("{} {} ({})", "Created wormhole".green(), summary.name.bold(), summary.id);

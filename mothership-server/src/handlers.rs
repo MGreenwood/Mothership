@@ -136,6 +136,9 @@ pub struct CreateRiftRequest {
     /// Rift whose current files the new rift starts with
     #[serde(default)]
     pub fork_from: Option<Uuid>,
+    /// Private rifts are hidden from anyone who is not a collaborator
+    #[serde(default)]
+    pub is_private: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -143,6 +146,35 @@ pub struct SwitchRiftRequest {
     pub rift_name: String,
     #[serde(default)]
     pub project_id: Option<Uuid>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RiftAccessRequest {
+    pub rift_name: String,
+    pub project_id: Uuid,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RiftAccessRequestQuery {
+    pub rift_name: String,
+    pub project_id: Uuid,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RiftMemberRequest {
+    pub rift_name: String,
+    pub project_id: Uuid,
+    pub username: String,
+    /// `true` removes the member; `false` (default) adds them
+    #[serde(default)]
+    pub remove: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RiftAccessRequestInfo {
+    pub user_id: Uuid,
+    pub username: String,
+    pub requested_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -194,8 +226,14 @@ pub async fn list_rifts(
             Ok(rifts) => rifts,
             Err(_) => continue, // Skip projects with errors
         };
+        let private_ids = state.db.private_rift_ids_for_project(project.id).await.unwrap_or_default();
 
         for rift in rifts {
+            // Private rifts are only visible to their collaborators
+            if private_ids.contains(&rift.id) && !rift.collaborators.contains(&user_id) {
+                continue;
+            }
+
             // Get file count from storage engine
             let file_count = match state.sync.storage.get_live_state(rift.id).await {
                 Ok(files) => files.len(),
@@ -295,7 +333,7 @@ pub async fn create_rift(
     };
 
     // Create the rift
-    let rift = match state.db.create_rift(project_id, user_id, Some(req.name.clone())).await {
+    let rift = match state.db.create_rift_with_privacy(project_id, user_id, Some(req.name.clone()), req.is_private).await {
         Ok(rift) => rift,
         Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
     };
@@ -347,6 +385,7 @@ pub async fn switch_rift(
     };
 
     let mut matches = Vec::new();
+    let mut non_member_match = false;
     for project in projects {
         if req.project_id.is_some_and(|id| id != project.id) {
             continue;
@@ -357,13 +396,22 @@ pub async fn switch_rift(
         };
 
         for rift in rifts {
-            if rift.name == req.rift_name && rift.collaborators.contains(&user_id) {
+            if rift.name != req.rift_name {
+                continue;
+            }
+            if rift.collaborators.contains(&user_id) {
                 matches.push(rift);
+            } else {
+                non_member_match = true;
             }
         }
     }
 
     let rift = match matches.len() {
+        0 if non_member_match => {
+            let message = format!("You are not a member of rift '{}'", req.rift_name);
+            return Ok((StatusCode::FORBIDDEN, ResponseJson(ApiResponse::<String>::error(message))).into_response());
+        }
         0 => return Err(StatusCode::NOT_FOUND),
         1 => matches.remove(0),
         _ => {
@@ -375,6 +423,96 @@ pub async fn switch_rift(
     info!("User {} switched to rift: {} in project: {}", user_id, rift.id, rift.project_id);
 
     Ok(ResponseJson(ApiResponse::success("Rift switched successfully".to_string())).into_response())
+}
+
+/// Resolve the authenticated user from the bearer token
+fn authenticated_user(state: &AppState, headers: &HeaderMap) -> Result<Uuid, StatusCode> {
+    let auth_header = headers.get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let token = auth_header.strip_prefix("Bearer ").ok_or(StatusCode::UNAUTHORIZED)?;
+    let claims = state.auth.verify_token(token).map_err(|_| StatusCode::UNAUTHORIZED)?;
+    Uuid::parse_str(&claims.sub).map_err(|_| StatusCode::UNAUTHORIZED)
+}
+
+/// Ask to join a rift; the caller must already be a member of its project
+pub async fn request_rift_access(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<RiftAccessRequest>,
+) -> Result<ResponseJson<ApiResponse<String>>, StatusCode> {
+    let user_id = authenticated_user(&state, &headers)?;
+
+    if !state.db.user_has_project_access(user_id, req.project_id).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)? {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let (rift_id, _, _) = state.db.find_rift_access_info(req.project_id, &req.rift_name).await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    if state.db.is_rift_collaborator(rift_id, user_id).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)? {
+        return Ok(ResponseJson(ApiResponse::success("You already have access to this rift".to_string())));
+    }
+
+    state.db.create_rift_access_request(rift_id, user_id).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    info!("User {} requested access to rift {}", user_id, rift_id);
+
+    Ok(ResponseJson(ApiResponse::success("Access request submitted".to_string())))
+}
+
+/// Pending access requests for a rift; only the rift owner (its creator) may view them
+pub async fn list_rift_access_requests(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<RiftAccessRequestQuery>,
+) -> Result<ResponseJson<ApiResponse<Vec<RiftAccessRequestInfo>>>, StatusCode> {
+    let user_id = authenticated_user(&state, &headers)?;
+
+    let (rift_id, owner, _) = state.db.find_rift_access_info(query.project_id, &query.rift_name).await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    if owner != Some(user_id) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let requests = state.db.list_rift_access_requests(rift_id).await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .into_iter()
+        .map(|(user_id, username, requested_at)| RiftAccessRequestInfo { user_id, username, requested_at })
+        .collect();
+
+    Ok(ResponseJson(ApiResponse::success(requests)))
+}
+
+/// Add or remove a rift member; only the rift owner may manage members
+pub async fn manage_rift_members(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<RiftMemberRequest>,
+) -> Result<ResponseJson<ApiResponse<String>>, StatusCode> {
+    let user_id = authenticated_user(&state, &headers)?;
+
+    let (rift_id, owner, _) = state.db.find_rift_access_info(req.project_id, &req.rift_name).await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    if owner != Some(user_id) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let target = state.db.get_user_by_username(&req.username).await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    if req.remove {
+        state.db.remove_rift_member(rift_id, target.id).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        info!("Owner {} removed {} from rift {}", user_id, target.id, rift_id);
+        Ok(ResponseJson(ApiResponse::success(format!("Removed {} from '{}'", req.username, req.rift_name))))
+    } else {
+        state.db.add_rift_member(req.project_id, rift_id, target.id).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        info!("Owner {} added {} to rift {}", user_id, target.id, rift_id);
+        Ok(ResponseJson(ApiResponse::success(format!("Added {} to '{}'", req.username, req.rift_name))))
+    }
 }
 
 pub async fn get_current_rift(

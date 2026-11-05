@@ -133,7 +133,8 @@ pub async fn handle_gateway(config_manager: &ConfigManager, include_inactive: bo
 pub async fn handle_gateway_create(
     config_manager: &ConfigManager, 
     name: String, 
-    dir: PathBuf
+    dir: PathBuf,
+    is_private: bool,
 ) -> Result<Project> {
     // Check if authenticated
     if !config_manager.is_authenticated()? {
@@ -173,6 +174,7 @@ pub async fn handle_gateway_create(
         name: name.clone(),
         description: format!("Gateway for {}", dir.display()),
         project_path: dir.clone(),
+        is_private,
     };
 
     let create_url = format!("{}/gateway/create", active_server.url);
@@ -364,6 +366,7 @@ struct CreateGatewayRequest {
     name: String,
     description: String,
     project_path: PathBuf,
+    is_private: bool,
 }
 
 /// Local project metadata stored in .mothership directory

@@ -58,6 +58,10 @@ async fn load_wormhole(state: &AppState, user_id: Uuid, wormhole_id: Uuid) -> Re
         .map_err(internal)?
         .ok_or_else(|| fail(StatusCode::NOT_FOUND, "wormhole not found"))?;
     ensure_member(state, user_id, wormhole.project_id).await?;
+    // Private wormholes are hidden from everyone but their creator
+    if wormhole.is_private && wormhole.created_by != user_id {
+        return Err(fail(StatusCode::NOT_FOUND, "wormhole not found"));
+    }
     Ok(wormhole)
 }
 
@@ -269,6 +273,9 @@ pub async fn list_wormholes(
 
     let mut summaries = Vec::new();
     for wormhole in state.db.list_project_wormholes(query.project_id).await.map_err(internal)? {
+        if wormhole.is_private && wormhole.created_by != user_id {
+            continue;
+        }
         let computed = compute(&state, &wormhole).await?;
         summaries.push(summarize(&wormhole, &computed));
     }
@@ -280,6 +287,9 @@ pub struct CreateWormholeRequest {
     pub project_id: Uuid,
     pub name: String,
     pub rift_ids: Vec<Uuid>,
+    /// Private wormholes are only visible to their creator
+    #[serde(default)]
+    pub is_private: bool,
 }
 
 pub async fn create_wormhole(
@@ -349,7 +359,7 @@ pub async fn create_wormhole(
 
     let wormhole = state
         .db
-        .create_wormhole(req.project_id, &name, user_id, &base_hashes, &rift_ids)
+        .create_wormhole(req.project_id, &name, user_id, &base_hashes, &rift_ids, req.is_private)
         .await
         .map_err(internal)?;
     let computed = compute(&state, &wormhole).await?;

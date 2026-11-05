@@ -376,7 +376,7 @@ pub async fn hub_create_rift(
     };
 
     let id = c
-        .create_rift(&name, description.as_deref(), project, fork_from)
+        .create_rift(&name, description.as_deref(), project, fork_from, false)
         .await
         .map_err(err)?;
     Ok(id.to_string())
@@ -639,7 +639,7 @@ pub async fn hub_create_wormhole(
         .map(|id| parse_id(id))
         .collect::<Result<Vec<_>, _>>()?;
     client()?
-        .create_wormhole(parse_id(&project_id)?, &name, &rift_ids)
+        .create_wormhole(parse_id(&project_id)?, &name, &rift_ids, false)
         .await
         .map_err(err)
 }

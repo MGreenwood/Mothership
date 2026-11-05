@@ -35,6 +35,8 @@ mod web_ui;
 mod wormhole;
 #[cfg(test)]
 mod chat_api_tests;
+#[cfg(test)]
+mod privacy_api_tests;
 
 use auth::AuthService;
 use config::{ServerConfig, UserWhitelist};
@@ -257,6 +259,8 @@ fn create_api_router(state: AppState) -> Router {
         // Rift routes
         .route("/api/rifts", get(handlers::list_rifts).post(handlers::create_rift))
         .route("/api/rifts/switch", post(handlers::switch_rift))
+        .route("/api/rifts/access-requests", get(handlers::list_rift_access_requests).post(handlers::request_rift_access))
+        .route("/api/rifts/members", post(handlers::manage_rift_members))
         .route("/api/rifts/diff", get(handlers::get_rift_diffs))
         .route("/api/rifts/:id/chat", get(chat::get_chat_history).post(chat::post_chat))
         .route("/api/rifts/:id/presence", get(sync::get_rift_presence))
@@ -349,6 +353,8 @@ fn create_combined_router(state: AppState) -> Router {
         // Rift and wormhole routes
         .route("/api/rifts", get(handlers::list_rifts).post(handlers::create_rift))
         .route("/api/rifts/switch", post(handlers::switch_rift))
+        .route("/api/rifts/access-requests", get(handlers::list_rift_access_requests).post(handlers::request_rift_access))
+        .route("/api/rifts/members", post(handlers::manage_rift_members))
         .route("/api/rifts/diff", get(handlers::get_rift_diffs))
         .route("/api/rifts/:id/chat", get(chat::get_chat_history).post(chat::post_chat))
         .route("/api/rifts/:id/presence", get(sync::get_rift_presence))
@@ -499,35 +505,9 @@ async fn auth_check(
                 }
                 Ok(None) => {
                     // User no longer exists in database (likely due to server restart with in-memory DB)
-                    // Recreate the user from JWT claims if this is an OAuth token
-                    info!("User {} not found in database, attempting to recreate from JWT claims", claims.username);
-                    
-                    if claims.machine_id == "web-oauth" {
-                        // This is an OAuth token, recreate the user with the ORIGINAL user ID from JWT
-                        let email = claims.email.clone().unwrap_or_else(|| format!("{}@oauth.mothership", claims.username));
-                        match state.db.create_user_with_id(user_id, claims.username.clone(), email, UserRole::User).await {
-                            Ok(recreated_user) => {
-                                info!("Successfully recreated OAuth user: {} (ID: {})", recreated_user.username, recreated_user.id);
-                                
-                                let response = AuthCheckResponse {
-                                    authenticated: true,
-                                    user_id: recreated_user.id,
-                                    username: recreated_user.username,
-                                    email: recreated_user.email,
-                                    role: recreated_user.role,
-                                    machine_id: claims.machine_id,
-                                };
-                                Ok(Json(ApiResponse::success(response)))
-                            }
-                            Err(e) => {
-                                error!("Failed to recreate OAuth user: {}", e);
-                                Err(StatusCode::INTERNAL_SERVER_ERROR)
-                            }
-                        }
-                    } else {
-                        // Non-OAuth token, user really doesn't exist
-                        Err(StatusCode::NOT_FOUND)
-                    }
+                    // Never recreate users from token claims: the token's sub is not a trusted identity source.
+                    warn!("Token for unknown user {} rejected; re-login required", claims.username);
+                    Err(StatusCode::UNAUTHORIZED)
                 }
                 Err(_) => {
                     // Database error
@@ -1346,6 +1326,9 @@ struct CreateGatewayRequest {
     name: String,
     description: String,
     project_path: PathBuf,
+    /// Private gateways are only visible to their members
+    #[serde(default)]
+    is_private: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -1446,23 +1429,8 @@ async fn gateway(
             // User exists, proceed normally
         }
         Ok(None) => {
-            // User no longer exists in database (likely due to server restart)
-            // Recreate the user from JWT claims if this is an OAuth token
-            if claims.machine_id == "web-oauth" {
-                let email = claims.email.clone().unwrap_or_else(|| format!("{}@oauth.mothership", claims.username));
-                match state.db.create_user_with_id(user_id, claims.username.clone(), email, UserRole::User).await {
-                    Ok(_) => {
-                        info!("Successfully recreated OAuth user for gateway listing: {} (ID: {})", claims.username, user_id);
-                    }
-                    Err(e) => {
-                        error!("Failed to recreate OAuth user for gateway listing: {}", e);
-                        return Err(StatusCode::INTERNAL_SERVER_ERROR);
-                    }
-                }
-            } else {
-                // Non-OAuth token, user really doesn't exist
-                return Err(StatusCode::UNAUTHORIZED);
-            }
+            warn!("Gateway listing rejected: user {} not found; re-login required", user_id);
+            return Err(StatusCode::UNAUTHORIZED);
         }
         Err(e) => {
             error!("Database error during gateway listing: {}", e);
@@ -1520,28 +1488,8 @@ async fn create_gateway(
     let user = match state.db.get_user(user_id).await {
         Ok(Some(user)) => user,
         Ok(None) => {
-            // User no longer exists in database (likely due to server restart)
-            // Recreate the user from JWT claims if this is an OAuth token
-            info!("User {} (ID: {}) not found in database during gateway creation, attempting to recreate from JWT claims", claims.username, user_id);
-            
-            if claims.machine_id == "web-oauth" {
-                // This is an OAuth token, recreate the user with the ORIGINAL user ID from JWT
-                let email = claims.email.clone().unwrap_or_else(|| format!("{}@oauth.mothership", claims.username));
-                match state.db.create_user_with_id(user_id, claims.username.clone(), email, UserRole::User).await {
-                    Ok(recreated_user) => {
-                        info!("Successfully recreated OAuth user for gateway creation: {} (ID: {})", recreated_user.username, recreated_user.id);
-                        recreated_user
-                    }
-                    Err(e) => {
-                        error!("Failed to recreate OAuth user for gateway creation: {}", e);
-                        return Err(StatusCode::INTERNAL_SERVER_ERROR);
-                    }
-                }
-            } else {
-                // Non-OAuth token, user really doesn't exist
-                warn!("Gateway creation failed: User not found: {}", user_id);
-                return Ok(Json(ApiResponse::error("User not found".to_string())));
-            }
+            warn!("Gateway creation rejected: user {} not found; re-login required", user_id);
+            return Err(StatusCode::UNAUTHORIZED);
         }
         Err(e) => {
             error!("Database error during gateway creation: {}", e);
@@ -1558,7 +1506,7 @@ async fn create_gateway(
     }
 
     // Create the project
-    match state.db.create_project(req.name.clone(), req.description.clone(), vec![user_id]).await {
+    match state.db.create_project_with_privacy(req.name.clone(), req.description.clone(), vec![user_id], req.is_private).await {
         Ok(project) => {
             info!("Created gateway project: {} (ID: {}) for user: {}", 
                 project.name, project.id, user.username);
@@ -1668,21 +1616,8 @@ async fn beam_into_project(
             // User exists, proceed normally
         }
         Ok(None) => {
-            // User no longer exists in database, recreate from JWT claims if OAuth token
-            if claims.machine_id == "web-oauth" {
-                let email = claims.email.clone().unwrap_or_else(|| format!("{}@oauth.mothership", claims.username));
-                match state.db.create_user_with_id(user_id, claims.username.clone(), email, UserRole::User).await {
-                    Ok(_) => {
-                        info!("Successfully recreated OAuth user for beam: {} (ID: {})", claims.username, user_id);
-                    }
-                    Err(e) => {
-                        error!("Failed to recreate OAuth user for beam: {}", e);
-                        return Err(StatusCode::INTERNAL_SERVER_ERROR);
-                    }
-                }
-            } else {
-                return Err(StatusCode::UNAUTHORIZED);
-            }
+            warn!("Beam rejected: user {} not found; re-login required", user_id);
+            return Err(StatusCode::UNAUTHORIZED);
         }
         Err(e) => {
             error!("Database error during beam: {}", e);
@@ -2210,18 +2145,8 @@ async fn websocket_handler(
             info!("WebSocket connection authenticated for user: {} ({})", claims.username, user_id);
         }
         Ok(None) => {
-            // User doesn't exist - try to recreate from OAuth token
-            if claims.machine_id == "web-oauth" {
-                let email = claims.email.clone().unwrap_or_else(|| format!("{}@oauth.mothership", claims.username));
-                if let Err(e) = state.db.create_user_with_id(user_id, claims.username.clone(), email, mothership_common::UserRole::User).await {
-                    error!("Failed to recreate OAuth user for WebSocket: {}", e);
-                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
-                }
-                info!("Recreated OAuth user for WebSocket: {} ({})", claims.username, user_id);
-            } else {
-                warn!("WebSocket connection rejected: User not found and not OAuth token");
-                return Err(StatusCode::UNAUTHORIZED);
-            }
+            warn!("WebSocket connection rejected: user {} not found; re-login required", user_id);
+            return Err(StatusCode::UNAUTHORIZED);
         }
         Err(e) => {
             error!("Database error during WebSocket auth: {}", e);
