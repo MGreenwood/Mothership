@@ -1116,7 +1116,7 @@ mod ghostid_signature_tests {
             nonce: "nonce-1".to_string(),
             created_at: now,
             expires_at: now + chrono::Duration::minutes(5),
-            permissions: vec!["login".to_string(), "access".to_string()],
+            permissions: vec!["login".to_string()],
             tier: "early access".to_string(),
             duration_days: 365,
         }

@@ -142,7 +142,7 @@ mod tests {
             nonce: "nonce-1".to_string(),
             created_at: chrono::Utc.timestamp_opt(1_700_000_000, 0).unwrap(),
             expires_at: chrono::Utc.timestamp_opt(1_700_000_300, 0).unwrap(),
-            permissions: vec!["login".to_string(), "access".to_string()],
+            permissions: vec!["login".to_string()],
             tier: "early access".to_string(),
             duration_days: 365,
         }
@@ -179,7 +179,7 @@ mod tests {
     fn provider_message_matches_auth_server_format() {
         assert_eq!(
             provider_message(&sample_challenge()),
-            r#"["GhostID Provider Challenge v1","chal-1","mothership.rest","login","nonce-1",1700000000,1700000300,["login","access"],365,"early access"]"#
+            r#"["GhostID Provider Challenge v1","chal-1","mothership.rest","login","nonce-1",1700000000,1700000300,["login"],365,"early access"]"#
         );
     }
 

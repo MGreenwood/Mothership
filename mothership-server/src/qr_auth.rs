@@ -118,7 +118,7 @@ pub async fn start_qr_challenge(
         nonce: Uuid::new_v4().to_string(),
         created_at: now,
         expires_at,
-        permissions: vec!["login".to_string(), "access".to_string()],
+        permissions: vec!["login".to_string()],
         tier: "early access".to_string(),
         duration_days: 365,
     };
