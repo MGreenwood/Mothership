@@ -28,6 +28,21 @@ Method: static code review only. No exploits were run. Confidence is the reviewe
 | 18 | ⚪ LOW | docker-compose.dev.yml | 48 | Dev database password is `postgres`. CI uses `ms_pass` (`.github/workflows/sqlx-prepare.yml:17`). | 9/10 |
 | 19 | ⚪ LOW | mothership-server/src/oauth.rs, web_ui.rs | state/temp token maps | OAuth state and temp token maps never evict expired entries (unbounded memory growth). | 7/10 |
 
+## Status
+
+Fixed in this pass (findings 1–8):
+
+- **1** GhostID callback verifies the ed25519 signature over the stored canonical challenge, rejects expired and reused challenges, and keys the user on the full public key. Unit tests in `web_ui.rs` cover this.
+- **2** `/admin/create` returns 404 unless `ADMIN_SECRET` is set (32+ characters). The hardcoded default is removed.
+- **3** Startup fails unless `JWT_SECRET` is set (32+ characters) and is not a known default.
+- **4** `restore_checkpoint` requires the checkpoint's rift to belong to the requested project.
+- **5** The JWT is no longer placed in the redirect URL, and temp codes and session IDs are no longer logged.
+- **6** `GET /projects/:id` and `GET /projects/name/:name` require a member's Bearer token for private projects.
+- **7** Beam downloads sanitize server paths with `safe_relative_path` before writing.
+- **8** Daemon sync handlers (`FileChanged`, `RiftJoined`, `ConflictDetected`) sanitize peer paths with `safe_relative_path` before writing.
+
+Open: findings 9–19. Finding 1 does not verify on-chain token ownership, so a valid signature proves key possession only. The GhostID QR domain is now `mothership.cli` and may need to match what wallets check.
+
 ## Checked and not flagged
 
 - `storage.rs` `safe_relative_path` rejects `..` and absolute paths.

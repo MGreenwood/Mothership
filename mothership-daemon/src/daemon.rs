@@ -1515,7 +1515,11 @@ impl MothershipDaemon {
                 info!("Received file change: {} ({} bytes)", path.display(), content.len());
                 
                 // Write the file to disk
-                let file_path = project_path.join(&path);
+                let Some(rel_path) = mothership_common::beam::safe_relative_path(&path) else {
+                    warn!("Rejected unsafe incoming path: {}", path.display());
+                    return Ok(());
+                };
+                let file_path = project_path.join(&rel_path);
                 
                 // Create parent directories if needed
                 if let Some(parent) = file_path.parent() {
@@ -1542,7 +1546,11 @@ impl MothershipDaemon {
                 
                 // Write all current files (initial sync)
                 for (path, content) in current_files {
-                    let file_path = project_path.join(&path);
+                    let Some(rel_path) = mothership_common::beam::safe_relative_path(&path) else {
+                        warn!("Rejected unsafe initial path: {}", path.display());
+                        continue;
+                    };
+                    let file_path = project_path.join(&rel_path);
                     
                     // Create parent directories if needed
                     if let Some(parent) = file_path.parent() {
@@ -1568,10 +1576,15 @@ impl MothershipDaemon {
             } => {
                 info!("Conflict detected for {}, accepting server version", path.display());
                 
-                if let Some(parent) = path.parent() {
+                let Some(rel_path) = mothership_common::beam::safe_relative_path(&path) else {
+                    warn!("Rejected unsafe conflict path: {}", path.display());
+                    return Ok(());
+                };
+                let file_path = project_path.join(&rel_path);
+                if let Some(parent) = file_path.parent() {
                     tokio::fs::create_dir_all(parent).await?;
                 }
-                tokio::fs::write(&path, &server_content).await?;
+                tokio::fs::write(&file_path, &server_content).await?;
                 Ok(())
             }
             SyncMessage::ForceSync { 

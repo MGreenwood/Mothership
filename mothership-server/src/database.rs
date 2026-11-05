@@ -966,7 +966,15 @@ impl Database {
         Ok(count.count.unwrap_or(0) > 0)
     }
 
-    /// Create a new user with specified role
+    /// Returns whether a project is marked private. Missing projects are reported as not private.
+    pub async fn is_project_private(&self, project_id: ProjectId) -> Result<bool> {
+        let private: Option<bool> = sqlx::query_scalar("SELECT is_private FROM projects WHERE id = $1")
+            .bind(project_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(private.unwrap_or(false))
+    }
+
     pub async fn create_user(&self, username: String, email: String, role: UserRole) -> Result<User> {
         let user_id = Uuid::new_v4();
         self.create_user_with_id(user_id, username, email, role).await

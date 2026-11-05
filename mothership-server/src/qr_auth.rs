@@ -15,6 +15,7 @@ use tracing::error;
 lazy_static::lazy_static! {
     static ref QR_CHALLENGES: Mutex<HashMap<String, QrChallenge>> = Mutex::new(HashMap::new());
     static ref QR_RESULTS: Mutex<HashMap<String, QrResult>> = Mutex::new(HashMap::new());
+    static ref QR_USED: Mutex<std::collections::HashSet<String>> = Mutex::new(std::collections::HashSet::new());
 }
 
 // Public access functions for QR challenges and results
@@ -33,8 +34,34 @@ pub struct QrChallenge {
     pub challenge_id: String,
     pub domain: String,
     pub action: String,
+    pub nonce: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub expires_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl QrChallenge {
+    /// Canonical message the wallet signs. Must match the GhostID auth-server
+    /// `canonicalAuthMessage` (protocolVersion 1) field order exactly.
+    pub fn canonical_auth_message(&self, public_key: &str, token_id: &str) -> String {
+        let s = |v: &str| serde_json::to_string(v).unwrap_or_else(|_| "\"\"".to_string());
+        format!(
+            "{{\"protocolVersion\":1,\"challengeId\":{},\"domain\":{},\"action\":{},\"nonce\":{},\"issuedAt\":{},\"expiresAt\":{},\"publicKey\":{},\"tokenId\":{}}}",
+            s(&self.challenge_id),
+            s(&self.domain),
+            s(&self.action),
+            s(&self.nonce),
+            self.created_at.timestamp(),
+            self.expires_at.timestamp(),
+            s(public_key),
+            s(token_id),
+        )
+    }
+}
+
+/// Atomically marks a challenge as used. Returns false if it was already used.
+pub async fn mark_qr_challenge_used(challenge_id: &str) -> bool {
+    let mut used = QR_USED.lock().await;
+    used.insert(challenge_id.to_string())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,6 +101,7 @@ pub async fn start_qr_challenge(
         challenge_id: challenge_id.clone(),
         domain: req.domain,
         action: req.action.unwrap_or_else(|| "login".to_string()),
+        nonce: Uuid::new_v4().to_string(),
         created_at: now,
         expires_at,
     };

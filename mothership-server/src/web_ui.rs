@@ -185,7 +185,7 @@ async fn authenticated_download_page(
     // Get session from secure cookie
     let session_id = match jar.get("mothership_session") {
         Some(cookie) => {
-            info!("Found session cookie: {}", cookie.value());
+            info!("Session cookie found");
             cookie.value().to_string()
         }
         None => {
@@ -642,7 +642,7 @@ pub async fn auth_finalize(
         })?
         .clone();
     
-    info!("Processing auth finalize with code: {}", code);
+    info!("Processing auth finalize");
     
     // Retrieve and validate temporary token
     let temp_token_data = {
@@ -723,17 +723,13 @@ pub async fn auth_finalize(
     info!("Session cookie created - secure: {}, localhost: {}, domain: {:?}", 
           is_secure, is_localhost, cookie.domain());
     
-    // Redirect to success page with session cookie and user data
-    let success_url = format!("/download/authenticated?user_id={}&username={}&email={}&token={}",
-        temp_token_data.user_id,
-        urlencoding::encode(&temp_token_data.username),
-        urlencoding::encode(&temp_token_data.email),
-        urlencoding::encode(&temp_token_data.token)
-    );
+    // Redirect to the download page; it reads the session from the cookie, so no
+    // credentials are placed in the URL.
+    let success_url = "/download/authenticated";
 
     Ok((
         CookieJar::new().add(cookie),
-        axum::response::Redirect::to(&success_url)
+        axum::response::Redirect::to(success_url)
     ).into_response())
 }
 
@@ -773,33 +769,21 @@ async fn ghostid_auth_page(State(state): State<crate::AppState>) -> Result<Html<
 async fn ghostid_qr_page(
     Path(challenge_id): Path<String>,
 ) -> impl IntoResponse {
-    // Get the challenge data via internal API
-    match crate::qr_auth::get_qr_status(Path(challenge_id.clone())).await {
-        Ok(_) => {
-            // Get domain from environment variable like other endpoints
-            let oauth_base_url = std::env::var("OAUTH_BASE_URL")
-                .unwrap_or_else(|_| "https://api.mothership.rest".to_string());
-            
-            let domain = if let Ok(url) = url::Url::parse(&oauth_base_url) {
-                url.host_str().unwrap_or("mothership.rest").to_string()
-            } else {
-                "mothership.rest".to_string()
-            };
-            
-            // Challenge exists, create the challenge JSON like the auth-server
+    match crate::qr_auth::get_qr_challenge(&challenge_id).await {
+        Some(challenge) => {
             let oauth_base_url = std::env::var("OAUTH_BASE_URL")
                 .unwrap_or_else(|_| "https://app.mothership.rest".to_string());
             
-            // Create callback URL pointing to this Mothership instance with challenge ID
             let callback_url = format!("{}/auth/ghostid/callback?challenge_id={}", oauth_base_url, challenge_id);
             
             let challenge_json = serde_json::json!({
-                "challengeId": challenge_id,
-                "domain": domain,
-                "action": "login",
-                "nonce": uuid::Uuid::new_v4().to_string(),
-                "issuedAt": chrono::Utc::now().timestamp(),
-                "expiresAt": chrono::Utc::now().timestamp() + 300, // 5 minutes
+                "protocolVersion": 1,
+                "challengeId": challenge.challenge_id,
+                "domain": challenge.domain,
+                "action": challenge.action,
+                "nonce": challenge.nonce,
+                "issuedAt": challenge.created_at.timestamp(),
+                "expiresAt": challenge.expires_at.timestamp(),
                 "payload": {},
                 "permissions": ["login", "access"],
                 "tier": "early access",
@@ -860,7 +844,7 @@ async fn ghostid_qr_page(
                 Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response()
             }
         }
-        Err(_) => StatusCode::NOT_FOUND.into_response()
+        None => StatusCode::NOT_FOUND.into_response()
     }
 }
 
@@ -958,6 +942,24 @@ async fn ghostid_poll_status(
     }
 }
 
+/// Verifies the wallet's ed25519 signature over the canonical challenge message
+/// (same construction as the GhostID auth-server).
+fn verify_wallet_signature(
+    challenge: &crate::qr_auth::QrChallenge,
+    public_key_b64: &str,
+    token_id: &str,
+    signature_b64: &str,
+) -> bool {
+    let engine = base64::engine::general_purpose::STANDARD;
+    let (Ok(public_key), Ok(signature)) = (engine.decode(public_key_b64), engine.decode(signature_b64)) else {
+        return false;
+    };
+    let message = challenge.canonical_auth_message(public_key_b64, token_id);
+    ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, &public_key)
+        .verify(message.as_bytes(), &signature)
+        .is_ok()
+}
+
 /// Handle callback from GhostID Chain after mobile authentication
 async fn ghostid_auth_callback(
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
@@ -983,7 +985,7 @@ async fn ghostid_auth_callback(
             StatusCode::BAD_REQUEST
         })?;
     
-    let _signature = callback_data.get("signature")
+    let signature = callback_data.get("signature")
         .and_then(|v| v.as_str())
         .ok_or_else(|| {
             error!("Missing 'signature' field in callback data");
@@ -1025,14 +1027,29 @@ async fn ghostid_auth_callback(
     
     if let Some(challenge) = challenge {
         info!("Challenge found for domain: {}", challenge.domain);
+
+        if chrono::Utc::now() >= challenge.expires_at {
+            error!("Challenge expired: {}", challenge_id);
+            return Err(StatusCode::BAD_REQUEST);
+        }
+
+        if !verify_wallet_signature(&challenge, public_key, token_id, signature) {
+            error!("Invalid wallet signature for challenge {}", challenge_id);
+            return Err(StatusCode::UNAUTHORIZED);
+        }
+
+        if !crate::qr_auth::mark_qr_challenge_used(challenge_id).await {
+            error!("Challenge already used: {}", challenge_id);
+            return Err(StatusCode::CONFLICT);
+        }
         
     // For mobile wallet authentication, we don't need to verify domain since 
     // the mobile app already validated the auth token on-chain
     info!("Creating user address from public key...");
         
     // Create a user address from the public key for identification
-    let user_address = format!("ghostid_wallet_{}", &public_key[..std::cmp::min(12, public_key.len())]);
-    info!("Generated user address: {}", user_address);
+    let user_address = format!("ghostid_wallet_{}", public_key);
+    info!("Generated user address for public key {}...", &public_key[..std::cmp::min(8, public_key.len())]);
         
         // Update the QR result to verified
         info!("Updating QR challenge status to verified...");
@@ -1068,4 +1085,47 @@ async fn ghostid_callback_test() -> Json<serde_json::Value> {
         "message": "GhostID callback endpoint is accessible",
         "timestamp": chrono::Utc::now().to_rfc3339()
     }))
+}
+
+#[cfg(test)]
+mod ghostid_signature_tests {
+    use super::verify_wallet_signature;
+    use crate::qr_auth::QrChallenge;
+    use base64::Engine;
+    use ring::signature::{Ed25519KeyPair, KeyPair};
+
+    fn sample_challenge() -> QrChallenge {
+        let now = chrono::Utc::now();
+        QrChallenge {
+            challenge_id: "chal-1".to_string(),
+            domain: "mothership.cli".to_string(),
+            action: "login".to_string(),
+            nonce: "nonce-1".to_string(),
+            created_at: now,
+            expires_at: now + chrono::Duration::minutes(5),
+        }
+    }
+
+    #[test]
+    fn accepts_valid_signature_and_rejects_tampering() {
+        let engine = base64::engine::general_purpose::STANDARD;
+        let rng = ring::rand::SystemRandom::new();
+        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).expect("keygen");
+        let keypair = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).expect("parse key");
+
+        let challenge = sample_challenge();
+        let public_key = engine.encode(keypair.public_key().as_ref());
+        let token_id = "token-42";
+        let message = challenge.canonical_auth_message(&public_key, token_id);
+        let signature = engine.encode(keypair.sign(message.as_bytes()).as_ref());
+
+        assert!(verify_wallet_signature(&challenge, &public_key, token_id, &signature));
+        assert!(!verify_wallet_signature(&challenge, &public_key, "other-token", &signature));
+
+        let mut other = sample_challenge();
+        other.nonce = "nonce-2".to_string();
+        assert!(!verify_wallet_signature(&other, &public_key, token_id, &signature));
+
+        assert!(!verify_wallet_signature(&challenge, &public_key, token_id, "not-base64!"));
+    }
 }

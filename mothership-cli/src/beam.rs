@@ -276,7 +276,11 @@ async fn perform_initial_sync(
                             
                             // Write files to disk
                             for file in files {
-                                let file_path = project_path.join(&file.path);
+                                let Some(safe_path) = mothership_common::beam::safe_relative_path(&file.path) else {
+                                    print_info(&format!("Skipping unsafe server path: {}", file.path.display()));
+                                    continue;
+                                };
+                                let file_path = project_path.join(&safe_path);
                                 
                                 // Create parent directories if needed
                                 if let Some(parent) = file_path.parent() {
@@ -284,10 +288,10 @@ async fn perform_initial_sync(
                                 }
                                 
                                 // Keep any local edit that the server copy is about to replace
-                                match mothership_common::preserve_local_version(project_path, &file.path, file.content.as_bytes()) {
-                                    Ok(Some(backup)) => print_info(&format!("Kept local version of {} at {}", file.path.display(), backup.display())),
+                                match mothership_common::preserve_local_version(project_path, &safe_path, file.content.as_bytes()) {
+                                    Ok(Some(backup)) => print_info(&format!("Kept local version of {} at {}", safe_path.display(), backup.display())),
                                     Ok(None) => {}
-                                    Err(e) => print_info(&format!("Could not back up local {}: {}", file.path.display(), e)),
+                                    Err(e) => print_info(&format!("Could not back up local {}: {}", safe_path.display(), e)),
                                 }
 
                                 // Write file content

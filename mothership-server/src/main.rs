@@ -147,10 +147,8 @@ async fn main() -> anyhow::Result<()> {
     info!("Storage engine initialized");
 
     // Initialize services
-    let auth = AuthService::new(
-        std::env::var("JWT_SECRET")
-            .unwrap_or_else(|_| "mothership_dev_secret".to_string())
-    );
+    let jwt_secret = required_secret("JWT_SECRET", &["mothership_dev_secret"])?;
+    let auth = AuthService::new(jwt_secret);
 
     let oauth = OAuthService::new().expect("Failed to initialize OAuth service");
 
@@ -688,7 +686,7 @@ async fn oauth_callback_handler(
                                 temp_tokens.insert(temp_code.clone(), temp_token_data);
                             }
                             
-                            info!("Stored temporary token with code: {}", temp_code);
+                            info!("Stored temporary token for auth finalize");
                             info!("Callback URL from request: {}", callback_url);
                             
                             // Redirect browser to user's server with the code
@@ -1347,19 +1345,39 @@ struct AuthCheckResponse {
     machine_id: String,
 }
 
-/// Create admin user with secret
+/// Reads a required secret from the environment (`.env` is loaded at startup).
+/// Refuses to start when the value is missing, too short, or a known insecure default.
+fn required_secret(name: &str, insecure_defaults: &[&str]) -> anyhow::Result<String> {
+    let value = std::env::var(name)
+        .map_err(|_| anyhow::anyhow!("{} must be set (see .env.example)", name))?;
+    if value.len() < 32 {
+        return Err(anyhow::anyhow!("{} must be at least 32 characters", name));
+    }
+    if insecure_defaults.contains(&value.as_str()) {
+        return Err(anyhow::anyhow!("{} is set to a known insecure default; choose a unique value", name));
+    }
+    Ok(value)
+}
+
+/// Compares two secrets without short-circuiting on the first mismatch.
+fn secrets_equal(a: &str, b: &str) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// Create admin user with secret. Disabled unless ADMIN_SECRET is configured.
 async fn create_admin_user(
     State(state): State<AppState>,
     Json(req): Json<CreateAdminRequest>,
 ) -> Result<Json<ApiResponse<mothership_common::User>>, StatusCode> {
-    // Get admin secret from environment
-    let admin_secret = std::env::var("ADMIN_SECRET")
-        .unwrap_or_else(|_| {
-            warn!("ADMIN_SECRET not set, using default (NOT SECURE FOR PRODUCTION)");
-            "mothership-admin-secret-2025".to_string()
-        });
-    
-    if req.secret != admin_secret {
+    let admin_secret = match std::env::var("ADMIN_SECRET") {
+        Ok(s) if s.len() >= 32 => s,
+        _ => return Err(StatusCode::NOT_FOUND),
+    };
+
+    if !secrets_equal(&req.secret, &admin_secret) {
         warn!("Invalid admin secret provided for user creation: {}", req.username);
         return Ok(Json(ApiResponse::error("Invalid secret".to_string())));
     }
@@ -1556,8 +1574,10 @@ async fn list_projects(
 /// Get specific project details
 async fn get_project(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(id): Path<ProjectId>,
 ) -> Result<Json<ApiResponse<mothership_common::Project>>, StatusCode> {
+    authorize_project_read(&state, &headers, id).await?;
     match state.db.get_project(id).await {
         Ok(Some(project)) => Ok(Json(ApiResponse::success(project))),
         Ok(None) => Err(StatusCode::NOT_FOUND),
@@ -1568,13 +1588,44 @@ async fn get_project(
     }
 }
 
+/// Allows reading public projects anonymously. Private projects require a bearer token
+/// from a member; anyone else gets 404 so private projects are not disclosed.
+async fn authorize_project_read(
+    state: &AppState,
+    headers: &HeaderMap,
+    project_id: ProjectId,
+) -> Result<(), StatusCode> {
+    let is_private = state.db.is_project_private(project_id).await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if !is_private {
+        return Ok(());
+    }
+
+    let token = headers.get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let claims = state.auth.verify_token(token).map_err(|_| StatusCode::NOT_FOUND)?;
+    let user_id = uuid::Uuid::parse_str(&claims.sub).map_err(|_| StatusCode::NOT_FOUND)?;
+
+    if state.db.user_has_project_access(user_id, project_id).await.unwrap_or(false) {
+        Ok(())
+    } else {
+        Err(StatusCode::NOT_FOUND)
+    }
+}
+
 /// Get project by name
 async fn get_project_by_name(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(name): Path<String>,
 ) -> Result<Json<ApiResponse<mothership_common::Project>>, StatusCode> {
     match state.db.get_project_by_name(&name).await {
-        Ok(Some(project)) => Ok(Json(ApiResponse::success(project))),
+        Ok(Some(project)) => {
+            authorize_project_read(&state, &headers, project.id).await?;
+            Ok(Json(ApiResponse::success(project)))
+        }
         Ok(None) => Err(StatusCode::NOT_FOUND),
         Err(e) => {
             error!("Get project by name failed: {}", e);
@@ -1950,7 +2001,7 @@ async fn restore_checkpoint(
         return Err(StatusCode::FORBIDDEN);
     }
 
-    // Load the checkpoint
+    // Load the checkpoint and ensure it belongs to this project's rift tree
     let checkpoint = match state.sync.storage.load_checkpoint(checkpoint_id).await {
         Ok(Some(checkpoint)) => checkpoint,
         Ok(None) => return Err(StatusCode::NOT_FOUND),
@@ -1959,6 +2010,12 @@ async fn restore_checkpoint(
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
+
+    match state.db.get_rift(checkpoint.rift_id).await {
+        Ok(Some(rift)) if rift.project_id == project_id => {}
+        Ok(_) => return Err(StatusCode::NOT_FOUND),
+        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
 
     // Get all files at this checkpoint
     let files = match state.sync.storage.get_checkpoint_files(checkpoint_id).await {
