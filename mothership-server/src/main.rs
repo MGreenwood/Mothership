@@ -26,6 +26,7 @@ mod chat;
 mod cli_distribution;
 mod config;
 mod database;
+mod ghostid_provider;
 mod handlers;
 mod oauth;
 mod qr_auth;

@@ -9,6 +9,7 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 use mothership_common::UserRole;
 use crate::AppState;
+use crate::ghostid_provider;
 use tracing::error;
 
 // In-memory storage for QR challenges
@@ -37,6 +38,10 @@ pub struct QrChallenge {
     pub nonce: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub expires_at: chrono::DateTime<chrono::Utc>,
+    /// Provider-signed fields. Stored so the signature covers exactly what the wallet sees.
+    pub permissions: Vec<String>,
+    pub tier: String,
+    pub duration_days: u32,
 }
 
 impl QrChallenge {
@@ -73,7 +78,6 @@ pub struct QrResult {
 
 #[derive(Debug, Deserialize)]
 pub struct QrStartRequest {
-    pub domain: String,
     pub action: Option<String>,
 }
 
@@ -93,17 +97,30 @@ pub async fn start_qr_challenge(
     State(_state): State<AppState>,
     Json(req): Json<QrStartRequest>,
 ) -> Result<Json<QrStartResponse>, StatusCode> {
+    // The domain is server-owned: a client cannot make a challenge claim another hostname.
+    if !ghostid_provider::is_configured() {
+        error!("GhostID login unavailable: provider key is not configured");
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+    if let Err(reason) = ghostid_provider::verify_published_key().await {
+        error!("GhostID login unavailable: {}", reason);
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+
     let challenge_id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now();
     let expires_at = now + chrono::Duration::minutes(5);
     
     let challenge = QrChallenge {
         challenge_id: challenge_id.clone(),
-        domain: req.domain,
+        domain: ghostid_provider::PROVIDER_DOMAIN.to_string(),
         action: req.action.unwrap_or_else(|| "login".to_string()),
         nonce: Uuid::new_v4().to_string(),
         created_at: now,
         expires_at,
+        permissions: vec!["login".to_string(), "access".to_string()],
+        tier: "early access".to_string(),
+        duration_days: 365,
     };
     
     // Store challenge

@@ -737,7 +737,6 @@ pub async fn auth_finalize(
 async fn ghostid_auth_page(State(state): State<crate::AppState>) -> Result<Html<String>, StatusCode> {
     // Create QR challenge via internal API
     let challenge_req = crate::qr_auth::QrStartRequest {
-        domain: "mothership.cli".to_string(),
         action: Some("download".to_string()),
     };
     
@@ -776,7 +775,7 @@ async fn ghostid_qr_page(
             
             let callback_url = format!("{}/auth/ghostid/callback?challenge_id={}", oauth_base_url, challenge_id);
             
-            let challenge_json = serde_json::json!({
+            let mut challenge_json = serde_json::json!({
                 "protocolVersion": 1,
                 "challengeId": challenge.challenge_id,
                 "domain": challenge.domain,
@@ -785,11 +784,19 @@ async fn ghostid_qr_page(
                 "issuedAt": challenge.created_at.timestamp(),
                 "expiresAt": challenge.expires_at.timestamp(),
                 "payload": {},
-                "permissions": ["login", "access"],
-                "tier": "early access",
-                "duration_days": 365,
+                "permissions": challenge.permissions,
+                "tier": challenge.tier,
+                "duration_days": challenge.duration_days,
                 "callbackUrl": callback_url
             });
+            
+            // Provider fields let the wallet check this challenge against the DNS record.
+            let (provider_public_key, provider_signature) = match crate::ghostid_provider::sign_challenge(&challenge) {
+                Some(signed) => signed,
+                None => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+            };
+            challenge_json["providerPublicKey"] = serde_json::Value::String(provider_public_key);
+            challenge_json["providerSignature"] = serde_json::Value::String(provider_signature);
             
             // Convert to base64 like the auth-server does
             let json_string = match serde_json::to_string(&challenge_json) {
@@ -1038,6 +1045,12 @@ async fn ghostid_auth_callback(
             return Err(StatusCode::UNAUTHORIZED);
         }
 
+        // Re-check the provider DNS record so a removed or rotated key stops logins.
+        if let Err(reason) = crate::ghostid_provider::verify_published_key().await {
+            error!("GhostID login rejected for challenge {}: {}", challenge_id, reason);
+            return Err(StatusCode::SERVICE_UNAVAILABLE);
+        }
+
         if !crate::qr_auth::mark_qr_challenge_used(challenge_id).await {
             error!("Challenge already used: {}", challenge_id);
             return Err(StatusCode::CONFLICT);
@@ -1103,6 +1116,9 @@ mod ghostid_signature_tests {
             nonce: "nonce-1".to_string(),
             created_at: now,
             expires_at: now + chrono::Duration::minutes(5),
+            permissions: vec!["login".to_string(), "access".to_string()],
+            tier: "early access".to_string(),
+            duration_days: 365,
         }
     }
 

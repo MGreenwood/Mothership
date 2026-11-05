@@ -41,7 +41,13 @@ Fixed in this pass (findings 1–8):
 - **7** Beam downloads sanitize server paths with `safe_relative_path` before writing.
 - **8** Daemon sync handlers (`FileChanged`, `RiftJoined`, `ConflictDetected`) sanitize peer paths with `safe_relative_path` before writing.
 
-Open: findings 9–19. Finding 1 does not verify on-chain token ownership, so a valid signature proves key possession only. The GhostID QR domain is now `mothership.cli` and may need to match what wallets check.
+GhostID provider login (`mothership-server/src/ghostid_provider.rs`):
+
+- The QR challenge domain is fixed to `mothership.rest`. The client no longer chooses it.
+- The server signs each challenge with `GHOSTID_PROVIDER_PRIVATE_KEY` (PKCS#8 PEM, Ed25519). Without this env var, GhostID login returns 503.
+- Before issuing a challenge and again at callback, the server checks that DNS TXT `ghostid-provider-pk=<base64 pubkey>` at `mothership.rest` matches the signing key exactly. Failure returns 503 and fails closed.
+
+Open: findings 9–19. Finding 1 does not verify on-chain token ownership, so a valid signature proves key possession only. The `/auth/qr/start` DNS lookup has no caching or rate limit, which is a minor DoS surface.
 
 ## Checked and not flagged
 
