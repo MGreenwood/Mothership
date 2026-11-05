@@ -351,7 +351,7 @@ start-docker.bat
     <tr><td><code>mothership-cli</code> (unit tests)</td><td>7 passed, 0 failed, 3 ignored</td><td>Ignored tests are the profiling tests</td></tr>
     <tr><td><code>mothership-daemon</code> (unit tests)</td><td>7 passed, 0 failed, 2 ignored</td><td>Ignored tests are the profiling tests</td></tr>
     <tr><td><code>mothership-server</code> (unit tests)</td><td>10 passed, 0 failed, 7 ignored</td><td>Run with <code>SQLX_OFFLINE=true</code></td></tr>
-    <tr><td><code>mothership-server</code> (ignored chat tests)</td><td>7 passed, 0 failed</td><td>Needs <code>TEST_DATABASE_URL</code> (see below). Covers the chat DB layer, the HTTP API (auth, project access, limits, history), and WebSocket broadcast to rift members</td></tr>
+    <tr><td><code>mothership-server</code> (ignored chat tests)</td><td>7 passed, 0 failed</td><td>Needs <code>TEST_DATABASE_URL</code> (see below). Covers the chat DB layer, the HTTP API (auth, rift access, limits, history), and WebSocket broadcast to rift collaborators. Chat access is per rift: project membership alone is not enough</td></tr>
   </tbody>
 </table>
 <div class="note"><strong>Offline sqlx mode:</strong> without <code>SQLX_OFFLINE=true</code>, sqlx's compile-time query checks try to reach a live database, and <code>mothership-server</code> fails to build. See <a href="SQLX_OFFLINE.md">SQLX_OFFLINE.md</a>.</div>

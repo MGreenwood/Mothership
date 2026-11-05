@@ -37,6 +37,7 @@ struct Fixture {
     state: AppState,
     owner: User,
     member: User,
+    project_only: User,
     outsider: User,
     rift_id: RiftId,
 }
@@ -50,7 +51,8 @@ fn default_settings() -> ChatSettings {
     }
 }
 
-/// Creates a project with an owner and a member, plus a rift both are collaborators on.
+/// Creates a project with an owner, a member, and a project-only user, plus a rift that the
+/// owner and member collaborate on. The project-only user is in the project but not the rift.
 /// The outsider belongs to neither.
 async fn fixture(chat: ChatSettings) -> Fixture {
     let url = std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL must be set");
@@ -66,6 +68,8 @@ async fn fixture(chat: ChatSettings) -> Fixture {
     let owner = db.create_user(name, email, UserRole::User).await.unwrap();
     let (name, email) = make_user("member");
     let member = db.create_user(name, email, UserRole::User).await.unwrap();
+    let (name, email) = make_user("project-only");
+    let project_only = db.create_user(name, email, UserRole::User).await.unwrap();
     let (name, email) = make_user("outsider");
     let outsider = db.create_user(name, email, UserRole::User).await.unwrap();
 
@@ -73,7 +77,7 @@ async fn fixture(chat: ChatSettings) -> Fixture {
         .create_project(
             format!("chat-test-{}", suffix),
             "chat API test".to_string(),
-            vec![owner.id, member.id],
+            vec![owner.id, member.id, project_only.id],
         )
         .await
         .unwrap();
@@ -82,7 +86,7 @@ async fn fixture(chat: ChatSettings) -> Fixture {
         .await
         .unwrap();
 
-    // The WebSocket upgrade checks rift collaborators, and create_rift only adds the creator
+    // create_rift only adds the creator as a collaborator, so add the member explicitly
     let pool = sqlx::PgPool::connect(&url).await.unwrap();
     sqlx::query("INSERT INTO rift_collaborators (rift_id, user_id) VALUES ($1, $2)")
         .bind(rift.id)
@@ -110,6 +114,7 @@ async fn fixture(chat: ChatSettings) -> Fixture {
         state,
         owner,
         member,
+        project_only,
         outsider,
         rift_id: rift.id,
     }
@@ -210,23 +215,26 @@ async fn rejects_requests_without_a_valid_token() {
 
 #[tokio::test]
 #[ignore]
-async fn rejects_users_outside_the_project() {
+async fn rejects_users_without_rift_access() {
     let fx = fixture(default_settings()).await;
     let app = app(&fx.state);
-    let outsider_token = token_for(&fx.state, &fx.outsider);
 
-    let (status, _) = send(
-        &app,
-        Method::GET,
-        chat_uri(fx.rift_id, ""),
-        Some(&outsider_token),
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    // Neither a stranger nor a project member who isn't a rift collaborator may read or post
+    for user in [&fx.outsider, &fx.project_only] {
+        let token = token_for(&fx.state, user);
+        let (status, _) = send(
+            &app,
+            Method::GET,
+            chat_uri(fx.rift_id, ""),
+            Some(&token),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
 
-    let (status, _) = post_as(&app, &outsider_token, fx.rift_id, "let me in").await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _) = post_as(&app, &token, fx.rift_id, "let me in").await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
 
     // The rejected post must not have been stored
     let owner_token = token_for(&fx.state, &fx.owner);
@@ -366,8 +374,14 @@ async fn broadcasts_chat_to_everyone_in_the_rift() {
 
     let owner_token = token_for(&fx.state, &fx.owner);
     let member_token = token_for(&fx.state, &fx.member);
-    let outsider_token = token_for(&fx.state, &fx.outsider);
     let ws_url = |token: &str| format!("ws://{}/ws/{}?token={}", addr, fx.rift_id, token);
+
+    // A user who is not a rift collaborator cannot open the socket, even if in the project
+    let project_only_token = token_for(&fx.state, &fx.project_only);
+    assert!(tokio_tungstenite::connect_async(ws_url(&project_only_token))
+        .await
+        .is_err());
+    let outsider_token = token_for(&fx.state, &fx.outsider);
 
     // A non-member cannot open the socket at all
     assert!(tokio_tungstenite::connect_async(ws_url(&outsider_token))

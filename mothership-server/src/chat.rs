@@ -80,14 +80,15 @@ pub fn validate_content(settings: &ChatSettings, content: &str) -> Result<String
     Ok(trimmed.to_string())
 }
 
-/// Checks that the user may read and write chat in the rift (project membership grants access)
+/// Checks that the user may read and write chat in the rift. Only rift collaborators have access;
+/// project membership alone does not, and there is no project-level chat.
 pub async fn ensure_rift_access(db: &Database, rift_id: RiftId, user_id: Uuid) -> Result<(), ChatError> {
     let rift = db
         .get_rift(rift_id)
         .await?
         .ok_or(ChatError::NotFound)?;
 
-    if !db.user_has_project_access(user_id, rift.project_id).await? {
+    if !rift.collaborators.contains(&user_id) {
         return Err(ChatError::Forbidden);
     }
     Ok(())
