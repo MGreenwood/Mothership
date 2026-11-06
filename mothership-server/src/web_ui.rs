@@ -1,5 +1,5 @@
 use axum::{
-    extract::{State, Json, Path},
+    extract::{State, Json, Path, Query},
     http::StatusCode,
     response::{Html, Response, IntoResponse, Redirect},
     routing::{get, post},
@@ -12,11 +12,8 @@ use tracing::{info, warn, error};
 use tower_http::services::ServeDir;
 use axum_extra::extract::cookie::Cookie;
 use url;
-use urlencoding;
 use std::fs;
 use uuid;
-use qrcode::QrCode;
-use base64::{self, Engine};
 
 /// Web UI routes for authentication and CLI downloads
 pub fn routes() -> Router<crate::AppState> {
@@ -25,14 +22,19 @@ pub fn routes() -> Router<crate::AppState> {
     .route("/login", get(login_page))
     .route("/auth/start", get(auth_start))
     .route("/auth/ghostid", get(ghostid_auth_page))
-    .route("/auth/ghostid/qr/:challenge_id", get(ghostid_qr_page))
-    .route("/auth/ghostid/poll/:challenge_id", get(ghostid_poll_status))
-    .route("/auth/ghostid/callback", post(ghostid_auth_callback))
-    .route("/auth/ghostid/test", get(ghostid_callback_test))
+    .route("/auth/ghostid/challenge", post(ghostid_start_challenge))
+    .route("/auth/ghostid/poll/:challenge_id", get(ghostid_poll))
+    .route("/auth/ghostid/me", get(ghostid_me))
+    .route("/auth/ghostid/logout", post(ghostid_logout))
         .route("/download", get(download_page))
         .route("/download/authenticated", get(authenticated_download_page))
+        .route("/download/cli/:version/:platform/:binary", get(web_download_cli))
+        .route("/cli/auth/start", get(crate::cli_auth::browser_start))
+        .route("/cli/auth/complete", get(crate::cli_auth::browser_complete))
         .route("/auth/callback", post(auth_callback))
         .route("/auth/finalize", get(auth_finalize))
+        .route("/auth/success", get(auth_success_page))
+        .route("/auth/error", get(auth_error_page))
         .route("/robots.txt", get(robots_txt))
         // Serve static files (icon.png, etc.)
         .nest_service("/static", ServeDir::new("content"))
@@ -47,6 +49,55 @@ async fn robots_txt() -> Result<Response<String>, StatusCode> {
             .unwrap()),
         Err(_) => Err(StatusCode::NOT_FOUND),
     }
+}
+
+/// Landing page after a successful sign-in.
+async fn auth_success_page(Query(params): Query<std::collections::HashMap<String, String>>) -> Response {
+    let user = params.get("user").map(String::as_str).unwrap_or("");
+    let email = params.get("email").map(String::as_str).unwrap_or("");
+    render_auth_page("auth-success.html", &[("USER", user), ("EMAIL", email)])
+}
+
+/// Landing page for a failed sign-in. Explains access denials and shows the reason.
+async fn auth_error_page(Query(params): Query<std::collections::HashMap<String, String>>) -> Response {
+    let message = params.get("message").map(String::as_str).unwrap_or("Unknown error");
+    let (heading, detail) = if message.contains("not authorized") {
+        (
+            "Access not granted",
+            "Your sign-in worked, but this account isn't on the server's access list. Ask a server administrator to add your GhostID address or email, then try again.",
+        )
+    } else {
+        (
+            "Sign-in failed",
+            "Something went wrong while signing you in. Go back and try again.",
+        )
+    };
+    render_auth_page("auth-error.html", &[("HEADING", heading), ("DETAIL", detail), ("MESSAGE", message)])
+}
+
+/// Renders a `content/` template for an auth result page, HTML-escaping every value.
+fn render_auth_page(template: &str, replacements: &[(&str, &str)]) -> Response {
+    let escaped: Vec<(&str, String)> = replacements
+        .iter()
+        .map(|(key, value)| (*key, html_escape(value)))
+        .collect();
+    let borrowed: Vec<(&str, &str)> = escaped.iter().map(|(key, value)| (*key, value.as_str())).collect();
+    match load_template(template, &borrowed) {
+        Ok(html) => Html(html).into_response(),
+        Err(e) => {
+            error!("Failed to load {} template: {}", template, e);
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+fn html_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#x27;")
 }
 
 #[derive(Deserialize)]
@@ -101,7 +152,8 @@ async fn index_page(State(state): State<crate::AppState>) -> Result<Html<String>
 /// Start OAuth authentication from the web UI
 async fn auth_start(
     State(state): State<crate::AppState>,
-) -> Result<Redirect, StatusCode> {
+    jar: CookieJar,
+) -> Result<(CookieJar, Redirect), StatusCode> {
     let web_ui_url = std::env::var("WEB_UI_BASE_URL")
         .unwrap_or_else(|_| "https://app.mothership.rest".to_string());
 
@@ -119,12 +171,13 @@ async fn auth_start(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    Ok(Redirect::temporary(&auth_url))
+    // A Google login must not be overridden by an older GhostID session (see `identify`).
+    Ok((clear_ghostid_cookies(jar), Redirect::temporary(&auth_url)))
 }
 
-/// Login page that starts OAuth flow
+/// Login page that starts OAuth or GhostID flow
 async fn login_page(State(state): State<crate::AppState>) -> Result<Html<String>, StatusCode> {
-    if !state.config.features.oauth_enabled {
+    if !state.config.features.oauth_enabled && state.ghostid.is_none() {
         let replacements = [
             ("PAGE_TITLE", "Authentication Disabled"),
             ("PAGE_MESSAGE", "OAuth authentication is not configured on this server"),
@@ -146,7 +199,7 @@ async fn login_page(State(state): State<crate::AppState>) -> Result<Html<String>
     let replacements = [
         ("PAGE_TITLE", "Sign In"),
         ("PAGE_MESSAGE", "Choose your preferred authentication method"),
-        ("AUTH_CONTENT", r#"<a href="/auth/start" class="auth-btn">Sign in with OAuth</a>
+        ("AUTH_CONTENT", r#"<a href="/auth/start" class="auth-btn">Sign in with Google</a>
         <a href="/auth/ghostid" class="auth-btn" style="background: linear-gradient(45deg, #4CAF50, #45a049);">� Sign in with GhostID Wallet</a>"#),
     ];
     
@@ -174,14 +227,47 @@ async fn download_page(State(state): State<crate::AppState>) -> Html<String> {
     }
 
     // Public download page
-    generate_download_page_html(None, None, None, &state).await
+    generate_download_page_html(None, None, &state).await
 }
 
-/// Authenticated download page (after successful OAuth)
+/// Authenticated download page (after successful OAuth or GhostID login)
 async fn authenticated_download_page(
     jar: CookieJar,
     State(state): State<crate::AppState>,
 ) -> Result<Html<String>, StatusCode> {
+    if let (Some(service), Some(ghostid_token)) = (state.ghostid.as_ref(), ghostid_cookie_value(&jar)) {
+        match service.current_user(Some(&ghostid_token)).await {
+            Ok(ghost_user) => {
+                let email = format!("{}@ghostid.wallet", ghost_user.address);
+                let user_uuid = uuid::Uuid::parse_str(&ghost_user.user_id)
+                    .unwrap_or_else(|_| uuid::Uuid::new_v4());
+                let _local_user_id = match state.db.get_user_by_username(&ghost_user.address).await {
+                    Ok(Some(existing)) => existing.id,
+                    Ok(None) => state
+                        .db
+                        .create_user_with_id(
+                            user_uuid,
+                            ghost_user.address.clone(),
+                            email.clone(),
+                            mothership_common::UserRole::User,
+                        )
+                        .await
+                        .map(|u| u.id)
+                        .unwrap_or(user_uuid),
+                    Err(_) => user_uuid,
+                };
+                // The bearer token is never shown on the GhostID page; CLI access needs a separate flow.
+                return Ok(generate_download_page_html(
+                    Some(ghost_user.address),
+                    Some(email),
+                    &state,
+                )
+                .await);
+            }
+            Err(err) => return Err(err.status),
+        }
+    }
+
     // Get session from secure cookie
     let session_id = match jar.get("mothership_session") {
         Some(cookie) => {
@@ -255,27 +341,72 @@ async fn authenticated_download_page(
     info!("Authenticated download page accessed by user: {} ({})", session_data.username, session_data.email);
     
     Ok(generate_download_page_html(
-        Some(session_data.token), 
         Some(session_data.username), 
         Some(session_data.email), 
         &state
     ).await)
 }
 
-/// Generate the download page HTML
+/// Generate the download page HTML. Only the Windows CLI is downloadable for now; other platforms are disabled.
 async fn generate_download_page_html(
-    token: Option<String>,
     username: Option<String>,
     email: Option<String>,
     _state: &crate::AppState,
 ) -> Html<String> {
-    let server_url = std::env::var("OAUTH_BASE_URL")
-        .or_else(|_| std::env::var("MOTHERSHIP_SERVER_URL"))
-        .unwrap_or_else(|_| "http://localhost:7523".to_string());
-    
-    let is_authenticated = token.is_some();
-    
-    let version = env!("CARGO_PKG_VERSION");
+    let is_authenticated = username.is_some();
+    let latest_version = crate::cli_distribution::latest_cli_version().await;
+
+    let user_block = if is_authenticated {
+        format!(r#"<div class="user-info">
+                <h3>Authenticated as {}</h3>
+                <p>Email: {}</p>
+                <p>You have access to download all CLI tools.</p>
+                <button class="download-btn" type="button" onclick="fetch('/auth/ghostid/logout', {{method:'POST', credentials:'same-origin'}}).finally(function(){{ window.location.replace('/login'); }})">Sign out</button>
+            </div>"#,
+            username.as_deref().unwrap_or("Unknown"),
+            email.as_deref().unwrap_or("Unknown"))
+    } else {
+        String::new()
+    };
+
+    let disabled_buttons = |label: &str| {
+        format!(r#"<span class="download-btn disabled" aria-disabled="true" title="{label}">CLI</span>
+                    <span class="download-btn disabled" aria-disabled="true" title="{label}">Daemon</span>"#)
+    };
+    let windows_buttons = match (&latest_version, is_authenticated) {
+        (Some(v), true) => format!(
+            r#"<a href="/download/cli/{v}/x86_64-pc-windows-msvc/mothership.exe" class="download-btn">CLI</a>
+                    <a href="/download/cli/{v}/x86_64-pc-windows-msvc/mothership-daemon.exe" class="download-btn">Daemon</a>"#
+        ),
+        (Some(_), false) => disabled_buttons("Sign in to download"),
+        (None, _) => disabled_buttons("No Windows build is available"),
+    };
+    let platform_cards = format!(
+        r#"<div class="platform">
+                    <h4>Windows x64</h4>
+                    {windows_buttons}
+                </div>
+                <div class="platform disabled">
+                    <h4>Linux x64</h4>
+                    {linux_x64}
+                </div>
+                <div class="platform disabled">
+                    <h4>Linux ARM64</h4>
+                    {linux_arm}
+                </div>
+                <div class="platform disabled">
+                    <h4>macOS x64</h4>
+                    {mac_x64}
+                </div>
+                <div class="platform disabled">
+                    <h4>macOS ARM64</h4>
+                    {mac_arm}
+                </div>"#,
+        linux_x64 = disabled_buttons("Coming soon"),
+        linux_arm = disabled_buttons("Coming soon"),
+        mac_x64 = disabled_buttons("Coming soon"),
+        mac_arm = disabled_buttons("Coming soon"),
+    );
     
     let html = format!(r#"
 <!DOCTYPE html>
@@ -409,6 +540,16 @@ async fn generate_download_page_html(
             margin: 2rem 0;
         }}
         
+        .platform.disabled {{
+            opacity: 0.4;
+        }}
+        
+        .download-btn.disabled {{
+            background: #777;
+            cursor: not-allowed;
+            pointer-events: none;
+        }}
+        
         .note {{
             background: rgba(66, 153, 225, 0.2);
             border: 2px solid rgba(66, 153, 225, 0.5);
@@ -422,153 +563,32 @@ async fn generate_download_page_html(
     <div class="container">
         <h1>Download Mothership CLI</h1>
         
-        {}
-        
-        <div class="download-methods">
-            <div class="method">
-                <h3>Your Authentication Token</h3>
-                <p>Copy this token for use with the installation commands below:</p>
-                <div class="code-block">
-                    <button class="copy-btn" onclick="copyToClipboard('auth-token')">Copy</button>
-                    <code id="auth-token">{}</code>
-                </div>
-            </div>
-            
-            <div class="method">
-                <h3>Quick Install (Unix/Linux/macOS)</h3>
-                <p>One-liner installation script:</p>
-                <div class="code-block">
-                    <button class="copy-btn" onclick="copyToClipboard('unix-install')">Copy</button>
-                    <code id="unix-install">{}</code>
-                </div>
-            </div>
-            
-            <div class="method">
-                <h3>Windows Installation</h3>
-                <p>PowerShell installation script:</p>
-                <div class="code-block">
-                    <button class="copy-btn" onclick="copyToClipboard('windows-install')">Copy</button>
-                    <code id="windows-install">{}</code>
-                </div>
-            </div>
-        </div>
+        {user_block}
         
         <div class="platform-downloads">
             <h2>Direct Downloads</h2>
-            <p>Download specific binaries for your platform:</p>
+            <p>Windows is the only platform available right now. Other platforms are coming soon.</p>
             
             <div class="platforms">
-                <div class="platform">
-                    <h4>Linux x64</h4>
-                    <a href="{}/cli/download/{}/x86_64-unknown-linux-gnu/mothership" class="download-btn">CLI</a>
-                    <a href="{}/cli/download/{}/x86_64-unknown-linux-gnu/mothership-daemon" class="download-btn">Daemon</a>
-                </div>
-                
-                <div class="platform">
-                    <h4>Linux ARM64</h4>
-                    <a href="{}/cli/download/{}/aarch64-unknown-linux-gnu/mothership" class="download-btn">CLI</a>
-                    <a href="{}/cli/download/{}/aarch64-unknown-linux-gnu/mothership-daemon" class="download-btn">Daemon</a>
-                </div>
-                
-                <div class="platform">
-                    <h4>macOS x64</h4>
-                    <a href="{}/cli/download/{}/x86_64-apple-darwin/mothership" class="download-btn">CLI</a>
-                    <a href="{}/cli/download/{}/x86_64-apple-darwin/mothership-daemon" class="download-btn">Daemon</a>
-                </div>
-                
-                <div class="platform">
-                    <h4>macOS ARM64</h4>
-                    <a href="{}/cli/download/{}/aarch64-apple-darwin/mothership" class="download-btn">CLI</a>
-                    <a href="{}/cli/download/{}/aarch64-apple-darwin/mothership-daemon" class="download-btn">Daemon</a>
-                </div>
-                
-                <div class="platform">
-                    <h4>Windows x64</h4>
-                    <a href="{}/cli/download/{}/x86_64-pc-windows-msvc/mothership.exe" class="download-btn">CLI</a>
-                    <a href="{}/cli/download/{}/x86_64-pc-windows-msvc/mothership-daemon.exe" class="download-btn">Daemon</a>
-                </div>
+                {platform_cards}
             </div>
         </div>
         
         <div class="note">
             <h3>Next Steps</h3>
             <ol>
-                <li>Download and install the CLI using one of the methods above</li>
+                <li>Download and install the CLI</li>
                 <li>Run <code>mothership auth</code> to authenticate with this server</li>
                 <li>Use <code>mothership --help</code> to see all available commands</li>
                 <li>Run <code>mothership update</code> to check for updates</li>
             </ol>
         </div>
-        
-        {}
     </div>
-    
-    <script>
-        function copyToClipboard(elementId) {{
-            const element = document.getElementById(elementId);
-            const text = element.textContent;
-            navigator.clipboard.writeText(text).then(() => {{
-                const btn = element.parentElement.querySelector('.copy-btn');
-                const originalText = btn.textContent;
-                btn.textContent = 'Copied!';
-                setTimeout(() => {{
-                    btn.textContent = originalText;
-                }}, 2000);
-            }});
-        }}
-    </script>
 </body>
 </html>
 "#,
-        if is_authenticated {
-            format!(r#"<div class="user-info">
-                <h3>Authenticated as {}</h3>
-                <p>Email: {}</p>
-                <p>You have access to download all CLI tools.</p>
-            </div>"#,
-                username.as_deref().unwrap_or("Unknown"),
-                email.as_deref().unwrap_or("Unknown")
-            )
-        } else {
-            String::new()
-        },
-        if is_authenticated { 
-            token.as_ref().unwrap()
-        } else { 
-            "No token available - please authenticate first"
-        },
-        if is_authenticated { 
-            format!("MOTHERSHIP_TOKEN={} curl -sSL {}/cli/install | bash", token.as_ref().unwrap(), server_url) 
-        } else { 
-            String::new() 
-        },
-        if is_authenticated { 
-            format!("$env:MOTHERSHIP_TOKEN=\"{}\"; irm {}/cli/install/windows | iex", token.as_ref().unwrap(), server_url) 
-        } else { 
-            String::new() 
-        },
-        // Platform downloads - exactly 20 pairs for 5 platforms × 2 binaries × 2 args each
-        server_url, version,
-        server_url, version,
-        server_url, version,
-        server_url, version,
-        server_url, version,
-        server_url, version,
-        server_url, version,
-        server_url, version,
-        server_url, version,
-        server_url, version,
-        if is_authenticated {
-            r#"<div class="warning">
-                <h3>Secure Token</h3>
-                <p>Your authentication token is embedded in the download links above. Keep this page secure and don't share the URLs with others.</p>
-            </div>"#
-        } else {
-            r#"<div class="warning">
-                <h3>Authentication Required</h3>
-                <p>Direct downloads require authentication. Please use the installation scripts above or authenticate first.</p>
-            </div>"#
-        }
+        user_block = user_block,
+        platform_cards = platform_cards,
     );
 
     Html(html)
@@ -725,423 +745,231 @@ pub async fn auth_finalize(
     
     // Redirect to the download page; it reads the session from the cookie, so no
     // credentials are placed in the URL.
-    let success_url = "/download/authenticated";
+    let success_url = "/cli/auth/complete";
 
     Ok((
-        CookieJar::new().add(cookie),
+        clear_ghostid_cookies(CookieJar::new().add(cookie)),
         axum::response::Redirect::to(success_url)
     ).into_response())
 }
 
-/// GhostID wallet authentication page - creates QR challenge and shows QR code
-async fn ghostid_auth_page(State(state): State<crate::AppState>) -> Result<Html<String>, StatusCode> {
-    // Create QR challenge via internal API
-    let challenge_req = crate::qr_auth::QrStartRequest {
-        action: Some("download".to_string()),
-    };
-    
-    match crate::qr_auth::start_qr_challenge(State(state), Json(challenge_req)).await {
-        Ok(Json(challenge_response)) => {
-            let qr_url = format!("/auth/ghostid/qr/{}", challenge_response.challenge_id);
-            
-            let replacements = [
-                ("QR_URL", qr_url.as_str()),
-                ("CHALLENGE_ID", challenge_response.challenge_id.as_str()),
-            ];
-            
-            match load_template("ghostid-auth.html", &replacements) {
-                Ok(html) => Ok(Html(html)),
-                Err(e) => {
-                    error!("Failed to load ghostid-auth template: {}", e);
-                    Err(StatusCode::INTERNAL_SERVER_ERROR)
-                }
-            }
-        }
-        Err(_) => {
-            error!("Failed to create QR challenge");
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
-}
-
-/// Generate QR code image for GhostID authentication
-async fn ghostid_qr_page(
-    Path(challenge_id): Path<String>,
-) -> impl IntoResponse {
-    match crate::qr_auth::get_qr_challenge(&challenge_id).await {
-        Some(challenge) => {
-            let oauth_base_url = std::env::var("OAUTH_BASE_URL")
-                .unwrap_or_else(|_| "https://app.mothership.rest".to_string());
-            
-            let callback_url = format!("{}/auth/ghostid/callback?challenge_id={}", oauth_base_url, challenge_id);
-            
-            let mut challenge_json = serde_json::json!({
-                "protocolVersion": 1,
-                "challengeId": challenge.challenge_id,
-                "domain": challenge.domain,
-                "action": challenge.action,
-                "nonce": challenge.nonce,
-                "issuedAt": challenge.created_at.timestamp(),
-                "expiresAt": challenge.expires_at.timestamp(),
-                "payload": {},
-                "permissions": challenge.permissions,
-                "tier": challenge.tier,
-                "duration_days": challenge.duration_days,
-                "callbackUrl": callback_url
-            });
-            
-            // Provider fields let the wallet check this challenge against the DNS record.
-            let (provider_public_key, provider_signature) = match crate::ghostid_provider::sign_challenge(&challenge) {
-                Some(signed) => signed,
-                None => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
-            };
-            challenge_json["providerPublicKey"] = serde_json::Value::String(provider_public_key);
-            challenge_json["providerSignature"] = serde_json::Value::String(provider_signature);
-            
-            // Convert to base64 like the auth-server does
-            let json_string = match serde_json::to_string(&challenge_json) {
-                Ok(s) => s,
-                Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-            };
-            let base64_data = base64::engine::general_purpose::STANDARD.encode(json_string.as_bytes());
-            
-            // Generate QR code as simple text and convert to SVG
-            match QrCode::new(&base64_data) {
-                Ok(code) => {
-                    // Render as string first
-                    let qr_string = code.render::<char>()
-                        .quiet_zone(false)
-                        .module_dimensions(1, 1)
-                        .dark_color('█')
-                        .light_color(' ')
-                        .build();
-                    
-                    // Convert to SVG manually
-                    let lines: Vec<&str> = qr_string.lines().collect();
-                    let size = lines.len();
-                    let scale = 4; // Scale factor for visibility
-                    let svg_size = size * scale;
-                    
-                    let mut svg = format!(
-                        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{}" height="{}" viewBox="0 0 {} {}">"#,
-                        svg_size, svg_size, size, size
-                    );
-                    
-                    for (y, line) in lines.iter().enumerate() {
-                        for (x, ch) in line.chars().enumerate() {
-                            if ch == '█' {
-                                svg.push_str(&format!(
-                                    r#"<rect x="{}" y="{}" width="1" height="1" fill="black"/>"#,
-                                    x, y
-                                ));
-                            }
-                        }
-                    }
-                    
-                    svg.push_str("</svg>");
-                    
-                    (
-                        [
-                            ("content-type", "image/svg+xml"),
-                            ("cache-control", "no-cache"),
-                        ],
-                        svg
-                    ).into_response()
-                }
-                Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response()
-            }
-        }
-        None => StatusCode::NOT_FOUND.into_response()
-    }
-}
-
-/// Poll QR authentication status and create session if verified
-async fn ghostid_poll_status(
-    Path(challenge_id): Path<String>,
+/// Browser download of a CLI binary. Accepts a live GhostID session or an OAuth session cookie.
+async fn web_download_cli(
     State(state): State<crate::AppState>,
-) -> Result<impl IntoResponse, StatusCode> {
-    // Get the challenge status via internal API
-    match crate::qr_auth::get_qr_status(Path(challenge_id.clone())).await {
-        Ok(Json(status)) => {
-            // If verified, create a session like we do for OAuth
-            if status.status == "verified" {
-                if let Some(user_address) = &status.user_address {
-                    // Create session for ghostid wallet user
-                    let session_id = uuid::Uuid::new_v4().to_string();
-                    let username = format!("ghostid:{}", user_address);
-                    let email = format!("{}@ghostid.wallet", user_address);
-                    let now = chrono::Utc::now();
-                    
-                    // Generate a random UUID for the ghostid wallet user
-                    let user_uuid = uuid::Uuid::new_v4();
-                    
-                    let session_data = crate::SessionData {
-                        user_id: user_uuid,
-                        username: username.clone(),
-                        email: email.clone(),
-                        token: session_id.clone(), // Use session ID as token for ghostid auth
-                        expires_at: now + chrono::Duration::hours(24),
-                        created_at: now,
-                    };
-                    
-                    // Store session
-                    {
-                        let mut sessions = state.sessions.write().await;
-                        sessions.insert(session_id.clone(), session_data);
-                    }
-                    
-                    info!("Created ghostid wallet session for user: {} ({})", username, email);
-                    
-                    // Get the web UI URL for cookie domain
-                    let web_ui_url = std::env::var("WEB_UI_BASE_URL")
-                        .or_else(|_| std::env::var("OAUTH_BASE_URL"))
-                        .unwrap_or_else(|_| "http://localhost:7523".to_string());
-                    
-                    // Create session cookie - determine secure flag and domain
-                    let is_secure = web_ui_url.starts_with("https");
-                    let is_localhost = web_ui_url.contains("localhost") || web_ui_url.contains("127.0.0.1");
-                    
-                    let mut cookie_builder = Cookie::build(("mothership_session", session_id.clone()))
-                        .http_only(true)
-                        .secure(is_secure)
-                        .same_site(axum_extra::extract::cookie::SameSite::Lax)
-                        .path("/");
-                    
-                    // Set domain for non-localhost URLs
-                    if !is_localhost {
-                        // Extract base domain from web_ui_url
-                        if let Ok(url) = url::Url::parse(&web_ui_url) {
-                            if let Some(domain) = url.domain() {
-                                // Get the base domain (e.g., "mothership.rest" from "app.mothership.rest")
-                                let parts: Vec<&str> = domain.split('.').collect();
-                                if parts.len() >= 2 {
-                                    let base_domain = format!(".{}.{}", parts[parts.len() - 2], parts[parts.len() - 1]);
-                                    info!("Setting session cookie domain to: {}", base_domain);
-                                    cookie_builder = cookie_builder.domain(base_domain);
-                                }
-                            }
-                        }
-                    }
-                    
-                    let cookie = cookie_builder.build();
-                    
-              info!("GhostID session cookie created - secure: {}, localhost: {}, domain: {:?}", 
-                  is_secure, is_localhost, cookie.domain());
-                    
-                    // Return success status with cookie
-                    Ok((
-                        CookieJar::new().add(cookie),
-                        Json(serde_json::json!({
-                            "status": "verified",
-                            "user_address": user_address,
-                            "session_id": session_id
-                        }))
-                    ).into_response())
-                } else {
-                    Ok(Json(serde_json::json!({"status": "failed", "error": "missing_address"})).into_response())
-                }
-            } else {
-                // Return the current status (pending, failed, etc.)
-                Ok(Json(serde_json::json!(status)).into_response())
-            }
+    jar: CookieJar,
+    Path((version, platform, binary)): Path<(String, String, String)>,
+) -> Result<Response, StatusCode> {
+    let (username, email) = authorized_browser_user(&state, &jar).await?;
+    if let Some(whitelist) = &state.whitelist {
+        if !whitelist.is_user_allowed(&username, &email) {
+            warn!("Browser CLI download denied for {}", username);
+            return Err(StatusCode::FORBIDDEN);
         }
-        Err(status_code) => Err(status_code)
     }
+    crate::cli_distribution::serve_binary(&version, &platform, &binary).await
 }
 
-/// Verifies the wallet's ed25519 signature over the canonical challenge message
-/// (same construction as the GhostID auth-server).
-fn verify_wallet_signature(
-    challenge: &crate::qr_auth::QrChallenge,
-    public_key_b64: &str,
-    token_id: &str,
-    signature_b64: &str,
-) -> bool {
-    let engine = base64::engine::general_purpose::STANDARD;
-    let (Ok(public_key), Ok(signature)) = (engine.decode(public_key_b64), engine.decode(signature_b64)) else {
-        return false;
-    };
-    let message = challenge.canonical_auth_message(public_key_b64, token_id);
-    ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, &public_key)
-        .verify(message.as_bytes(), &signature)
-        .is_ok()
+/// Resolves the signed-in user from the GhostID session (re-verified each call) or the OAuth session.
+async fn authorized_browser_user(state: &crate::AppState, jar: &CookieJar) -> Result<(String, String), StatusCode> {
+    if let (Some(service), Some(token)) = (state.ghostid.as_ref(), ghostid_cookie_value(jar)) {
+        let user = service.current_user(Some(&token)).await.map_err(|e| e.status)?;
+        let email = format!("{}@ghostid.wallet", user.address);
+        return Ok((user.address, email));
+    }
+    let session_id = jar
+        .get("mothership_session")
+        .map(|c| c.value().to_string())
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let session = state
+        .sessions
+        .read()
+        .await
+        .get(&session_id)
+        .cloned()
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    if chrono::Utc::now() > session.expires_at {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    Ok((session.username, session.email))
 }
 
-/// Handle callback from GhostID Chain after mobile authentication
-async fn ghostid_auth_callback(
-    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
-    Json(callback_data): Json<serde_json::Value>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
-    info!("GhostID AUTH CALLBACK ENDPOINT HIT!");
-    info!("Received GhostID Chain callback: {:?}", callback_data);
-    info!("Query parameters: {:?}", params);
-    
-    // Extract challengeId, publicKey, signature, and tokenId from mobile app callback data
-    info!("Extracting fields from callback data...");
-    let challenge_id_from_payload = callback_data.get("challengeId")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            error!("Missing 'challengeId' field in callback data");
-            StatusCode::BAD_REQUEST
-        })?;
-    
-    let public_key = callback_data.get("publicKey")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            error!("Missing 'publicKey' field in callback data");
-            StatusCode::BAD_REQUEST
-        })?;
-    
-    let signature = callback_data.get("signature")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            error!("Missing 'signature' field in callback data");
-            StatusCode::BAD_REQUEST
-        })?;
-    
-    let token_id = callback_data.get("tokenId")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            error!("Missing 'tokenId' field in callback data");
-            StatusCode::BAD_REQUEST
-        })?;
-    
-    info!("Successfully extracted fields - challengeId: {}, tokenId: {}, publicKey: {}...", 
-          challenge_id_from_payload, token_id, &public_key[..std::cmp::min(8, public_key.len())]);
-    
-    // Extract challenge_id from query parameters (should match challengeId from payload)
-    info!("Extracting challenge_id from query parameters...");
-    let challenge_id = params.get("challenge_id")
-        .ok_or_else(|| {
-            error!("Missing 'challenge_id' query parameter");
-            StatusCode::BAD_REQUEST
-        })?;
-    
-    // Verify challenge IDs match
-    info!("Verifying challenge IDs match...");
-    if challenge_id != challenge_id_from_payload {
-        error!("Challenge ID mismatch: URL param '{}' != payload '{}'", challenge_id, challenge_id_from_payload);
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    info!("Challenge IDs match: {}", challenge_id);
-    
-    info!("Processing callback for challenge_id: {}, token_id: {}, public_key: {}...", 
-          challenge_id, token_id, &public_key[..std::cmp::min(8, public_key.len())]);
-    
-    // Verify the challenge exists
-    info!("Looking up challenge in database...");
-    let challenge = crate::qr_auth::get_qr_challenge(challenge_id).await;
-    
-    if let Some(challenge) = challenge {
-        info!("Challenge found for domain: {}", challenge.domain);
-
-        if chrono::Utc::now() >= challenge.expires_at {
-            error!("Challenge expired: {}", challenge_id);
-            return Err(StatusCode::BAD_REQUEST);
-        }
-
-        if !verify_wallet_signature(&challenge, public_key, token_id, signature) {
-            error!("Invalid wallet signature for challenge {}", challenge_id);
-            return Err(StatusCode::UNAUTHORIZED);
-        }
-
-        // Re-check the provider DNS record so a removed or rotated key stops logins.
-        if let Err(reason) = crate::ghostid_provider::verify_published_key().await {
-            error!("GhostID login rejected for challenge {}: {}", challenge_id, reason);
-            return Err(StatusCode::SERVICE_UNAVAILABLE);
-        }
-
-        if !crate::qr_auth::mark_qr_challenge_used(challenge_id).await {
-            error!("Challenge already used: {}", challenge_id);
-            return Err(StatusCode::CONFLICT);
-        }
-        
-    // For mobile wallet authentication, we don't need to verify domain since 
-    // the mobile app already validated the auth token on-chain
-    info!("Creating user address from public key...");
-        
-    // Create a user address from the public key for identification
-    let user_address = format!("ghostid_wallet_{}", public_key);
-    info!("Generated user address for public key {}...", &public_key[..std::cmp::min(8, public_key.len())]);
-        
-        // Update the QR result to verified
-        info!("Updating QR challenge status to verified...");
-        crate::qr_auth::update_qr_result(challenge_id.to_string(), crate::qr_auth::QrResult {
-            status: "verified".to_string(),
-            user_address: Some(user_address),
-            verified_at: Some(chrono::Utc::now()),
-        }).await;
-        
-        info!("Updated QR challenge {} status to verified", challenge_id);
-        
-        let response = serde_json::json!({
-            "success": true,
-            "message": "Callback processed successfully",
-            "challenge_id": challenge_id,
-            "token_id": token_id
-        });
-        info!("Sending success response: {:?}", response);
-        return Ok(Json(response));
+/// Session cookie for GhostID login. Uses `__Host-ghostid` over HTTPS and `ghostid` over local HTTP.
+fn ghostid_cookie(token: String, secure: bool) -> Cookie<'static> {
+    let name = if secure {
+        crate::ghostid_login::SESSION_COOKIE
     } else {
-        error!("Challenge not found: {}", challenge_id);
-    }
-    
-    error!("Failed to process callback: invalid challenge");
-    Err(StatusCode::BAD_REQUEST)
+        "ghostid"
+    };
+    Cookie::build((name, token))
+        .http_only(true)
+        .secure(secure)
+        .same_site(axum_extra::extract::cookie::SameSite::Lax)
+        .path("/")
+        .build()
 }
 
-/// Test endpoint to verify the callback route is accessible
-async fn ghostid_callback_test() -> Json<serde_json::Value> {
-    info!("GhostID callback test endpoint hit!");
-    Json(serde_json::json!({
-        "status": "ok",
-        "message": "GhostID callback endpoint is accessible",
-        "timestamp": chrono::Utc::now().to_rfc3339()
-    }))
+pub(crate) fn ghostid_is_secure() -> bool {
+    std::env::var("PUBLIC_BASE_URL")
+        .or_else(|_| std::env::var("WEB_UI_BASE_URL"))
+        .or_else(|_| std::env::var("OAUTH_BASE_URL"))
+        .map(|u| u.starts_with("https://"))
+        .unwrap_or(false)
 }
 
-#[cfg(test)]
-mod ghostid_signature_tests {
-    use super::verify_wallet_signature;
-    use crate::qr_auth::QrChallenge;
-    use base64::Engine;
-    use ring::signature::{Ed25519KeyPair, KeyPair};
+pub(crate) fn ghostid_cookie_value(jar: &CookieJar) -> Option<String> {
+    jar.get(crate::ghostid_login::SESSION_COOKIE)
+        .or_else(|| jar.get("ghostid"))
+        .map(|c| c.value().to_string())
+}
 
-    fn sample_challenge() -> QrChallenge {
-        let now = chrono::Utc::now();
-        QrChallenge {
-            challenge_id: "chal-1".to_string(),
-            domain: "mothership.cli".to_string(),
-            action: "login".to_string(),
-            nonce: "nonce-1".to_string(),
-            created_at: now,
-            expires_at: now + chrono::Duration::minutes(5),
-            permissions: vec!["login".to_string()],
-            tier: "early access".to_string(),
-            duration_days: 365,
+fn ghostid_unavailable() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(serde_json::json!({"error": "GhostID login is not configured"})),
+    )
+        .into_response()
+}
+
+fn ghostid_error(err: crate::ghostid_login::GhostIdError) -> Response {
+    (err.status, Json(serde_json::json!({"error": err.message}))).into_response()
+}
+
+const GHOSTID_LOGIN_PAGE: &str = r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in with GhostID</title>
+<style>
+body { font-family: sans-serif; background: #111; color: #eee; text-align: center; padding: 2rem; }
+img { width: 260px; height: 260px; background: #fff; padding: 12px; border-radius: 8px; }
+a { color: #8f8; }
+</style>
+</head>
+<body>
+<h1>Sign in with GhostID</h1>
+<p>Scan this code with the GhostID wallet app and approve the login.</p>
+<img id="qr" alt="GhostID login QR code" hidden>
+<p id="status">Preparing login...</p>
+<p><a href="/login">Back to sign-in options</a></p>
+<script>
+(async function () {
+  const statusEl = document.getElementById('status');
+  const qr = document.getElementById('qr');
+  let timer = null;
+  function fail(msg) { clearInterval(timer); statusEl.textContent = msg; }
+  try {
+    const res = await fetch('/auth/ghostid/challenge', { method: 'POST', credentials: 'same-origin' });
+    if (!res.ok) { fail('Could not start GhostID login (' + res.status + '). Reload to try again.'); return; }
+    const data = await res.json();
+    qr.src = data.qrUrl;
+    qr.hidden = false;
+    statusEl.textContent = 'Waiting for approval in the wallet app...';
+    const expiresAtMs = data.expiresAt * 1000;
+    timer = setInterval(async function () {
+      if (Date.now() >= expiresAtMs) { fail('This QR code expired. Reload to try again.'); return; }
+      try {
+        const r = await fetch('/auth/ghostid/poll/' + encodeURIComponent(data.challengeId), { credentials: 'same-origin' });
+        const body = await r.json().catch(function () { return {}; });
+        if (!r.ok) { fail(body.error || 'GhostID login failed. Reload to try again.'); return; }
+        if (body.status === 'verified') {
+          clearInterval(timer);
+          window.location.replace('/cli/auth/complete');
         }
+      } catch (e) {
+        fail('Network error while waiting for approval. Reload to try again.');
+      }
+    }, 2000);
+  } catch (e) {
+    fail('Could not start GhostID login. Reload to try again.');
+  }
+})();
+</script>
+</body>
+</html>"#;
+
+pub(crate) async fn ghostid_auth_page() -> Html<&'static str> {
+    Html(GHOSTID_LOGIN_PAGE)
+}
+
+pub(crate) async fn ghostid_start_challenge(State(state): State<crate::AppState>, jar: CookieJar) -> Response {
+    let Some(service) = state.ghostid.as_ref() else {
+        return ghostid_unavailable();
+    };
+    let secure = ghostid_is_secure();
+    match service.start_login(ghostid_cookie_value(&jar).as_deref()).await {
+        Ok(started) => {
+            let jar = match started.new_session_token {
+                Some(token) => jar.add(ghostid_cookie(token, secure)),
+                None => jar,
+            };
+            (
+                jar,
+                Json(serde_json::json!({
+                    "challengeId": started.challenge_id,
+                    "qrUrl": started.qr_url,
+                    "expiresAt": started.expires_at,
+                })),
+            )
+                .into_response()
+        }
+        Err(err) => ghostid_error(err),
     }
+}
 
-    #[test]
-    fn accepts_valid_signature_and_rejects_tampering() {
-        let engine = base64::engine::general_purpose::STANDARD;
-        let rng = ring::rand::SystemRandom::new();
-        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).expect("keygen");
-        let keypair = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).expect("parse key");
-
-        let challenge = sample_challenge();
-        let public_key = engine.encode(keypair.public_key().as_ref());
-        let token_id = "token-42";
-        let message = challenge.canonical_auth_message(&public_key, token_id);
-        let signature = engine.encode(keypair.sign(message.as_bytes()).as_ref());
-
-        assert!(verify_wallet_signature(&challenge, &public_key, token_id, &signature));
-        assert!(!verify_wallet_signature(&challenge, &public_key, "other-token", &signature));
-
-        let mut other = sample_challenge();
-        other.nonce = "nonce-2".to_string();
-        assert!(!verify_wallet_signature(&other, &public_key, token_id, &signature));
-
-        assert!(!verify_wallet_signature(&challenge, &public_key, token_id, "not-base64!"));
+pub(crate) async fn ghostid_poll(
+    State(state): State<crate::AppState>,
+    jar: CookieJar,
+    Path(challenge_id): Path<String>,
+) -> Response {
+    let Some(service) = state.ghostid.as_ref() else {
+        return ghostid_unavailable();
+    };
+    let secure = ghostid_is_secure();
+    match service.poll_login(ghostid_cookie_value(&jar).as_deref(), &challenge_id).await {
+        Ok(crate::ghostid_login::PollOutcome::Pending) => {
+            Json(serde_json::json!({"status": "pending"})).into_response()
+        }
+        Ok(crate::ghostid_login::PollOutcome::Verified { session_token, user }) => {
+            info!("GhostID login verified for user {}", user.user_id);
+            (
+                clear_oauth_cookie(jar).add(ghostid_cookie(session_token, secure)),
+                Json(serde_json::json!({"status": "verified", "user": user})),
+            )
+                .into_response()
+        }
+        Err(err) => ghostid_error(err),
     }
+}
+
+pub(crate) async fn ghostid_me(State(state): State<crate::AppState>, jar: CookieJar) -> Response {
+    let Some(service) = state.ghostid.as_ref() else {
+        return ghostid_unavailable();
+    };
+    match service.current_user(ghostid_cookie_value(&jar).as_deref()).await {
+        Ok(user) => Json(serde_json::json!({"user": user})).into_response(),
+        Err(err) => ghostid_error(err),
+    }
+}
+
+pub(crate) async fn ghostid_logout(State(state): State<crate::AppState>, jar: CookieJar) -> Response {
+    let Some(service) = state.ghostid.as_ref() else {
+        return ghostid_unavailable();
+    };
+    if let Err(err) = service.logout(ghostid_cookie_value(&jar).as_deref()).await {
+        return ghostid_error(err);
+    }
+    let jar = clear_ghostid_cookies(jar);
+    (jar, Json(serde_json::json!({"status": "signed_out"}))).into_response()
+}
+
+/// Expires the GhostID session cookies. `__Host-` cookies must be sent with Secure to be cleared.
+fn clear_ghostid_cookies(jar: CookieJar) -> CookieJar {
+    jar.remove(Cookie::build((crate::ghostid_login::SESSION_COOKIE, "")).path("/").secure(true))
+        .remove(Cookie::build(("ghostid", "")).path("/"))
+}
+
+/// Expires the OAuth session cookie so a GhostID login is not overridden by an older Google session.
+fn clear_oauth_cookie(jar: CookieJar) -> CookieJar {
+    jar.remove(Cookie::build(("mothership_session", "")).path("/"))
 }

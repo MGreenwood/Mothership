@@ -23,7 +23,6 @@ fn main() {
             nvim::terminal_close,
             hub::hub_auth_status,
             hub::hub_auth_start,
-            hub::hub_auth_complete,
             hub::hub_auth_logout,
             hub::hub_health,
             hub::hub_ensure_daemon,

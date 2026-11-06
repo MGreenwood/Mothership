@@ -12,7 +12,6 @@ use reqwest::{Client, RequestBuilder, Response, Url};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::auth::{OAuthProvider, OAuthRequest, OAuthResponse, OAuthSource};
 use crate::ignore::IgnoreRules;
 use crate::merge::Choice;
 use crate::protocol::{ApiResponse, BeamRequest, BeamResponse};
@@ -211,40 +210,146 @@ pub fn shared_http_client() -> &'static Client {
     SHARED_HTTP.get_or_init(Client::new)
 }
 
-/// Starts the browser login flow, same as `mothership auth`. The caller opens `auth_url`.
-pub async fn start_oauth_login(base_url: &str, provider: OAuthProvider) -> Result<OAuthResponse> {
-    let hostname = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "unknown".to_string());
-    let request = OAuthRequest {
-        provider,
-        machine_id: Uuid::new_v4().to_string(),
-        machine_name: format!("{}-mothership-gui", hostname),
-        platform: std::env::consts::OS.to_string(),
-        hostname,
-        source: OAuthSource::CLI,
-        callback_url: None,
-    };
-    let url = format!("{}/auth/oauth/start", base_url.trim_end_matches('/'));
-    let body: ApiResponse<OAuthResponse> = shared_http_client()
-        .post(url)
-        .json(&request)
-        .send()
-        .await?
-        .json()
-        .await?;
-    if !body.success {
-        return Err(anyhow!(body.error.unwrap_or_else(|| "Unknown error".to_string())));
-    }
-    body.data.ok_or_else(|| anyhow!("Server returned no OAuth data"))
+/// How long to wait for the browser to return to the loopback callback.
+const BROWSER_LOGIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// A browser sign-in in progress. The caller opens `auth_url`, then calls [`BrowserLogin::wait_for_token`].
+pub struct BrowserLogin {
+    pub auth_url: String,
+    server_url: String,
+    state: String,
+    listener: tokio::net::TcpListener,
 }
 
-/// Confirms a pasted token with the server before it is saved.
-pub async fn verify_oauth_token(base_url: &str, token: &str) -> Result<()> {
-    let url = format!("{}/auth/check", base_url.trim_end_matches('/'));
-    let response = shared_http_client().get(url).bearer_auth(token).send().await?;
-    if !response.status().is_success() {
-        return Err(anyhow!("Invalid token. Please try the authentication process again."));
+/// Credentials from a completed browser sign-in.
+pub struct LoginResult {
+    pub token: String,
+    pub username: Option<String>,
+    pub email: Option<String>,
+}
+
+/// Starts a browser login on a loopback callback. `provider` is `Some("google")`, `Some("ghostid")`,
+/// or `None` to let the server show its sign-in choices.
+pub async fn start_browser_login(base_url: &str, provider: Option<&str>) -> Result<BrowserLogin> {
+    let server_url = base_url.trim_end_matches('/').to_string();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let port = listener.local_addr()?.port();
+    let state = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+
+    let started: serde_json::Value = shared_http_client()
+        .post(format!("{}/auth/cli/start", server_url))
+        .json(&serde_json::json!({ "callback_port": port, "state": state }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let mut auth_url = started["auth_url"]
+        .as_str()
+        .ok_or_else(|| anyhow!("Server did not return a login URL"))?
+        .to_string();
+    if let Some(provider) = provider {
+        auth_url.push_str(&format!("&provider={}", provider));
     }
-    Ok(())
+    Ok(BrowserLogin { auth_url, server_url, state, listener })
+}
+
+impl BrowserLogin {
+    /// Waits for the browser callback, exchanges the one-time code for a token, then redirects
+    /// the browser to the server's success page.
+    pub async fn wait_for_token(self) -> Result<LoginResult> {
+        use tokio::io::AsyncWriteExt;
+        let (code, mut stream) = tokio::time::timeout(
+            BROWSER_LOGIN_TIMEOUT,
+            wait_for_callback(self.listener, &self.state),
+        )
+        .await
+        .map_err(|_| anyhow!("Timed out waiting for browser sign-in. Try again."))??;
+
+        let exchanged = exchange_login_code(&self.server_url, &code, &self.state).await;
+        let response = match &exchanged {
+            Ok((_, success_url)) => format!(
+                "HTTP/1.1 302 Found\r\nLocation: {success_url}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            ),
+            Err(_) => callback_response(
+                "400 Bad Request",
+                "Sign-in could not be completed. Run the login again from your terminal or app.",
+            ),
+        };
+        let _ = stream.write_all(response.as_bytes()).await;
+        let _ = stream.shutdown().await;
+
+        exchanged.map(|(login, _)| login)
+    }
+}
+
+async fn exchange_login_code(server_url: &str, code: &str, state: &str) -> Result<(LoginResult, String)> {
+    let exchanged: serde_json::Value = shared_http_client()
+        .post(format!("{}/auth/cli/exchange", server_url))
+        .json(&serde_json::json!({ "code": code, "state": state }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let token = exchanged["token"]
+        .as_str()
+        .ok_or_else(|| anyhow!("Server did not return a token"))?
+        .to_string();
+    let success_url = exchanged["success_url"].as_str().unwrap_or_default().to_string();
+    let login = LoginResult {
+        token,
+        username: exchanged["username"].as_str().map(str::to_string),
+        email: exchanged["email"].as_str().map(str::to_string),
+    };
+    Ok((login, success_url))
+}
+
+/// Waits for the browser to hit the loopback callback with a matching state, then returns the code
+/// and the open connection so the browser can be redirected once the code is exchanged.
+/// Stray requests get an error response and the wait continues.
+async fn wait_for_callback(
+    listener: tokio::net::TcpListener,
+    expected_state: &str,
+) -> Result<(String, tokio::net::TcpStream)> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    loop {
+        let (mut stream, _) = listener.accept().await?;
+        let mut buf = vec![0u8; 8192];
+        let read = stream.read(&mut buf).await.unwrap_or(0);
+        let request = String::from_utf8_lossy(&buf[..read]).to_string();
+        let target = request.split_whitespace().nth(1).unwrap_or("").to_string();
+
+        let params: HashMap<String, String> = match target.strip_prefix("/callback?") {
+            Some(query) => Url::parse(&format!("http://127.0.0.1/callback?{query}"))
+                .map(|url| url.query_pairs().into_owned().collect())
+                .unwrap_or_default(),
+            None => HashMap::new(),
+        };
+        let code = params.get("code").cloned();
+        let state_ok = params.get("state").is_some_and(|s| s == expected_state);
+
+        if let (true, Some(code)) = (state_ok, code.clone()) {
+            return Ok((code, stream));
+        }
+        let response = if target.starts_with("/callback?") {
+            callback_response(
+                "400 Bad Request",
+                "This login response was not valid. Run the login again from your terminal or app.",
+            )
+        } else {
+            callback_response("404 Not Found", "Not found.")
+        };
+        let _ = stream.write_all(response.as_bytes()).await;
+        let _ = stream.shutdown().await;
+    }
+}
+
+fn callback_response(status: &str, body: &str) -> String {
+    format!(
+        "HTTP/1.1 {status}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
 }
 
 /// Path of the shared credentials file used by the CLI, GUI, and daemon.

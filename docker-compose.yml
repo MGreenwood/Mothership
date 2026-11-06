@@ -22,9 +22,16 @@ services:
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
       - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID}
       - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}
+      # GhostID provider login configuration
+      - GHOSTID_DOMAIN=${GHOSTID_DOMAIN:-mothership.rest}
+      - GHOSTID_VERIFIER_URL=${GHOSTID_VERIFIER_URL:-https://api.ghostid.rest}
+      - PROVIDER_PRIVATE_KEY_FILE=/run/secrets/ghostid-provider.pem
+      - SESSION_DB_PATH=/app/data/ghostid.db
     volumes:
       - ./storage:/app/storage
       - ./cli-binaries:/app/cli-binaries
+      - ./data:/app/data
+      - ${PROVIDER_PRIVATE_KEY_FILE:-C:/Users/craft/.ghostid-launchpad/keys/provider-f6f6bf1cd8024e2ca3bcdb811c4ed9b6.pem}:/run/secrets/ghostid-provider.pem:ro
     depends_on:
       db:
         condition: service_healthy

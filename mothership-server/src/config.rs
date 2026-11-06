@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use tracing::{info, warn};
@@ -178,6 +178,13 @@ pub struct StreamingSettings {
     pub compression_level: u32,
 }
 
+/// Per-user options from a whitelist line, e.g. `ghostid... admin nickname=mgreen`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Grant {
+    pub admin: bool,
+    pub nickname: Option<String>,
+}
+
 /// User whitelist loaded from whitelist file
 #[derive(Debug, Clone)]
 pub struct UserWhitelist {
@@ -189,6 +196,9 @@ pub struct UserWhitelist {
     
     /// Set of allowed email domains (e.g., "company.com")
     pub domains: HashSet<String>,
+
+    /// Options keyed by the username or email on the line
+    pub grants: HashMap<String, Grant>,
 }
 
 impl Default for ServerConfig {
@@ -343,6 +353,7 @@ impl ServerConfig {
         let mut usernames = HashSet::new();
         let mut emails = HashSet::new();
         let mut domains = HashSet::new();
+        let mut grants = HashMap::new();
         
         for line in content.lines() {
             let line = line.trim();
@@ -353,12 +364,18 @@ impl ServerConfig {
             if line.starts_with('@') {
                 // Domain (e.g., @company.com)
                 domains.insert(line[1..].to_string());
-            } else if line.contains('@') {
-                // Email address
-                emails.insert(line.to_string());
+                continue;
+            }
+            let mut parts = line.split_whitespace();
+            let identity = parts.next().unwrap_or_default().to_string();
+            let grant = parse_grant(parts);
+            if identity.contains('@') {
+                emails.insert(identity.clone());
             } else {
-                // Username
-                usernames.insert(line.to_string());
+                usernames.insert(identity.clone());
+            }
+            if grant != Grant::default() {
+                grants.insert(identity, grant);
             }
         }
         
@@ -369,11 +386,21 @@ impl ServerConfig {
             usernames,
             emails,
             domains,
+            grants,
         }))
     }
 }
 
 impl UserWhitelist {
+    /// Options for a user, matched by username first, then email. Defaults when the line has none.
+    pub fn grant_for(&self, username: &str, email: &str) -> Grant {
+        self.grants
+            .get(username)
+            .or_else(|| self.grants.get(email))
+            .cloned()
+            .unwrap_or_default()
+    }
+
     /// Check if a user is allowed based on username and email
     pub fn is_user_allowed(&self, username: &str, email: &str) -> bool {
         // Check exact username match
@@ -395,6 +422,23 @@ impl UserWhitelist {
         
         false
     }
+}
+
+/// Parses the options after a whitelist identity. Unknown options are logged and ignored.
+fn parse_grant<'a>(options: impl Iterator<Item = &'a str>) -> Grant {
+    let mut grant = Grant::default();
+    for option in options {
+        if option == "admin" {
+            grant.admin = true;
+        } else if let Some(name) = option.strip_prefix("nickname=") {
+            if !name.is_empty() {
+                grant.nickname = Some(name.to_string());
+            }
+        } else {
+            warn!("Unknown whitelist option: {}", option);
+        }
+    }
+    grant
 }
 
 /// Parse boolean value from string
@@ -426,6 +470,7 @@ mod tests {
             usernames: HashSet::new(),
             emails: HashSet::new(),
             domains: HashSet::new(),
+            grants: HashMap::new(),
         };
         
         whitelist.usernames.insert("alice".to_string());

@@ -274,26 +274,27 @@ impl Database {
     /// Get all projects a user has access to (simplified version for rift handlers)
     pub async fn get_user_projects(&self, user_id: UserId) -> Result<Vec<Project>> {
         // Get projects where user is a member
-        let projects = sqlx::query!(
+        // Public projects are visible to every authenticated user; private ones only to members.
+        let projects: Vec<(Uuid, String, Option<String>, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
             r#"
             SELECT p.id, p.name, p.description, p.created_at
             FROM projects p
-            INNER JOIN project_members pm ON p.id = pm.project_id
-            WHERE pm.user_id = $1
+            WHERE p.is_private = FALSE
+               OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = p.id AND pm.user_id = $1)
             ORDER BY p.created_at DESC
             "#,
-            user_id
         )
+        .bind(user_id)
         .fetch_all(&self.pool)
         .await?;
 
         let mut result = Vec::new();
 
-        for project_row in projects {
+        for (project_id, project_name, project_description, project_created_at) in projects {
             // Get project members for each project
             let members = sqlx::query!(
                 "SELECT user_id FROM project_members WHERE project_id = $1",
-                project_row.id
+                project_id
             )
             .fetch_all(&self.pool)
             .await?
@@ -302,11 +303,11 @@ impl Database {
             .collect();
 
             result.push(Project {
-                id: project_row.id,
-                name: project_row.name,
-                description: project_row.description.unwrap_or_default(),
+                id: project_id,
+                name: project_name,
+                description: project_description.unwrap_or_default(),
                 members,
-                created_at: project_row.created_at,
+                created_at: project_created_at,
                 settings: ProjectSettings::default(),
             });
         }

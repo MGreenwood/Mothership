@@ -23,13 +23,14 @@ use urlencoding;
 
 mod auth;
 mod chat;
+mod cli_auth;
 mod cli_distribution;
 mod config;
 mod database;
+mod ghostid_login;
 mod ghostid_provider;
 mod handlers;
 mod oauth;
-mod qr_auth;
 mod sync;
 mod storage;
 mod web_ui;
@@ -57,6 +58,7 @@ pub struct AppState {
     pub whitelist: Option<UserWhitelist>,
     pub sessions: Arc<RwLock<HashMap<String, SessionData>>>,
     pub temp_tokens: Arc<RwLock<HashMap<String, TempTokenData>>>,
+    pub ghostid: Option<ghostid_login::GhostIdService>,
 }
 
 #[derive(Clone, Debug)]
@@ -156,6 +158,14 @@ async fn main() -> anyhow::Result<()> {
     // Initialize sync state
     let sync = SyncState::new(db.clone(), storage.clone(), chat::ChatSettings::from_config(&config));
 
+    let ghostid = match ghostid_login::GhostIdService::connect(ghostid_login::GhostIdConfig::from_env()).await {
+        Ok(service) => Some(service),
+        Err(e) => {
+            error!("Failed to initialize GhostID login service: {}", e);
+            None
+        }
+    };
+
     // Create application state
     let state = AppState {
         db: db.clone(),
@@ -166,6 +176,7 @@ async fn main() -> anyhow::Result<()> {
         whitelist,
         sessions: Arc::new(RwLock::new(HashMap::new())),
         temp_tokens: Arc::new(RwLock::new(HashMap::new())),
+        ghostid,
     };
 
     let host = config.server.host.parse::<std::net::IpAddr>()
@@ -232,10 +243,13 @@ fn create_api_router(state: AppState) -> Router {
         .route("/auth/oauth/callback/google", get(oauth_callback_google))
         .route("/auth/oauth/callback/github", get(oauth_callback_github))
         .route("/auth/finalize", get(web_ui::auth_finalize))
-        // QR Authentication routes  
-        .route("/auth/qr/start", post(qr_auth::start_qr_challenge))
-        .route("/auth/qr/status/:id", get(qr_auth::get_qr_status))
-        .route("/auth/qr/validate", post(qr_auth::validate_qr_auth))
+        .route("/auth/cli/start", post(cli_auth::api_start))
+        .route("/auth/cli/exchange", post(cli_auth::api_exchange))
+        .route("/auth/ghostid", get(web_ui::ghostid_auth_page))
+        .route("/auth/ghostid/challenge", post(web_ui::ghostid_start_challenge))
+        .route("/auth/ghostid/poll/:challenge_id", get(web_ui::ghostid_poll))
+        .route("/auth/ghostid/me", get(web_ui::ghostid_me))
+        .route("/auth/ghostid/logout", post(web_ui::ghostid_logout))
         // Admin routes
         .route("/admin/create", post(create_admin_user))
         // Project routes
@@ -320,12 +334,8 @@ fn create_combined_router(state: AppState) -> Router {
         .route("/auth/oauth/callback/google", get(oauth_callback_google))
         .route("/auth/oauth/callback/github", get(oauth_callback_github))
         .route("/auth/finalize", get(web_ui::auth_finalize))
-        .route("/auth/success", get(oauth_success_page))
-        .route("/auth/error", get(oauth_error_page))
-        // QR Authentication routes  
-        .route("/auth/qr/start", post(qr_auth::start_qr_challenge))
-        .route("/auth/qr/status/:id", get(qr_auth::get_qr_status))
-        .route("/auth/qr/validate", post(qr_auth::validate_qr_auth))
+        .route("/auth/cli/start", post(cli_auth::api_start))
+        .route("/auth/cli/exchange", post(cli_auth::api_exchange))
         
         // Admin routes
         .route("/admin/create", post(create_admin_user))
@@ -388,10 +398,6 @@ fn create_web_router(state: AppState) -> Router {
         .route("/auth/oauth/start", post(oauth_start))
         .route("/auth/oauth/callback/google", get(oauth_callback_google))
         .route("/auth/oauth/callback/github", get(oauth_callback_github))
-        // QR Authentication routes (needed for web UI)
-        .route("/auth/qr/start", post(qr_auth::start_qr_challenge))
-        .route("/auth/qr/status/:id", get(qr_auth::get_qr_status))
-        .route("/auth/qr/validate", post(qr_auth::validate_qr_auth))
         // Web UI routes
         .merge(crate::web_ui::routes())
         .with_state(state)
@@ -704,13 +710,12 @@ async fn oauth_callback_handler(
                             Ok(axum::response::Redirect::to(&finalize_url).into_response())
                         }
                         (OAuthSource::CLI | OAuthSource::GUI, _) => {
-                            // For CLI/GUI: Store token in temporary session and redirect to clean URL
-                            let _session_id = uuid::Uuid::new_v4().to_string();
+                            // CLI and GUI logins use the browser callback flow (/cli/auth/start), not this endpoint.
                             
-                            // Store token data temporarily (you'd want Redis in production)
-                            // For now, we'll serve the page directly with embedded token
-                            let success_html = generate_cli_success_page(&token, &user.username, &user.email);
-                            return Ok(axum::response::Html(success_html).into_response());
+                            return Ok((
+                                StatusCode::GONE,
+                                "The copy-paste login was removed. Run 'mothership auth' to sign in.",
+                            ).into_response());
                         }
                         (OAuthSource::Web, None) => {
                             // For Web without callback URL: Create secure session and redirect to clean URL
@@ -913,334 +918,6 @@ fn provider_name(provider: &OAuthProvider) -> &'static str {
     }
 }
 
-/// Generate success page for CLI/GUI OAuth flow
-fn generate_cli_success_page(token: &str, username: &str, email: &str) -> String {
-    format!(r#"
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Mothership Authentication Success</title>
-    <link rel="icon" type="image/png" href="/static/icon.png">
-    <style>
-        body {{
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            margin: 0;
-            padding: 20px;
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }}
-        .container {{
-            background: white;
-            padding: 40px;
-            border-radius: 12px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-            text-align: center;
-            max-width: 600px;
-            width: 100%;
-        }}
-        .success-icon {{ font-size: 48px; margin-bottom: 20px; }}
-        h1 {{ color: #2d3748; margin-bottom: 20px; }}
-        .user-info {{ background: #f7fafc; padding: 20px; border-radius: 8px; margin: 20px 0; }}
-        .token-container {{
-            background: #e8f4fd;
-            padding: 20px;
-            border-radius: 8px;
-            margin: 20px 0;
-            text-align: left;
-        }}
-        .token-textarea {{
-            width: 100%;
-            height: 100px;
-            padding: 15px;
-            border: 2px solid #007acc;
-            border-radius: 4px;
-            font-family: 'Courier New', monospace;
-            font-size: 12px;
-            background: #f8f9fa;
-            resize: none;
-            word-wrap: break-word;
-            overflow-wrap: break-word;
-            margin: 10px 0;
-        }}
-        .button-container {{
-            display: flex;
-            gap: 10px;
-            justify-content: center;
-            margin-top: 15px;
-        }}
-        .button {{
-            background: #007acc;
-            color: white;
-            border: none;
-            padding: 10px 20px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 14px;
-        }}
-        .button.copy {{
-            background: #28a745;
-        }}
-        .instructions {{
-            background: #fff3cd;
-            padding: 15px;
-            border-radius: 8px;
-            border-left: 4px solid #ffc107;
-            margin-top: 20px;
-            text-align: left;
-        }}
-        kbd {{
-            background: #f8f9fa;
-            padding: 2px 6px;
-            border-radius: 3px;
-            border: 1px solid #ddd;
-        }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="success-icon"></div>
-        <h1>Authentication Successful!</h1>
-        
-        <div class="user-info">
-            <p><strong>Username:</strong> {}</p>
-            <p><strong>Email:</strong> {}</p>
-        </div>
-        
-        <div class="token-container">
-            <h4 style="margin-top: 0; color: #0066cc;">Copy your authentication token:</h4>
-            <textarea id="token-textarea" readonly class="token-textarea" onclick="this.select()">{}</textarea>
-            
-            <div class="button-container">
-                <button onclick="selectAllToken()" class="button">Select All</button>
-                <button onclick="copyToken()" class="button copy">Copy Token</button>
-            </div>
-        </div>
-        
-        <div class="instructions">
-            <h4 style="margin-top: 0; color: #856404;">Instructions:</h4>
-            <ol style="margin: 10px 0; padding-left: 20px; font-size: 14px;">
-                <li>Copy the token above using one of the buttons</li>
-                <li>Switch back to your terminal</li>
-                <li>Paste the token when prompted</li>
-            </ol>
-        </div>
-    </div>
-
-    <script>
-        // Auto-select token on page load
-        window.onload = function() {{
-            selectAllToken();
-        }};
-
-        function selectAllToken() {{
-            const textarea = document.getElementById('token-textarea');
-            textarea.focus();
-            textarea.select();
-        }}
-
-        async function copyToken() {{
-            const textarea = document.getElementById('token-textarea');
-            try {{
-                await navigator.clipboard.writeText(textarea.value);
-                alert('Token copied to clipboard!');
-            }} catch (err) {{
-                alert('Failed to copy automatically. Please select and copy the token manually.');
-                selectAllToken();
-            }}
-        }}
-    </script>
-</body>
-</html>"#, 
-        username, 
-        email,
-        token)
-}
-
-/// Serve OAuth success page
-async fn oauth_success_page(
-    query: axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> Result<axum::response::Html<String>, StatusCode> {
-    let token = query.get("token").unwrap_or(&String::new()).clone();
-    let user = query.get("user").unwrap_or(&String::new()).clone();
-    let email = query.get("email").unwrap_or(&String::new()).clone();
-    
-    // Create a simple success page with embedded token
-    let html_content = format!(r#"<!DOCTYPE html>
-<html>
-<head>
-    <title>Mothership Authentication</title>
-    <link rel="icon" type="image/png" href="/static/icon.png">
-    <style>
-        body {{
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            margin: 0;
-            padding: 20px;
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }}
-        .container {{
-            background: white;
-            padding: 40px;
-            border-radius: 12px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-            text-align: center;
-            max-width: 600px;
-            width: 100%;
-        }}
-        .success-icon {{ font-size: 48px; margin-bottom: 20px; }}
-        h1 {{ color: #2d3748; margin-bottom: 20px; }}
-        .user-info {{ background: #f7fafc; padding: 20px; border-radius: 8px; margin: 20px 0; }}
-        .token-container {{
-            background: #e8f4fd;
-            padding: 20px;
-            border-radius: 8px;
-            margin: 20px 0;
-            text-align: left;
-        }}
-        .token-textarea {{
-            width: 100%;
-            height: 100px;
-            padding: 15px;
-            border: 2px solid #007acc;
-            border-radius: 4px;
-            font-family: 'Courier New', monospace;
-            font-size: 12px;
-            background: #f8f9fa;
-            resize: none;
-            word-wrap: break-word;
-            overflow-wrap: break-word;
-            margin: 10px 0;
-        }}
-        .button-container {{
-            display: flex;
-            gap: 10px;
-            justify-content: center;
-            margin-top: 15px;
-        }}
-        .button {{
-            background: #007acc;
-            color: white;
-            border: none;
-            padding: 10px 20px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 14px;
-        }}
-        .button.copy {{
-            background: #28a745;
-        }}
-        .instructions {{
-            background: #fff3cd;
-            padding: 15px;
-            border-radius: 8px;
-            border-left: 4px solid #ffc107;
-            margin-top: 20px;
-            text-align: left;
-        }}
-        kbd {{
-            background: #f8f9fa;
-            padding: 2px 6px;
-            border-radius: 3px;
-            border: 1px solid #ddd;
-        }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="success-icon"></div>
-        <h1>Authentication Successful!</h1>
-        
-        <div class="user-info">
-            <p><strong>Username:</strong> {}</p>
-            <p><strong>Email:</strong> {}</p>
-        </div>
-        
-        <div class="token-container">
-            <h4 style="margin-top: 0; color: #0066cc;">Copy your authentication token:</h4>
-            <textarea id="token-textarea" readonly class="token-textarea" onclick="this.select()">{}</textarea>
-            
-            <div class="button-container">
-                <button onclick="selectAllToken()" class="button">Select All</button>
-                <button onclick="copyToken()" class="button copy">Copy Token</button>
-            </div>
-        </div>
-        
-        <div class="instructions">
-            <h4 style="margin-top: 0; color: #856404;">Instructions:</h4>
-            <ol style="margin: 10px 0; padding-left: 20px; font-size: 14px;">
-                <li>Copy the token above using one of the buttons</li>
-                <li>Switch back to your terminal</li>
-                <li>Paste the token when prompted</li>
-            </ol>
-        </div>
-    </div>
-
-    <script>
-        // Auto-select token on page load
-        window.onload = function() {{
-            selectAllToken();
-        }};
-
-        function selectAllToken() {{
-            const textarea = document.getElementById('token-textarea');
-            textarea.focus();
-            textarea.select();
-        }}
-
-        async function copyToken() {{
-            const textarea = document.getElementById('token-textarea');
-            try {{
-                await navigator.clipboard.writeText(textarea.value);
-                alert('Token copied to clipboard!');
-            }} catch (err) {{
-                alert('Failed to copy automatically. Please select and copy the token manually.');
-                selectAllToken();
-            }}
-        }}
-    </script>
-</body>
-</html>"#, 
-        user, 
-        email,
-        token);
-    
-    Ok(axum::response::Html(html_content))
-}
-
-/// Serve OAuth error page
-async fn oauth_error_page(
-    query: axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> Result<axum::response::Html<String>, StatusCode> {
-    let error_message = query.get("message").unwrap_or(&"Unknown error".to_string()).clone();
-    
-    // Read the HTML file
-    let html_content = std::fs::read_to_string("oauth-success.html")
-        .unwrap_or_else(|_| {
-            // Fallback HTML if file doesn't exist
-            format!(r#"
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Mothership Authentication Error</title>
-    <link rel="icon" type="image/png" href="/static/icon.png">
-</head>
-<body>
-    <h1>Authentication Failed</h1>
-    <p><strong>Error:</strong> {}</p>
-    <p>Please try again or contact support if the problem persists.</p>
-</body>
-</html>
-            "#, error_message)
-        });
-    
-    Ok(axum::response::Html(html_content))
-}
 
 /// Complete device authorization (called by auth server)
 /// 

@@ -1,17 +1,11 @@
 use anyhow::Result;
 use colored::*;
-use mothership_common::auth::{OAuthRequest, OAuthResponse, OAuthProvider, OAuthSource};
-use mothership_common::protocol::ApiResponse;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::env;
 use open;
 
 use crate::config::ConfigManager;
 use crate::connections;
-
-use uuid;
-use hostname;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct StoredCredentials {
@@ -36,99 +30,35 @@ fn get_server_url(config_manager: &ConfigManager) -> Result<String> {
     Ok(config.mothership_url)
 }
 
-/// Handle authentication with different methods
+/// Handle authentication. Google and GhostID both sign in through the browser callback flow.
 pub async fn handle_auth(config_manager: &ConfigManager, method: Option<crate::AuthMethod>) -> Result<()> {
     match method {
-        Some(crate::AuthMethod::Google) | None => handle_oauth_auth(config_manager, OAuthProvider::Google).await,
-        Some(crate::AuthMethod::Github) => handle_oauth_auth(config_manager, OAuthProvider::GitHub).await,
+        None => handle_browser_login(config_manager, None).await,
+        Some(crate::AuthMethod::Ghostid) => handle_browser_login(config_manager, Some("ghostid")).await,
+        Some(crate::AuthMethod::Google) => handle_browser_login(config_manager, Some("google")).await,
     }
 }
 
-/// Handle OAuth authentication with local callback server (like GUI)
-async fn handle_oauth_auth(config_manager: &ConfigManager, provider: OAuthProvider) -> Result<()> {
-    let provider_name = match provider {
-        OAuthProvider::Google => "Google",
-        OAuthProvider::GitHub => "GitHub",
-    };
-
+/// Browser login with a loopback callback. The CLI opens the browser and receives the token on
+/// the callback. Nothing is pasted.
+async fn handle_browser_login(config_manager: &ConfigManager, provider: Option<&str>) -> Result<()> {
     let server_url = get_server_url(config_manager)?;
+    let login = mothership_common::client::start_browser_login(&server_url, provider).await?;
 
-    // Start OAuth flow
-    let oauth_request = OAuthRequest {
-        provider,
-        source: OAuthSource::CLI,
-        machine_id: crate::get_machine_id()?,
-        machine_name: crate::get_machine_name()?,
-        platform: env::consts::OS.to_string(),
-        hostname: hostname::get()?.to_string_lossy().to_string(),
-        callback_url: None,
-    };
-
-    let client = crate::http_client();
-    let response = client
-        .post(&format!("{}/auth/oauth/start", server_url))
-        .json(&oauth_request)
-        .send()
-        .await?;
-
-    let oauth_response: ApiResponse<OAuthResponse> = response.json().await?;
-
-    if !oauth_response.success {
-        return Err(anyhow::anyhow!(oauth_response.error.unwrap_or_else(|| "Unknown error".to_string())));
+    println!("{}", "Opening your browser to sign in...".cyan());
+    if let Err(e) = open::that(&login.auth_url) {
+        println!("Could not open the browser ({}). Open this link manually:", e);
+        println!("{}", login.auth_url);
     }
+    println!("{}", "Waiting for sign-in to finish (up to 5 minutes)...".dimmed());
 
-    let oauth_data = oauth_response.data.unwrap();
-
-    // Open browser for OAuth flow
-    println!("Opening browser for authentication...");
-    if let Err(e) = open::that(&oauth_data.auth_url) {
-        println!("Failed to open browser automatically: {}", e);
-        println!("Please open this URL manually:");
-        println!("{}", oauth_data.auth_url);
-    }
-
-    println!("{}", "Please complete the login process in your browser".yellow());
-    println!("{}", "   After logging in, you'll see a success page with your token".dimmed());
-    println!();
-    println!("{}", "Copy the token from the success page and paste it here:".cyan().bold());
-    print!("{}", "Token: ".cyan());
-
-    // Read token from user input
-    let mut token_input = String::new();
-    std::io::stdin().read_line(&mut token_input)
-        .map_err(|e| anyhow::anyhow!("Failed to read token input: {}", e))?;
-
-    let access_token = token_input.trim();
-
-    if access_token.is_empty() {
-        return Err(anyhow::anyhow!("No token provided. Please try again."));
-    }
-
-    if access_token.len() < 50 {
-        return Err(anyhow::anyhow!("Token seems too short. Please make sure you copied the full token."));
-    }
-
-    println!("{}", "Validating token with server...".dimmed());
-
-    // Validate the token before saving
-    let client = crate::http_client();
-    let response = client
-        .get(&format!("{}/auth/check", server_url))
-        .bearer_auth(access_token)
-        .send()
-        .await?;
-
-    if !response.status().is_success() {
-        return Err(anyhow::anyhow!("Invalid token. Please try the authentication process again."));
-    }
-
-    // Save credentials in the same format as the GUI
-    save_credentials(config_manager, access_token, None, None).await?;
+    let result = login.wait_for_token().await?;
+    let username = result.username.clone();
+    save_credentials(config_manager, &result.token, result.email.clone(), username.clone()).await?;
 
     println!("{}", "Authentication successful!".green().bold());
-    println!("{}", format!("   Logged in via {}", provider_name).dimmed());
+    println!("{}", format!("   Signed in as {}", username.unwrap_or_else(|| "unknown".to_string())).dimmed());
     println!("{}", "   Credentials saved for future use".dimmed());
-
     Ok(())
 }
 
@@ -181,24 +111,6 @@ async fn save_credentials(
     Ok(())
 }
 
-/// Get machine information for OAuth
-fn get_machine_info() -> OAuthRequest {
-    let machine_id = uuid::Uuid::new_v4().to_string();
-    let hostname = hostname::get()
-        .map(|h| h.to_string_lossy().to_string())
-        .unwrap_or_else(|_| "unknown".to_string());
-    
-    OAuthRequest {
-        provider: OAuthProvider::Google, // Will be overridden
-        machine_id,
-        machine_name: format!("{}-mothership-cli", hostname),
-        platform: std::env::consts::OS.to_string(),
-        hostname,
-        source: OAuthSource::CLI,
-        callback_url: None,
-    }
-}
-
 /// Handle logout (clear stored credentials)
 pub async fn handle_logout(config_manager: &ConfigManager) -> Result<()> {
     println!("{}", " Clearing stored credentials...".dimmed());
@@ -225,12 +137,6 @@ async fn clear_stored_credentials(config_manager: &ConfigManager) -> Result<()> 
     config_manager.clear_auth()?;
     
     Ok(())
-}
-
-/// Authenticate with the Mothership server
-pub async fn authenticate(config_manager: &crate::ConfigManager) -> Result<()> {
-    // Use the same OAuth flow as handle_oauth_auth
-    handle_oauth_auth(config_manager, OAuthProvider::Google).await
 }
 
 /// Check if we have a valid auth token

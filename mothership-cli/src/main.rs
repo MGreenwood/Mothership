@@ -139,10 +139,10 @@ enum Commands {
 
 #[derive(Subcommand)]
 pub enum AuthMethod {
-    /// Login with Google OAuth
+    /// Login with Google (opens your browser; no token to copy)
     Google,
-    /// Login with GitHub OAuth
-    Github,
+    /// Login with a GhostID wallet (scan the QR code with the wallet app)
+    Ghostid,
 }
 
 #[derive(Subcommand)]
@@ -343,9 +343,9 @@ async fn main() -> Result<()> {
     let config_manager = ConfigManager::new()?;
 
     match cli.command {
-        Commands::Auth { method: _ } => {
+        Commands::Auth { method } => {
             println!("{}", "Starting Mothership authentication...".cyan().bold());
-            auth::authenticate(&config_manager).await?;
+            auth::handle_auth(&config_manager, method).await?;
         }
         Commands::Gateway { action } => {
             // Validate authentication before gateway operations
@@ -1651,7 +1651,7 @@ fn print_verbose_help() {
     println!("{}", "CORE COMMANDS:".bright_yellow().bold());
     print_command_section("", "auth", "Authentication & Setup", &[
         ("google", "Login with Google OAuth", None),
-        ("github", "Login with GitHub OAuth", None),
+        ("ghostid", "Login with a GhostID wallet", None),
     ]);
     
     print_command_section("", "gateway", "Project Management", &[

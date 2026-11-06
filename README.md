@@ -40,7 +40,7 @@ Mothership is a **frictionless version control system** that eliminates the comp
 - **Intelligent Project Creation**: Automatic `.mothership` metadata with PostgreSQL storage and nested gateway prevention
 
 ### **Production-Ready Authentication**
-- **OAuth Integration**: Google and GitHub OAuth flows (`mothership auth google`, `mothership auth github`) with browser-based authorization and PostgreSQL user persistence
+- **OAuth Integration**: Google sign-in and GhostID wallet sign-in (`mothership auth google`, `mothership auth ghostid`) with browser-based authorization and PostgreSQL user persistence. The CLI and GUI receive the token on a local callback, and the browser then lands on the success page.
 - **Cross-Platform GUI**: Tauri-based desktop hub (`mothership-gui`) for managing projects, rifts, checkpoints, and wormholes
 - **JWT Security**: Machine certificates with automatic token refresh and validation. Tokens for users missing from the database are rejected (401) and never recreate the user; re-login issues a fresh server-generated ID
 - **Multi-Role System**: User/Admin/SuperAdmin with PostgreSQL-backed secure role management and ACID compliance

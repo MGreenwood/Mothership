@@ -120,3 +120,11 @@ Temporary Items
 # Built binaries and release archives (kept on disk, not tracked)
 cli-binaries/
 mothership-common.zip
+
+# GhostID local session database and private keys
+data/
+*.db
+*.db-wal
+*.db-shm
+*.pem
+

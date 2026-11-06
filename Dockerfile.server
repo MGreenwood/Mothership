@@ -16,9 +16,10 @@ COPY --from=builder /app/target/release/mothership-server /app/mothership-server
 
 # Copy configuration files
 COPY server.config /app/server.config
+COPY whitelist.config /app/whitelist.config
 
 # Copy static content files (robots.txt, icon.png, etc.)
-RUN mkdir -p /app/content
+RUN mkdir -p /app/content /app/data
 COPY icon.png /app/content/icon.png
 COPY robots.txt /app/content/robots.txt
 
@@ -27,6 +28,9 @@ COPY content/index.html /app/content/index.html
 COPY content/login.html /app/content/login.html
 COPY content/auth-required.html /app/content/auth-required.html
 COPY content/ghostid-auth.html /app/content/ghostid-auth.html
+COPY content/auth-success.html /app/content/auth-success.html
+COPY content/auth-error.html /app/content/auth-error.html
+COPY content/logo.png /app/content/logo.png
 
 EXPOSE 7523 8085
 CMD ["./mothership-server"] 

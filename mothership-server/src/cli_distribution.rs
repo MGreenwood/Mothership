@@ -273,6 +273,26 @@ async fn download_binary(
     }
 }
 
+/// Serves one CLI binary to a browser session that has already been authorized.
+pub(crate) async fn serve_binary(version: &str, platform: &str, binary: &str) -> Result<Response, StatusCode> {
+    if !is_valid_version(version) || !is_valid_platform(platform) || !is_valid_binary(binary) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let binary_path = format!("cli-binaries/{}/{}/{}", version, platform, binary);
+    let data = fs::read(&binary_path).await.map_err(|_| StatusCode::NOT_FOUND)?;
+    Ok(Response::builder()
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .header(header::CONTENT_DISPOSITION, format!("attachment; filename=\"{}\"", binary))
+        .body(data.into())
+        .unwrap())
+}
+
+/// Newest CLI version that has a complete Windows build on disk.
+pub(crate) async fn latest_cli_version() -> Option<String> {
+    let versions = get_available_versions().await.ok()?;
+    versions.into_iter().map(|v| v.version).max_by(|a, b| compare_versions(a, b))
+}
+
 /// Check for CLI updates
 async fn check_for_updates(
     Query(query): Query<UpdateCheckQuery>,

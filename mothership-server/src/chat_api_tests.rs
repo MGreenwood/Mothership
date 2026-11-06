@@ -108,6 +108,7 @@ async fn fixture(chat: ChatSettings) -> Fixture {
         whitelist: None,
         sessions: Arc::new(RwLock::new(HashMap::new())),
         temp_tokens: Arc::new(RwLock::new(HashMap::new())),
+        ghostid: None,
     };
 
     Fixture {

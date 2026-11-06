@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Signed in - Mothership</title>
+    <link rel="icon" type="image/png" href="/static/icon.png">
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: radial-gradient(circle at top, #1f2d3a 0%, #111820 70%);
+            color: #e6edf3;
+            margin: 0;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+            box-sizing: border-box;
+        }
+        .card {
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(143, 255, 143, 0.25);
+            border-radius: 16px;
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
+            padding: 40px 36px;
+            max-width: 460px;
+            width: 100%;
+            text-align: center;
+        }
+        .logo { width: 140px; height: auto; margin-bottom: 8px; }
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 56px;
+            height: 56px;
+            border-radius: 50%;
+            background: #7fc07f;
+            color: #111820;
+            font-size: 30px;
+            font-weight: bold;
+            margin: 12px auto 16px;
+        }
+        h1 { font-size: 1.6rem; margin: 0 0 12px; }
+        .identity {
+            background: rgba(127, 192, 127, 0.08);
+            border-radius: 10px;
+            padding: 16px;
+            margin: 20px 0;
+            text-align: left;
+            word-break: break-all;
+        }
+        .identity p { margin: 6px 0; }
+        .label { color: #8b98a5; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; }
+        .hint { color: #8b98a5; font-size: 0.95rem; line-height: 1.5; margin: 16px 0 24px; }
+        .btn {
+            display: inline-block;
+            background: #7fc07f;
+            color: #111820;
+            text-decoration: none;
+            padding: 12px 26px;
+            border-radius: 24px;
+            font-weight: bold;
+        }
+        .btn:hover { background: #95d495; }
+    </style>
+</head>
+<body>
+    <main class="card">
+        <img class="logo" src="/static/logo.png" alt="Mothership logo">
+        <div class="badge" aria-hidden="true">&#10003;</div>
+        <h1>You're signed in</h1>
+        <div class="identity">
+            <p><span class="label">Signed in as</span><br><strong>{{USER}}</strong></p>
+            <p><span class="label">Email</span><br>{{EMAIL}}</p>
+        </div>
+        <p class="hint">You can close this tab and return to your terminal, or continue to your downloads.</p>
+        <a class="btn" href="/download/authenticated">Go to downloads</a>
+    </main>
+</body>
+</html>

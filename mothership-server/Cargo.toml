@@ -26,8 +26,9 @@ tower-http = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
-# Database
-sqlx = { workspace = true }
+# Database (sqlite feature backs the local GhostID login store)
+sqlx = { workspace = true, features = ["sqlite"] }
+bs58 = "0.5"
 
 # Auth & crypto
 uuid = { workspace = true }

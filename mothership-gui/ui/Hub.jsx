@@ -19,8 +19,6 @@ export default function Hub({ onOpenInEditor, onGatewayChange, onRiftChanged }) 
   const [checkpointMsg, setCheckpointMsg] = useState('')
   const [restoreId, setRestoreId] = useState(null)
   const [auth, setAuth] = useState(null)
-  const [authProvider, setAuthProvider] = useState(null)
-  const [authToken, setAuthToken] = useState('')
 
   useEffect(() => {
     onGatewayChange?.(selected)
@@ -78,16 +76,8 @@ export default function Hub({ onOpenInEditor, onGatewayChange, onRiftChanged }) 
   }, [loadAuth, loadHealth, loadProjects])
 
   const signIn = (provider) =>
-    run(`Opened ${provider} sign-in in your browser. Paste the code it shows below.`, async () => {
-      setAuthProvider(provider)
-      await invoke('hub_auth_start', { provider })
-    })
-
-  const completeSignIn = () =>
     run('Signed in', async () => {
-      await invoke('hub_auth_complete', { token: authToken })
-      setAuthToken('')
-      setAuthProvider(null)
+      await invoke('hub_auth_start', { provider })
       await loadAuth()
       await loadHealth()
       await loadProjects()
@@ -260,23 +250,12 @@ export default function Hub({ onOpenInEditor, onGatewayChange, onRiftChanged }) 
         ) : (
           <>
             <p className="muted">
-              Pick a provider. Your browser opens, and after you approve, it shows a code. Paste that code here.
+              Pick a sign-in method. Your browser opens to finish signing in, and this window updates when you're done.
             </p>
             <div className="row">
               <button onClick={() => signIn('google')} disabled={busy}>Sign in with Google</button>
-              <button onClick={() => signIn('github')} disabled={busy}>Sign in with GitHub</button>
+              <button onClick={() => signIn('ghostid')} disabled={busy}>Sign in with GhostID</button>
             </div>
-            {authProvider && (
-              <div className="row">
-                <input
-                  type="password"
-                  placeholder="Paste code from browser"
-                  value={authToken}
-                  onChange={(e) => setAuthToken(e.target.value)}
-                />
-                <button onClick={completeSignIn} disabled={busy || !authToken.trim()}>Save token</button>
-              </div>
-            )}
           </>
         )}
       </section>
