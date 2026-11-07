@@ -16,6 +16,7 @@ use uuid::Uuid;
 
 use crate::config::ServerConfig;
 use crate::database::Database;
+use crate::events;
 use crate::AppState;
 
 /// Chat limits resolved from the server config at startup
@@ -138,6 +139,17 @@ pub async fn post_chat_message(
     };
 
     info!("Chat message in rift {} from {}", rift_id, user.username);
+
+    events::record(
+        db,
+        rift_id,
+        Some(user_id),
+        events::CHAT,
+        serde_json::json!({
+            "message_id": message.id,
+            "content": message.content,
+        }),
+    );
 
     let channel = format!("rift_{}", rift_id);
     let _ = broadcaster.send((

@@ -16,6 +16,7 @@ use chrono::{DateTime, Utc};
 use std::path::PathBuf;
 
 use crate::AppState;
+use crate::events;
 
 /// Handle beam request - joining/syncing with a project
 pub async fn handle_beam(
@@ -507,10 +508,20 @@ pub async fn manage_rift_members(
     if req.remove {
         state.db.remove_rift_member(rift_id, target.id).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         info!("Owner {} removed {} from rift {}", user_id, target.id, rift_id);
+        events::record(&state.db, rift_id, Some(user_id), events::ACCESS_CHANGE, serde_json::json!({
+            "action": "remove",
+            "target_user_id": target.id,
+            "target_username": req.username,
+        }));
         Ok(ResponseJson(ApiResponse::success(format!("Removed {} from '{}'", req.username, req.rift_name))))
     } else {
         state.db.add_rift_member(req.project_id, rift_id, target.id).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         info!("Owner {} added {} to rift {}", user_id, target.id, rift_id);
+        events::record(&state.db, rift_id, Some(user_id), events::ACCESS_CHANGE, serde_json::json!({
+            "action": "add",
+            "target_user_id": target.id,
+            "target_username": req.username,
+        }));
         Ok(ResponseJson(ApiResponse::success(format!("Added {} to '{}'", req.username, req.rift_name))))
     }
 }

@@ -118,6 +118,10 @@ pub struct AuthSettings {
     pub ban_duration_minutes: u64,
 }
 
+fn default_max_rift_events() -> i64 {
+    -1
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CollaborationSettings {
     /// Maximum number of users per rift
@@ -131,6 +135,10 @@ pub struct CollaborationSettings {
     
     /// Maximum number of chat messages to store per rift
     pub max_chat_history: usize,
+
+    /// Maximum number of rift events kept per rift in the event log; -1 keeps all events
+    #[serde(default = "default_max_rift_events")]
+    pub max_rift_events: i64,
     
     /// Enable presence indicators (who's online)
     pub presence_enabled: bool,
@@ -233,6 +241,7 @@ impl Default for ServerConfig {
                 max_chat_message_length: 1000,
                 store_chat_history: true,
                 max_chat_history: 1000,
+                max_rift_events: -1,
                 presence_enabled: true,
                 presence_update_interval: 30,
             },

@@ -283,6 +283,67 @@ button:hover {
   color: #f48771;
 }
 
+.timeline {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  padding: 12px;
+  gap: 8px;
+}
+
+.timeline-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.timeline-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.timeline-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+}
+
+.timeline-row {
+  display: grid;
+  grid-template-columns: 90px 120px 110px 1fr;
+  gap: 10px;
+  padding: 3px 6px;
+  border-bottom: 1px solid #2a2a2a;
+}
+
+.timeline-row.clickable {
+  cursor: pointer;
+}
+
+.timeline-row.clickable:hover {
+  background: #2a2d2e;
+}
+
+.timeline-time,
+.timeline-actor {
+  opacity: 0.7;
+}
+
+.timeline-summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .wormhole-detail {
   margin-top: 12px;
   border-top: 1px solid #3c3c3c;

@@ -20,6 +20,7 @@ use flate2;
 
 use crate::chat::{self, ChatSettings};
 use crate::database::Database;
+use crate::events;
 use crate::storage::StorageEngine;
 use crate::AppState;
 
@@ -411,6 +412,7 @@ pub async fn handle_websocket(socket: WebSocket, state: SyncState, rift_id: Stri
                                 let mut presence = state.presence.write().await;
                                 let connections = presence.entry(msg_rift_id).or_default();
                                 connections.insert(connection_channel.clone(), username.clone());
+                                events::record(&state.db, msg_rift_id, Some(user_id), events::JOIN, serde_json::json!({}));
                                 collect_participants(connections)
                             };
 
@@ -490,20 +492,26 @@ pub async fn handle_websocket(socket: WebSocket, state: SyncState, rift_id: Stri
     }
 
     info!("WebSocket connection closed for rift: {}", rift_id);
-    remove_presence(&state, &rift_id, &connection_channel).await;
+    if remove_presence(&state, &rift_id, &connection_channel).await {
+        if let Ok(rift_uuid) = Uuid::parse_str(&rift_id) {
+            events::record(&state.db, rift_uuid, Some(user_id), events::LEAVE, serde_json::json!({}));
+        }
+    }
     sender_task.abort();
 }
 
-/// Drop a closed connection from the rift's presence map
-async fn remove_presence(state: &SyncState, rift_id: &str, connection_channel: &str) {
-    let Ok(rift_uuid) = Uuid::parse_str(rift_id) else { return };
+/// Drop a closed connection from the rift's presence map. Returns true if it had joined the rift.
+async fn remove_presence(state: &SyncState, rift_id: &str, connection_channel: &str) -> bool {
+    let Ok(rift_uuid) = Uuid::parse_str(rift_id) else { return false };
     let mut presence = state.presence.write().await;
+    let mut was_present = false;
     if let Some(connections) = presence.get_mut(&rift_uuid) {
-        connections.remove(connection_channel);
+        was_present = connections.remove(connection_channel).is_some();
         if connections.is_empty() {
             presence.remove(&rift_uuid);
         }
     }
+    was_present
 }
 
 /// True when a client's edit was made against content other than the current main.
@@ -1019,6 +1027,17 @@ async fn handle_diff_change_batched(
     origin: &str,
     diff_change: FileDiffChange
 ) -> Result<()> {
+    events::record(
+        &state.db,
+        rift_id,
+        Some(author),
+        events::FILE_SAVED,
+        serde_json::json!({
+            "path": diff_change.path.to_string_lossy(),
+            "file_size": diff_change.file_size,
+        }),
+    );
+
     let rift_id_str = rift_id.to_string();
     let now = Instant::now();
     let mut to_flush: Option<(Uuid, String, Vec<FileDiffChange>)> = None;

@@ -36,6 +36,7 @@ fn main() {
             hub::hub_switch_rift,
             hub::hub_create_checkpoint,
             hub::hub_checkpoint_history,
+            hub::hub_rift_events,
             hub::hub_restore_checkpoint,
             hub::hub_server_info,
             hub::hub_daemon_status,

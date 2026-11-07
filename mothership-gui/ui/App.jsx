@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { ask } from '@tauri-apps/plugin-dialog'
 import TerminalTab from './TerminalTab.jsx'
 import Hub from './Hub.jsx'
+import Timeline from './Timeline.jsx'
 import Explorer from './Explorer.jsx'
 import ActiveRiftBar from './ActiveRiftBar.jsx'
 
@@ -94,6 +95,12 @@ export default function App() {
     setView('editor')
   }
 
+  // Opening a file from the timeline switches to the editor so the file is visible
+  const openFromTimeline = (path) => {
+    setView('editor')
+    openFile(path)
+  }
+
   const closeTab = async (tab) => {
     if (tab.kind === 'shell') {
       try {
@@ -143,6 +150,12 @@ export default function App() {
         >
           Editor
         </button>
+        <button
+          className={view === 'timeline' ? 'active' : ''}
+          onClick={() => setView('timeline')}
+        >
+          Timeline
+        </button>
         <span className="toolbar-sep" />
         <button onClick={openTerminal}>New Terminal</button>
         <span className="toolbar-sep" />
@@ -161,6 +174,16 @@ export default function App() {
           onOpenInEditor={openProjectFolder}
           onGatewayChange={setGateway}
           onRiftChanged={bumpRift}
+        />
+      </div>
+
+      <div style={{ display: view === 'timeline' ? 'flex' : 'none', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+        <Timeline
+          gateway={gateway}
+          active={view === 'timeline'}
+          explorerRoot={explorerRoot}
+          openFile={openFromTimeline}
+          onError={(message) => setNotice(message)}
         />
       </div>
 

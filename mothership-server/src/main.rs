@@ -27,6 +27,7 @@ mod cli_auth;
 mod cli_distribution;
 mod config;
 mod database;
+mod events;
 mod ghostid_login;
 mod ghostid_provider;
 mod handlers;
@@ -157,6 +158,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialize sync state
     let sync = SyncState::new(db.clone(), storage.clone(), chat::ChatSettings::from_config(&config));
+    events::spawn_retention_task(db.clone(), config.collaboration.max_rift_events);
 
     let ghostid = match ghostid_login::GhostIdService::connect(ghostid_login::GhostIdConfig::from_env()).await {
         Ok(service) => Some(service),
@@ -270,6 +272,7 @@ fn create_api_router(state: AppState) -> Router {
         .route("/gateway", post(gateway))
         .route("/gateway/create", post(create_gateway))
         // Rift routes
+        .route("/api/rifts/:id/events", get(events::list_rift_events))
         .route("/api/rifts", get(handlers::list_rifts).post(handlers::create_rift))
         .route("/api/rifts/switch", post(handlers::switch_rift))
         .route("/api/rifts/access-requests", get(handlers::list_rift_access_requests).post(handlers::request_rift_access))
@@ -360,6 +363,7 @@ fn create_combined_router(state: AppState) -> Router {
         .route("/gateway/create", post(create_gateway))
 
         // Rift and wormhole routes
+        .route("/api/rifts/:id/events", get(events::list_rift_events))
         .route("/api/rifts", get(handlers::list_rifts).post(handlers::create_rift))
         .route("/api/rifts/switch", post(handlers::switch_rift))
         .route("/api/rifts/access-requests", get(handlers::list_rift_access_requests).post(handlers::request_rift_access))
@@ -1550,6 +1554,17 @@ async fn create_checkpoint(
             };
             
             info!("Created checkpoint {} with {} files", checkpoint.id, checkpoint.changes.len());
+            events::record(
+                &state.db,
+                rift.id,
+                Some(user_id),
+                events::CHECKPOINT,
+                serde_json::json!({
+                    "checkpoint_id": checkpoint.id,
+                    "message": checkpoint.message,
+                    "file_count": checkpoint.changes.len(),
+                }),
+            );
             Ok(Json(ApiResponse::success(checkpoint_data)))
         }
         Err(e) => {
@@ -1708,6 +1723,17 @@ async fn restore_checkpoint(
         checkpoint,
         files,
     };
+
+    events::record(
+        &state.db,
+        restore_data.checkpoint.rift_id,
+        Some(user_id),
+        events::RESTORE,
+        serde_json::json!({
+            "checkpoint_id": checkpoint_id,
+            "file_count": restore_data.files.len(),
+        }),
+    );
 
     info!("Restore data prepared with {} files", restore_data.files.len());
     Ok(Json(ApiResponse::success(restore_data)))

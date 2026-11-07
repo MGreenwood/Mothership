@@ -5,8 +5,8 @@ use mothership_common::beam::{
 };
 use mothership_common::client::{
     clear_oauth_token, load_oauth_token, save_oauth_token, scan_text_files, start_browser_login,
-    CheckpointData, ConvergeResult, MothershipClient, RiftFileSides, RiftInfo, WormholeDetail,
-    WormholeSummary, DEFAULT_MAX_UPLOAD_BYTES,
+    CheckpointData, ConvergeResult, MothershipClient, RiftEvent, RiftEventQuery, RiftFileSides,
+    RiftInfo, WormholeDetail, WormholeSummary, DEFAULT_MAX_UPLOAD_BYTES,
 };
 use mothership_common::daemon::{self, DaemonStatus, TrackedProject};
 use mothership_common::merge::Choice;
@@ -479,6 +479,22 @@ pub async fn hub_create_checkpoint(
 pub async fn hub_checkpoint_history(project_id: String) -> Result<Vec<Checkpoint>, String> {
     client()?
         .checkpoint_history(parse_id(&project_id)?)
+        .await
+        .map_err(err)
+}
+
+/// Reads a rift's event log. See `RiftEventQuery` in mothership-common for how the options combine.
+#[tauri::command]
+pub async fn hub_rift_events(
+    rift_id: String,
+    after: i64,
+    before: Option<i64>,
+    latest: bool,
+    wait_secs: u64,
+) -> Result<Vec<RiftEvent>, String> {
+    let query = RiftEventQuery { after, before, latest, limit: 200, wait_secs };
+    client()?
+        .rift_events(parse_id(&rift_id)?, &query)
         .await
         .map_err(err)
 }

@@ -44,6 +44,30 @@ pub struct CheckpointData {
     pub file_count: usize,
 }
 
+/// One entry in a rift's event log, as returned by `GET /api/rifts/:id/events`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RiftEvent {
+    pub id: i64,
+    pub event_type: String,
+    pub actor_id: Option<Uuid>,
+    pub actor_username: Option<String>,
+    pub payload: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Options for reading a rift's event log.
+/// Forward reads return events after `after`, oldest first. `latest` returns the newest events,
+/// and `before` returns the events just older than an id. `wait_secs` holds a forward read open
+/// until something new is recorded, so followers do not need to poll.
+#[derive(Debug, Clone)]
+pub struct RiftEventQuery {
+    pub after: i64,
+    pub before: Option<i64>,
+    pub latest: bool,
+    pub limit: i64,
+    pub wait_secs: u64,
+}
+
 /// Checkpoint metadata plus the full contents of every file in it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RestoreData {
@@ -836,6 +860,25 @@ impl MothershipClient {
         let resp: ApiResponse<Vec<Checkpoint>> = self
             .get_api(&["projects", &project_id, "history"])
             .await?;
+        Self::unwrap_api(resp)
+    }
+
+    /// Reads a rift's event log. See [`RiftEventQuery`] for the paging and waiting options.
+    pub async fn rift_events(&self, rift_id: Uuid, query: &RiftEventQuery) -> Result<Vec<RiftEvent>> {
+        let rift_id = rift_id.to_string();
+        let url = self.endpoint(&["api", "rifts", &rift_id, "events"])?;
+        let mut params = vec![
+            ("after", query.after.to_string()),
+            ("limit", query.limit.to_string()),
+            ("latest", query.latest.to_string()),
+            ("wait", query.wait_secs.to_string()),
+        ];
+        if let Some(before) = query.before {
+            params.push(("before", before.to_string()));
+        }
+        let response = self.authed(self.http.get(url).query(&params)).send().await?;
+        let response = Self::ensure_success(response).await?;
+        let resp: ApiResponse<Vec<RiftEvent>> = response.json().await?;
         Self::unwrap_api(resp)
     }
 

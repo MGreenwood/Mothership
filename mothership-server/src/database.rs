@@ -8,6 +8,25 @@ use sqlx::PgPool;
 use std::collections::HashMap;
 use uuid::Uuid;
 
+/// One row of a rift's event log
+#[derive(Debug, Clone)]
+pub struct RiftEventRow {
+    pub id: i64,
+    pub actor_id: Option<Uuid>,
+    pub actor_username: Option<String>,
+    pub event_type: String,
+    pub payload: String,
+    pub created_at: DateTime<Utc>,
+}
+
+type RiftEventTuple = (i64, Option<Uuid>, Option<String>, String, String, DateTime<Utc>);
+
+impl From<RiftEventTuple> for RiftEventRow {
+    fn from((id, actor_id, actor_username, event_type, payload, created_at): RiftEventTuple) -> Self {
+        Self { id, actor_id, actor_username, event_type, payload, created_at }
+    }
+}
+
 /// Stored wormhole row, with its source rifts and base file hashes loaded
 #[derive(Debug, Clone)]
 pub struct WormholeRecord {
@@ -42,6 +61,8 @@ const WORMHOLE_COLUMNS: &str =
 #[derive(Clone)]
 pub struct Database {
     pool: PgPool,
+    /// Rift ids announced after each event is written, so readers can long-poll the log
+    events_tx: tokio::sync::broadcast::Sender<RiftId>,
 }
 
 impl Database {
@@ -50,10 +71,11 @@ impl Database {
         tracing::info!("Connecting to PostgreSQL database...");
         
         let pool = PgPool::connect(database_url).await?;
+        let (events_tx, _) = tokio::sync::broadcast::channel(1024);
         
         tracing::info!("Successfully connected to PostgreSQL database");
         
-        Ok(Self { pool })
+        Ok(Self { pool, events_tx })
     }
 
     /// Run database migrations manually (since we can't use sqlx migrate in Docker build)
@@ -198,8 +220,112 @@ impl Database {
             )
         "#).execute(&self.pool).await?;
 
+        // Rift event log: one append-only row per action in a rift. `id` is global and
+        // monotonic, so it doubles as the timeline cursor. The payload is JSON stored as TEXT.
+        sqlx::query(r#"
+            CREATE TABLE IF NOT EXISTS rift_events (
+                id BIGSERIAL PRIMARY KEY,
+                rift_id UUID NOT NULL REFERENCES rifts(id) ON DELETE CASCADE,
+                actor_id UUID,
+                actor_username VARCHAR(255),
+                event_type VARCHAR(40) NOT NULL,
+                payload TEXT NOT NULL DEFAULT '{}',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        "#).execute(&self.pool).await?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS rift_events_rift_id_idx ON rift_events (rift_id, id)")
+            .execute(&self.pool).await?;
+
         tracing::info!("Database schema ready!");
         Ok(())
+    }
+
+    /// Append one event to a rift's log. The actor's username is looked up in the same statement.
+    pub async fn insert_rift_event(
+        &self,
+        rift_id: RiftId,
+        actor_id: Option<UserId>,
+        event_type: &str,
+        payload: &str,
+    ) -> Result<i64> {
+        let (id,): (i64,) = sqlx::query_as(
+            "INSERT INTO rift_events (rift_id, actor_id, actor_username, event_type, payload) \
+             VALUES ($1, $2, (SELECT username FROM users WHERE id = $2), $3, $4) RETURNING id",
+        )
+        .bind(rift_id)
+        .bind(actor_id)
+        .bind(event_type)
+        .bind(payload)
+        .fetch_one(&self.pool)
+        .await?;
+
+        // No receivers just means nobody is long-polling this rift right now
+        let _ = self.events_tx.send(rift_id);
+        Ok(id)
+    }
+
+    /// Receive the id of every rift that gets a new event
+    pub fn subscribe_rift_events(&self) -> tokio::sync::broadcast::Receiver<RiftId> {
+        self.events_tx.subscribe()
+    }
+
+    /// The newest `limit` events in a rift, oldest first
+    pub async fn list_latest_rift_events(&self, rift_id: RiftId, limit: i64) -> Result<Vec<RiftEventRow>> {
+        self.list_rift_events_newest_first(rift_id, i64::MAX, limit).await
+    }
+
+    /// Up to `limit` events with an id below `before`, oldest first. Used to page back through history.
+    pub async fn list_rift_events_before(&self, rift_id: RiftId, before: i64, limit: i64) -> Result<Vec<RiftEventRow>> {
+        self.list_rift_events_newest_first(rift_id, before, limit).await
+    }
+
+    async fn list_rift_events_newest_first(&self, rift_id: RiftId, before: i64, limit: i64) -> Result<Vec<RiftEventRow>> {
+        let rows = sqlx::query_as::<_, RiftEventTuple>(
+            "SELECT id, actor_id, actor_username, event_type, payload, created_at FROM rift_events \
+             WHERE rift_id = $1 AND id < $2 ORDER BY id DESC LIMIT $3",
+        )
+        .bind(rift_id)
+        .bind(before)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut rows: Vec<RiftEventRow> = rows.into_iter().map(RiftEventRow::from).collect();
+        rows.reverse();
+        Ok(rows)
+    }
+
+    /// Events in a rift with id greater than `after`, oldest first
+    pub async fn list_rift_events(&self, rift_id: RiftId, after: i64, limit: i64) -> Result<Vec<RiftEventRow>> {
+        let rows = sqlx::query_as::<_, RiftEventTuple>(
+            "SELECT id, actor_id, actor_username, event_type, payload, created_at FROM rift_events \
+             WHERE rift_id = $1 AND id > $2 ORDER BY id ASC LIMIT $3",
+        )
+        .bind(rift_id)
+        .bind(after)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(RiftEventRow::from).collect())
+    }
+
+    /// Keep only the newest `keep` events for every rift. Used by the periodic retention task.
+    pub async fn prune_rift_events(&self, keep: i64) -> Result<u64> {
+        let result = sqlx::query(
+            "DELETE FROM rift_events WHERE id IN (\
+                SELECT id FROM (\
+                    SELECT id, ROW_NUMBER() OVER (PARTITION BY rift_id ORDER BY id DESC) AS rn \
+                    FROM rift_events\
+                ) ranked WHERE ranked.rn > $1\
+             )",
+        )
+        .bind(keep)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected())
     }
 
     /// Store a chat message for a rift and return it with its server-assigned id and timestamp

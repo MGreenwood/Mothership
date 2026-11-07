@@ -25,6 +25,7 @@ use uuid::Uuid;
 
 use crate::chat::authenticated_user;
 use crate::database::WormholeRecord;
+use crate::events;
 use crate::AppState;
 
 type ApiError = (StatusCode, String);
@@ -362,8 +363,33 @@ pub async fn create_wormhole(
         .create_wormhole(req.project_id, &name, user_id, &base_hashes, &rift_ids, req.is_private)
         .await
         .map_err(internal)?;
+    record_wormhole_event(&state, &wormhole, user_id, "create", serde_json::json!({}));
     let computed = compute(&state, &wormhole).await?;
     Ok(Json(ApiResponse::success(summarize(&wormhole, &computed))))
+}
+
+/// Log a wormhole action to every rift it connects, so each rift's timeline shows it
+fn record_wormhole_event(
+    state: &AppState,
+    wormhole: &WormholeRecord,
+    actor: Uuid,
+    action: &str,
+    details: serde_json::Value,
+) {
+    for rift_id in &wormhole.rift_ids {
+        events::record(
+            &state.db,
+            *rift_id,
+            Some(actor),
+            events::WORMHOLE,
+            serde_json::json!({
+                "action": action,
+                "wormhole_id": wormhole.id,
+                "wormhole_name": wormhole.name,
+                "details": details,
+            }),
+        );
+    }
 }
 
 pub async fn get_wormhole(
@@ -420,6 +446,13 @@ pub async fn resolve_conflict(
         .upsert_wormhole_resolution(wormhole.id, &req.path, &req.conflict_id, &resolution)
         .await
         .map_err(internal)?;
+    record_wormhole_event(
+        &state,
+        &wormhole,
+        user_id,
+        "resolve",
+        serde_json::json!({ "path": req.path, "conflict_id": req.conflict_id }),
+    );
 
     let computed = compute(&state, &wormhole).await?;
     let sides = side_views(&state, &wormhole).await?;
@@ -500,6 +533,13 @@ pub async fn converge_wormhole(
         .set_wormhole_status(wormhole.id, "converged", Some(rift.id))
         .await
         .map_err(internal)?;
+    record_wormhole_event(
+        &state,
+        &wormhole,
+        user_id,
+        "converge",
+        serde_json::json!({ "converted_rift_id": rift.id, "rift_name": rift_name }),
+    );
 
     Ok(Json(ApiResponse::success(ConvergeResponse {
         rift_id: rift.id,
@@ -676,6 +716,14 @@ pub async fn toggle_wormhole_rift(
         SyncMessage::WormholeUpdated { wormhole_id },
     ));
 
+    record_wormhole_event(
+        &state,
+        &wormhole,
+        user_id,
+        "toggle",
+        serde_json::json!({ "rift_id": req.rift_id, "enabled": req.enabled }),
+    );
+
     Ok(Json(ApiResponse::success(detail(&wormhole, &computed, sides))))
 }
 
@@ -696,6 +744,7 @@ pub async fn dissolve_wormhole(
     let should_delete = body.map(|Json(req)| req.delete).unwrap_or(false);
 
     if should_delete {
+        record_wormhole_event(&state, &wormhole, user_id, "delete", serde_json::json!({}));
         state
             .db
             .delete_wormhole(wormhole.id)
@@ -714,6 +763,7 @@ pub async fn dissolve_wormhole(
         .set_wormhole_status(wormhole.id, "dissolved", None)
         .await
         .map_err(internal)?;
+    record_wormhole_event(&state, &wormhole, user_id, "dissolve", serde_json::json!({}));
     Ok(Json(ApiResponse::success(StatusResponse {
         id: wormhole.id,
         status: "dissolved".to_string(),
@@ -727,6 +777,7 @@ pub async fn delete_wormhole(
 ) -> ApiResult<StatusResponse> {
     let user_id = current_user(&state, &headers)?;
     let wormhole = load_wormhole(&state, user_id, wormhole_id).await?;
+    record_wormhole_event(&state, &wormhole, user_id, "delete", serde_json::json!({}));
     state
         .db
         .delete_wormhole(wormhole.id)
