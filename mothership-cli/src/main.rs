@@ -23,6 +23,7 @@ mod gateway;
 #[cfg(test)]
 mod profiling;
 mod project_index;
+mod shell;
 mod sync;
 mod update;
 mod wormhole;
@@ -34,8 +35,9 @@ use crate::config::ConfigManager;
 #[command(about = "Mothership - Frictionless Version Control")]
 #[command(version = env!("CARGO_PKG_VERSION"))]
 struct Cli {
+    /// Command to run. Without one, `mothership` opens the interactive shell.
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
@@ -343,6 +345,14 @@ async fn main() -> Result<()> {
     let config_manager = ConfigManager::new()?;
 
     match cli.command {
+        Some(command) => run(command, &config_manager).await,
+        None => shell::run(&config_manager).await,
+    }
+}
+
+/// Runs one parsed command. The interactive shell calls this for each line it reads.
+async fn run(command: Commands, config_manager: &ConfigManager) -> Result<()> {
+    match command {
         Commands::Auth { method } => {
             println!("{}", "Starting Mothership authentication...".cyan().bold());
             auth::handle_auth(&config_manager, method).await?;

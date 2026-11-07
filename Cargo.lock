@@ -3361,7 +3361,7 @@ dependencies = [
 
 [[package]]
 name = "mothership-cli"
-version = "0.0.80"
+version = "0.0.82"
 dependencies = [
  "anyhow",
  "chrono",

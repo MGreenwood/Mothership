@@ -269,6 +269,12 @@ SyncMessage::FileUpdate {
 
 ## CLI Commands Reference
 
+### **Interactive shell**
+```bash
+mothership                                            # Open the shell. Type commands without the "mothership" prefix, e.g. "gateway list"
+# Inside the shell: "help" lists commands, "exit" leaves. Ctrl+Z then Enter (Ctrl+D on macOS/Linux) also leaves.
+```
+
 ### **Project & Gateway Management**
 ```bash
 mothership init [name] [-p|--private]                 # Initialize current directory as a project (writes .mothershipignore); -p makes it private

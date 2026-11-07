@@ -76,6 +76,9 @@ A checklist of the features discussed, ordered from highest to lowest impact. Ea
 - [ ] Reuses the existing GUI pages (timeline, diffs, chat, anchors) inside VS Code
 - [ ] Planned after the GUI timeline page is working
 
+## Added during work
+- [x] Interactive shell: running `mothership` with no command opens a prompt where commands are typed without the `mothership` prefix. Ctrl+Z then Enter (or `exit`) leaves. Tokenizer tests live in `mothership-cli/src/shell.rs`.
+
 ## Not planned
 - [ ] Git export (decided: none for now)
 - [ ] AI-agent attribution on checkpoints (left to the company)
