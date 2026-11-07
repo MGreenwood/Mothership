@@ -12,7 +12,7 @@ function base64ToBytes(b64) {
   return bytes
 }
 
-export default function TerminalTab({ id, kind = 'nvim', file, cwd, active, onExit, onFailed, onError }) {
+export default function TerminalTab({ id, kind = 'nvim', file, line, cwd, active, onExit, onFailed, onError }) {
   const hostRef = useRef(null)
   const termRef = useRef(null)
   const fitRef = useRef(null)
@@ -81,6 +81,7 @@ export default function TerminalTab({ id, kind = 'nvim', file, cwd, active, onEx
         return invoke('nvim_open', {
           id,
           file: file ?? null,
+          line: line ?? null,
           cwd: cwd ?? null,
           cols: term.cols,
           rows: term.rows,

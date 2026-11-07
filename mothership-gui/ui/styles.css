@@ -373,6 +373,29 @@ button:hover {
   white-space: pre;
 }
 
+.timeline-anchors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  grid-column: 4;
+}
+
+.anchor-chip {
+  font-family: Consolas, monospace;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid #3c3c3c;
+  background: #252526;
+  color: #9cdcfe;
+}
+
+.anchor-chip.muted {
+  color: inherit;
+  opacity: 0.6;
+  cursor: default;
+}
+
 .wormhole-detail {
   margin-top: 12px;
   border-top: 1px solid #3c3c3c;

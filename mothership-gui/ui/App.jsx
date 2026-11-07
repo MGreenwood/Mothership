@@ -67,16 +67,20 @@ export default function App() {
     })
   }
 
-  const addTab = ({ kind = 'nvim', file = null, cwd = null, title }) => {
+  const addTab = ({ kind = 'nvim', file = null, cwd = null, title, line = null }) => {
     const key = newSessionId()
-    setTabs((prev) => [...prev, { key, kind, file, cwd, title }])
+    setTabs((prev) => [...prev, { key, kind, file, cwd, title, line }])
     setActiveKey(key)
   }
 
-  const openFile = async (path) => {
+  // With `line`, the editor jumps there. An already-open file moves its cursor instead of reopening.
+  const openFile = async (path, line = null) => {
     const existing = tabs.find((t) => t.file === path)
     if (existing) {
       setActiveKey(existing.key)
+      if (line) {
+        invoke('nvim_goto', { id: existing.key, line }).catch((err) => setNotice(String(err)))
+      }
       return
     }
     try {
@@ -86,7 +90,7 @@ export default function App() {
       return
     }
     const name = path.split(/[\\/]/).pop()
-    addTab({ file: path, cwd: null, title: name })
+    addTab({ file: path, cwd: null, title: name, line })
   }
 
   const openTerminal = () => {
@@ -96,9 +100,9 @@ export default function App() {
   }
 
   // Opening a file from the timeline switches to the editor so the file is visible
-  const openFromTimeline = (path) => {
+  const openFromTimeline = (path, line = null) => {
     setView('editor')
-    openFile(path)
+    openFile(path, line)
   }
 
   const closeTab = async (tab) => {
@@ -228,6 +232,7 @@ export default function App() {
             id={tab.key}
             kind={tab.kind}
             file={tab.file}
+            line={tab.line}
             cwd={tab.cwd}
             active={tab.key === activeKey}
             onExit={removeTab}

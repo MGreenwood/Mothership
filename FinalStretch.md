@@ -4,7 +4,7 @@ A checklist of the features discussed, ordered from highest to lowest impact. Ea
 
 **Current priorities:** ease of adoption comes first. Git export is out of scope for now.
 
-**Status:** Tasks 1 (event log), 2 (GUI timeline page), 3 (scoped checkpoints), 4 (restore), and 5 (diffs) are done. Task 6 (chat anchored to code) is next.
+**Status:** Tasks 1 through 6 are done. Task 7 (secret scanning before sync) is next.
 
 ## 1. Rift event log (foundation)
 - [x] Append-only, sequenced event log per rift that every other feature reads from (`rift_events` table, global `id` as the timeline cursor)
@@ -23,7 +23,7 @@ A checklist of the features discussed, ordered from highest to lowest impact. Ea
 - [x] History view: "Load older" pages back through the log, and filters hide event types
 - [x] Clicking a file event opens that file in the editor
 - [ ] Clicking a checkpoint event jumps to that checkpoint
-- [ ] Clicking a chat event with a line anchor jumps to that line (needs item 6)
+- [x] Clicking a chat event with a line anchor jumps to that line
 - [ ] Gap: push events over the rift WebSocket instead of long-polling. Deferred until all tasks are complete (see the end of this file).
 
 ## 3. Scoped checkpoints
@@ -50,10 +50,12 @@ A checklist of the features discussed, ordered from highest to lowest impact. Ea
 - [ ] Gap: a rift name that exists in more than one project is refused as ambiguous (409). Pick a project-scoped form. Deferred until all tasks are complete.
 
 ## 6. Chat anchored to code
-- [ ] Anchor syntax: `path:line` for a line, `path/` (or `path`) for a folder
-- [ ] Anchors point to the live file, so they follow edits
-- [ ] CLI prints and accepts the same anchors
-- [ ] Clicking an anchor in the GUI opens the file at that line in the GUI editor
+- [x] Anchor syntax: `path:line` for one line, `path/` for a folder. A plain file name with a dot (`README.md`) also works. Words without a dot are never anchors, so `and/or` is ignored.
+- [x] Anchors are read from the message text every time, so they point at the live file, not a snapshot
+- [x] CLI shows each anchor under its message with the line's text from the local folder, or says the file isn't here. The CLI accepts anchors as ordinary chat text.
+- [x] Clicking an anchor in the GUI opens the file at that line in the GUI editor (timeline chat rows). An already-open file moves its cursor instead of reopening.
+- [ ] Gap: a line anchor keeps its line number from when it was posted, so it doesn't follow lines inserted above it. Deferred until all tasks are complete.
+- [ ] Gap: the GUI has no chat panel yet. Anchors are clickable only in the timeline. Deferred until all tasks are complete.
 
 ## 7. Secret scanning before sync
 - [ ] Scan files before they leave the machine (pre-sync)

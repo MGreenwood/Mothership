@@ -140,12 +140,20 @@ async fn wait_for_rift(notifications: &mut Receiver<RiftId>, rift_id: RiftId) {
 }
 
 fn to_view(row: RiftEventRow) -> RiftEvent {
+    let mut payload: serde_json::Value = serde_json::from_str(&row.payload).unwrap_or(serde_json::Value::Null);
+    // Anchors are read from the chat text when the event is served, so they always match the live files
+    if row.event_type == CHAT {
+        if let Some(content) = payload.get("content").and_then(|c| c.as_str()) {
+            let anchors = mothership_common::anchors::find_anchors(content);
+            payload["anchors"] = serde_json::to_value(anchors).unwrap_or(serde_json::Value::Null);
+        }
+    }
     RiftEvent {
         id: row.id,
         event_type: row.event_type,
         actor_id: row.actor_id,
         actor_username: row.actor_username,
-        payload: serde_json::from_str(&row.payload).unwrap_or(serde_json::Value::Null),
+        payload,
         created_at: row.created_at,
     }
 }

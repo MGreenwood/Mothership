@@ -481,3 +481,21 @@ async fn joins_leaves_and_file_saves_are_logged_over_the_socket() {
     let leaves = wait_for(&app, &member_token, fx.main, events::LEAVE, 1).await;
     assert_eq!(leaves[0]["actor_username"], fx.member.username);
 }
+
+#[tokio::test]
+#[ignore]
+async fn chat_anchors_are_attached_to_the_event() {
+    let fx = fixture().await;
+    let app = create_combined_router(fx.state.clone());
+    let member_token = token_for(&fx.state, &fx.member);
+
+    post_chat(&app, &member_token, fx.main, "check scripts/launcher.py:136 and scripts/").await;
+    let chat = wait_for(&app, &member_token, fx.main, events::CHAT, 1).await;
+
+    let anchors = chat[0]["payload"]["anchors"].as_array().unwrap();
+    assert_eq!(anchors.len(), 2);
+    assert_eq!(anchors[0]["path"], "scripts/launcher.py");
+    assert_eq!(anchors[0]["line"], 136);
+    assert_eq!(anchors[1]["path"], "scripts");
+    assert_eq!(anchors[1]["folder"], true);
+}

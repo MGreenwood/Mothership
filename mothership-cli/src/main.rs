@@ -1,5 +1,6 @@
 use mothership_common::ClientConfig;
 use mothership_common::text_diff::{DiffStatus, FileDiff};
+use mothership_common::anchors::Anchor;
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::{CompleteEnv, engine::ArgValueCandidates};
 use clap_complete::env::{Bash, Elvish, EnvCompleter, Fish, Shells, Zsh};
@@ -1144,6 +1145,68 @@ fn print_chat_line(message: &ChatMessage) {
         message.author_username,
         message.content
     );
+    let anchors = mothership_common::anchors::find_anchors(&message.content);
+    if let Ok(root) = std::env::current_dir() {
+        for anchor in &anchors {
+            println!("    {} {}", "↳".dimmed(), anchor_preview(&root, anchor).dimmed());
+        }
+    }
+}
+
+/// Describes what an anchor points at in the local project folder: the text of the line, or whether
+/// the file or folder is present here
+fn anchor_preview(root: &std::path::Path, anchor: &Anchor) -> String {
+    let target = root.join(&anchor.path);
+    if anchor.folder {
+        return if target.is_dir() {
+            format!("{}/ (folder)", anchor.path)
+        } else {
+            format!("{}/ (not in this folder)", anchor.path)
+        };
+    }
+    let Ok(content) = std::fs::read_to_string(&target) else {
+        return format!("{} (not in this folder)", anchor.path);
+    };
+    match anchor.line {
+        None => format!("{} (file)", anchor.path),
+        Some(line) => match content.lines().nth(line.saturating_sub(1) as usize) {
+            Some(text) => format!("{}:{}  {}", anchor.path, line, text.trim()),
+            None => format!("{}:{} (line is past the end of the file)", anchor.path, line),
+        },
+    }
+}
+
+#[cfg(test)]
+mod anchor_preview_tests {
+    use super::anchor_preview;
+    use mothership_common::anchors::find_anchors;
+
+    fn project_with(file: &str, content: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("mothership-anchor-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("scripts")).unwrap();
+        std::fs::write(dir.join(file), content).unwrap();
+        dir
+    }
+
+    #[test]
+    fn shows_the_line_text_when_the_file_is_here() {
+        let dir = project_with("scripts/launcher.py", "a = 1\n    run()  \nc = 3\n");
+        let anchor = find_anchors("scripts/launcher.py:2").remove(0);
+        assert_eq!(anchor_preview(&dir, &anchor), "scripts/launcher.py:2  run()");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn reports_missing_files_folders_and_lines() {
+        let dir = project_with("scripts/launcher.py", "one line\n");
+        let missing = find_anchors("nope.py:3").remove(0);
+        assert_eq!(anchor_preview(&dir, &missing), "nope.py (not in this folder)");
+        let past_end = find_anchors("scripts/launcher.py:9").remove(0);
+        assert!(anchor_preview(&dir, &past_end).contains("past the end"));
+        let folder = find_anchors("scripts/").remove(0);
+        assert_eq!(anchor_preview(&dir, &folder), "scripts/ (folder)");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
 
 /// Interactive chat prompt: shows recent history, polls for new messages, and sends each line entered

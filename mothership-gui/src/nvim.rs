@@ -154,6 +154,7 @@ pub fn nvim_open(
     sessions: State<'_, NvimSessions>,
     id: String,
     file: Option<String>,
+    line: Option<u32>,
     cwd: Option<String>,
     cols: u16,
     rows: u16,
@@ -177,6 +178,9 @@ pub fn nvim_open(
     cmd.arg(&pipe);
     cmd.arg("--cmd");
     cmd.arg("set autoread backupcopy=yes noswapfile");
+    if let Some(jump) = line_arg(line) {
+        cmd.arg(jump);
+    }
     if let Some(f) = &file {
         cmd.arg(f);
     }
@@ -186,6 +190,59 @@ pub fn nvim_open(
 
     start_session(app, &sessions, id.clone(), cmd, pipe, cols, rows)?;
     Ok(id)
+}
+
+/// The Neovim argument that opens a file at a line (`+136`). Lines start at 1, so anything else means no jump.
+fn line_arg(line: Option<u32>) -> Option<String> {
+    line.filter(|l| *l >= 1).map(|l| format!("+{l}"))
+}
+
+/// Moves a running session's cursor to a line, for a file that is already open in a tab
+#[tauri::command]
+pub async fn nvim_goto(sessions: State<'_, NvimSessions>, id: String, line: u32) -> Result<(), String> {
+    let pipe = sessions
+        .sessions
+        .lock()
+        .unwrap()
+        .get(&id)
+        .map(|s| s.pipe.clone())
+        .filter(|p| !p.is_empty())
+        .ok_or_else(|| format!("nvim session '{id}' is not running"))?;
+    if line < 1 {
+        return Err("line numbers start at 1".to_string());
+    }
+    let keys = format!(r"<C-\><C-N>:{line}<CR>zz");
+    let program = nvim_program();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut cmd = Command::new(&program);
+        cmd.args(["--server", &pipe, "--remote-send", &keys]);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        match cmd.output() {
+            Ok(out) if out.status.success() => Ok(()),
+            Ok(out) => Err(String::from_utf8_lossy(&out.stderr).trim().to_string()),
+            Err(e) => Err(e.to_string()),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[cfg(test)]
+mod line_arg_tests {
+    use super::line_arg;
+
+    #[test]
+    fn jumps_only_for_real_line_numbers() {
+        assert_eq!(line_arg(Some(136)), Some("+136".to_string()));
+        assert_eq!(line_arg(Some(1)), Some("+1".to_string()));
+        assert_eq!(line_arg(Some(0)), None);
+        assert_eq!(line_arg(None), None);
+    }
 }
 
 /// Opens an interactive PowerShell in `cwd` (or the user profile when omitted).

@@ -18,6 +18,7 @@ fn main() {
             nvim::nvim_resize,
             nvim::nvim_close,
             nvim::nvim_check_file,
+            nvim::nvim_goto,
             nvim::nvim_reload_files,
             nvim::terminal_open,
             nvim::terminal_close,

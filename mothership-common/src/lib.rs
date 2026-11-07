@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
 
+pub mod anchors;
 pub mod auth;
 pub mod beam;
 pub mod client;

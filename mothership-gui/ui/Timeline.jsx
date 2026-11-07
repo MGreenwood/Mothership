@@ -43,7 +43,7 @@ function joinLocal(root, relative) {
   return `${root.replace(/[\\/]+$/, '')}\\${relative.replace(/[\\/]+/g, '\\')}`
 }
 
-function TimelineRow({ event, onOpen }) {
+function TimelineRow({ event, onOpen, anchors = [], onOpenAnchor }) {
   return (
     <li
       className={`timeline-row${onOpen ? ' clickable' : ''}`}
@@ -53,6 +53,26 @@ function TimelineRow({ event, onOpen }) {
       <span className="timeline-actor">{event.actor_username ?? 'system'}</span>
       <span className="timeline-type">{TYPE_LABELS[event.event_type] ?? event.event_type}</span>
       <span className="timeline-summary">{summarize(event)}</span>
+      {anchors.length > 0 && (
+        <span className="timeline-anchors">
+          {anchors.map((anchor) =>
+            onOpenAnchor && !anchor.folder ? (
+              <button
+                key={anchor.text}
+                className="anchor-chip"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onOpenAnchor(anchor)
+                }}
+              >
+                {anchor.text}
+              </button>
+            ) : (
+              <span key={anchor.text} className="anchor-chip muted">{anchor.text}</span>
+            ),
+          )}
+        </span>
+      )}
     </li>
   )
 }
@@ -226,6 +246,12 @@ export default function Timeline({ gateway, active, explorerRoot, openFile, onEr
           <TimelineRow
             key={event.id}
             event={event}
+            anchors={event.payload?.anchors ?? []}
+            onOpenAnchor={
+              explorerRoot
+                ? (anchor) => openFile(joinLocal(explorerRoot, anchor.path), anchor.line)
+                : null
+            }
             onOpen={
               event.event_type === 'file_saved' && explorerRoot && event.payload?.path
                 ? () => openFile(joinLocal(explorerRoot, event.payload.path))
