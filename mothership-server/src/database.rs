@@ -1,5 +1,5 @@
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Timelike, Utc};
 use mothership_common::{
     merge::Resolution, protocol::ChatMessage, Project, ProjectId, ProjectSettings, Rift, RiftId,
     User, UserId, UserRole,
@@ -25,6 +25,26 @@ impl From<RiftEventTuple> for RiftEventRow {
     fn from((id, actor_id, actor_username, event_type, payload, created_at): RiftEventTuple) -> Self {
         Self { id, actor_id, actor_username, event_type, payload, created_at }
     }
+}
+
+/// A `chat` event row: actor, username, payload, timestamp
+type ChatEventTuple = (Option<UserId>, Option<String>, String, DateTime<Utc>);
+
+/// Turns chat event rows into messages. A row without a message id or author is skipped.
+fn chat_from_rows(rift_id: RiftId, rows: Vec<ChatEventTuple>) -> Vec<ChatMessage> {
+    rows.into_iter()
+        .filter_map(|(author_id, author_username, payload, timestamp)| {
+            let payload: serde_json::Value = serde_json::from_str(&payload).ok()?;
+            Some(ChatMessage {
+                id: payload.get("message_id")?.as_str()?.parse().ok()?,
+                rift_id,
+                author_id: author_id?,
+                author_username: author_username.unwrap_or_default(),
+                content: payload.get("content")?.as_str()?.to_string(),
+                timestamp,
+            })
+        })
+        .collect()
 }
 
 /// Stored wormhole row, with its source rifts and base file hashes loaded
@@ -136,21 +156,6 @@ impl Database {
             )
         "#).execute(&self.pool).await?;
         
-        // Create chat_messages table (rift-scoped, pruned to max_chat_history per rift)
-        sqlx::query(r#"
-            CREATE TABLE IF NOT EXISTS chat_messages (
-                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-                rift_id UUID NOT NULL,
-                author_id UUID NOT NULL,
-                author_username VARCHAR(255) NOT NULL,
-                content TEXT NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )
-        "#).execute(&self.pool).await?;
-
-        sqlx::query("CREATE INDEX IF NOT EXISTS chat_messages_rift_created_idx ON chat_messages (rift_id, created_at)")
-            .execute(&self.pool).await?;
-        
         // Wormholes: live merge previews over a set of rifts in one project
         sqlx::query(r#"
             CREATE TABLE IF NOT EXISTS wormholes (
@@ -237,6 +242,29 @@ impl Database {
         sqlx::query("CREATE INDEX IF NOT EXISTS rift_events_rift_id_idx ON rift_events (rift_id, id)")
             .execute(&self.pool).await?;
 
+        // Chat used to have its own table. Move any remaining rows into the event log, then drop the
+        // table. One transaction, so a crash part-way leaves the table for the next start to retry.
+        // Rows for rifts that no longer exist are dropped, since nothing can read them.
+        let (legacy_exists,): (bool,) = sqlx::query_as("SELECT to_regclass('public.chat_messages') IS NOT NULL")
+            .fetch_one(&self.pool)
+            .await?;
+        if legacy_exists {
+            let mut tx = self.pool.begin().await?;
+            let moved = sqlx::query(
+                "INSERT INTO rift_events (rift_id, actor_id, actor_username, event_type, payload, created_at) \
+                 SELECT cm.rift_id, cm.author_id, cm.author_username, $1, \
+                        json_build_object('message_id', cm.id, 'content', cm.content)::text, cm.created_at \
+                 FROM chat_messages cm JOIN rifts r ON r.id = cm.rift_id \
+                 ORDER BY cm.created_at, cm.id",
+            )
+            .bind(crate::events::CHAT)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query("DROP TABLE chat_messages").execute(&mut *tx).await?;
+            tx.commit().await?;
+            tracing::info!("Moved {} chat messages into the rift event log", moved.rows_affected());
+        }
+
         tracing::info!("Database schema ready!");
         Ok(())
     }
@@ -312,23 +340,26 @@ impl Database {
     }
 
     /// Keep only the newest `keep` events for every rift. Used by the periodic retention task.
+    /// Chat is excluded: it is capped per rift by `max_chat_history` instead (see `prune_chat_messages`).
     pub async fn prune_rift_events(&self, keep: i64) -> Result<u64> {
         let result = sqlx::query(
             "DELETE FROM rift_events WHERE id IN (\
                 SELECT id FROM (\
                     SELECT id, ROW_NUMBER() OVER (PARTITION BY rift_id ORDER BY id DESC) AS rn \
-                    FROM rift_events\
+                    FROM rift_events WHERE event_type <> $2\
                 ) ranked WHERE ranked.rn > $1\
              )",
         )
         .bind(keep)
+        .bind(crate::events::CHAT)
         .execute(&self.pool)
         .await?;
 
         Ok(result.rows_affected())
     }
 
-    /// Store a chat message for a rift and return it with its server-assigned id and timestamp
+    /// Store a chat message as a `chat` event in the rift's log and return it with its id and timestamp.
+    /// The timestamp comes from the app clock, the same clock checkpoint timestamps use.
     pub async fn insert_chat_message(
         &self,
         rift_id: RiftId,
@@ -336,17 +367,26 @@ impl Database {
         author_username: &str,
         content: &str,
     ) -> Result<ChatMessage> {
-        let (id, timestamp) = sqlx::query_as::<_, (Uuid, DateTime<Utc>)>(
-            "INSERT INTO chat_messages (rift_id, author_id, author_username, content) \
-             VALUES ($1, $2, $3, $4) RETURNING id, created_at",
+        let id = Uuid::new_v4();
+        // Postgres keeps microseconds, so truncate here: the returned timestamp then matches what is stored
+        let now = Utc::now();
+        let timestamp = now.with_nanosecond(now.nanosecond() / 1_000 * 1_000).unwrap_or(now);
+        let payload = serde_json::json!({ "message_id": id, "content": content }).to_string();
+
+        sqlx::query(
+            "INSERT INTO rift_events (rift_id, actor_id, actor_username, event_type, payload, created_at) \
+             VALUES ($1, $2, $3, $4, $5, $6)",
         )
         .bind(rift_id)
         .bind(author_id)
         .bind(author_username)
-        .bind(content)
-        .fetch_one(&self.pool)
+        .bind(crate::events::CHAT)
+        .bind(payload)
+        .bind(timestamp)
+        .execute(&self.pool)
         .await?;
 
+        let _ = self.events_tx.send(rift_id);
         Ok(ChatMessage {
             id,
             rift_id,
@@ -357,44 +397,60 @@ impl Database {
         })
     }
 
-    /// Keep only the newest `keep` messages for a rift
+    /// Keep only the newest `keep` chat messages for a rift. Other events are not touched.
     pub async fn prune_chat_messages(&self, rift_id: RiftId, keep: i64) -> Result<()> {
         sqlx::query(
-            "DELETE FROM chat_messages WHERE rift_id = $1 AND id NOT IN (\
-                SELECT id FROM chat_messages WHERE rift_id = $1 ORDER BY created_at DESC LIMIT $2\
+            "DELETE FROM rift_events WHERE rift_id = $1 AND event_type = $2 AND id NOT IN (\
+                SELECT id FROM rift_events WHERE rift_id = $1 AND event_type = $2 ORDER BY id DESC LIMIT $3\
              )",
         )
         .bind(rift_id)
+        .bind(crate::events::CHAT)
         .bind(keep)
         .execute(&self.pool)
         .await?;
         Ok(())
     }
 
-    /// Return the newest `limit` messages for a rift, oldest first
+    /// Return the newest `limit` chat messages for a rift, oldest first
     pub async fn list_chat_messages(&self, rift_id: RiftId, limit: i64) -> Result<Vec<ChatMessage>> {
-        let rows = sqlx::query_as::<_, (Uuid, Uuid, String, String, DateTime<Utc>)>(
-            "SELECT id, author_id, author_username, content, created_at FROM (\
-                SELECT id, author_id, author_username, content, created_at FROM chat_messages \
-                WHERE rift_id = $1 ORDER BY created_at DESC LIMIT $2\
-             ) recent ORDER BY created_at ASC",
+        let rows = sqlx::query_as::<_, ChatEventTuple>(
+            "SELECT actor_id, actor_username, payload, created_at FROM (\
+                SELECT id, actor_id, actor_username, payload, created_at FROM rift_events \
+                WHERE rift_id = $1 AND event_type = $2 ORDER BY id DESC LIMIT $3\
+             ) recent ORDER BY id ASC",
         )
         .bind(rift_id)
+        .bind(crate::events::CHAT)
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows
-            .into_iter()
-            .map(|(id, author_id, author_username, content, timestamp)| ChatMessage {
-                id,
-                rift_id,
-                author_id,
-                author_username,
-                content,
-                timestamp,
-            })
-            .collect())
+        Ok(chat_from_rows(rift_id, rows))
+    }
+
+    /// Chat messages in a rift posted after `after` (when given) and no later than `until`, oldest first.
+    /// Checkpoints use this to show the chat between two checkpoints without copying it.
+    pub async fn list_chat_messages_between(
+        &self,
+        rift_id: RiftId,
+        after: Option<DateTime<Utc>>,
+        until: DateTime<Utc>,
+    ) -> Result<Vec<ChatMessage>> {
+        let rows = sqlx::query_as::<_, ChatEventTuple>(
+            "SELECT actor_id, actor_username, payload, created_at FROM rift_events \
+             WHERE rift_id = $1 AND event_type = $2 AND created_at <= $3 \
+               AND ($4::timestamptz IS NULL OR created_at > $4) \
+             ORDER BY id ASC",
+        )
+        .bind(rift_id)
+        .bind(crate::events::CHAT)
+        .bind(until)
+        .bind(after)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(chat_from_rows(rift_id, rows))
     }
 
     /// Get all projects a user has access to (simplified version for rift handlers)

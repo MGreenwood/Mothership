@@ -16,7 +16,6 @@ use uuid::Uuid;
 
 use crate::config::ServerConfig;
 use crate::database::Database;
-use crate::events;
 use crate::AppState;
 
 /// Chat limits resolved from the server config at startup
@@ -140,17 +139,6 @@ pub async fn post_chat_message(
 
     info!("Chat message in rift {} from {}", rift_id, user.username);
 
-    events::record(
-        db,
-        rift_id,
-        Some(user_id),
-        events::CHAT,
-        serde_json::json!({
-            "message_id": message.id,
-            "content": message.content,
-        }),
-    );
-
     let channel = format!("rift_{}", rift_id);
     let _ = broadcaster.send((
         channel,
@@ -204,23 +192,50 @@ mod tests {
 /// Needs a Postgres instance: set TEST_DATABASE_URL and run with `cargo test -- --ignored`
 #[cfg(test)]
 mod db_tests {
+    use super::*;
     use crate::database::Database;
-    use mothership_common::RiftId;
+    use crate::events::{self, FILE_SAVED};
+    use mothership_common::{RiftId, UserId, UserRole};
+    use std::time::Duration;
     use uuid::Uuid;
 
-    async fn test_db() -> Database {
+    /// A database with one rift that has a real owner. Chat events reference rifts, so tests need one.
+    async fn setup() -> (Database, RiftId, UserId) {
         let url = std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL must be set");
         let db = Database::new(&url).await.expect("connect to test database");
         db.ensure_schema().await.expect("create schema");
-        db
+
+        let suffix = Uuid::new_v4().simple().to_string();
+        let user = db
+            .create_user(format!("chat-{}", suffix), format!("chat-{}@chat-test.local", suffix), UserRole::User)
+            .await
+            .unwrap();
+        let project = db
+            .create_project(format!("chat-db-{}", suffix), "chat db test".to_string(), vec![user.id])
+            .await
+            .unwrap();
+        let rift = db
+            .create_rift(project.id, user.id, Some("main".to_string()))
+            .await
+            .unwrap();
+        (db, rift.id, user.id)
+    }
+
+    fn settings(store_history: bool) -> ChatSettings {
+        ChatSettings {
+            enabled: true,
+            max_message_length: 1000,
+            store_history,
+            max_history: 1000,
+        }
     }
 
     #[tokio::test]
     #[ignore]
     async fn stores_lists_oldest_first_and_prunes_to_newest() {
-        let db = test_db().await;
-        let rift_id: RiftId = Uuid::new_v4();
-        let author = Uuid::new_v4();
+        let (db, rift_id, author) = setup().await;
+        let (other_db, other_rift, other_author) = setup().await;
+        assert!(other_db.list_chat_messages(other_rift, 1).await.unwrap().is_empty());
 
         for i in 0..5 {
             db.insert_chat_message(rift_id, author, "alice", &format!("msg {}", i))
@@ -235,8 +250,7 @@ mod db_tests {
         assert!(recent.iter().all(|m| m.rift_id == rift_id && m.author_username == "alice"));
 
         // Pruning keeps only the newest two and leaves other rifts alone
-        let other_rift: RiftId = Uuid::new_v4();
-        db.insert_chat_message(other_rift, author, "bob", "elsewhere").await.unwrap();
+        db.insert_chat_message(other_rift, other_author, "bob", "elsewhere").await.unwrap();
         db.prune_chat_messages(rift_id, 2).await.unwrap();
 
         let kept = db.list_chat_messages(rift_id, 100).await.unwrap();
@@ -245,6 +259,125 @@ mod db_tests {
 
         let other = db.list_chat_messages(other_rift, 100).await.unwrap();
         assert_eq!(other.len(), 1);
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn chat_is_stored_as_a_chat_event_and_not_in_a_separate_table() {
+        let (db, rift_id, author) = setup().await;
+        let stored = db.insert_chat_message(rift_id, author, "alice", "hello").await.unwrap();
+
+        let rows = db.list_rift_events(rift_id, 0, 100).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].event_type, events::CHAT);
+        assert!(rows[0].payload.contains(&stored.id.to_string()));
+
+        let read = db.list_chat_messages(rift_id, 10).await.unwrap();
+        assert_eq!(read.len(), 1);
+        assert_eq!(read[0].id, stored.id);
+        assert_eq!(read[0].content, "hello");
+        assert_eq!(read[0].timestamp, stored.timestamp);
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn retention_prunes_other_events_but_not_chat() {
+        let (db, rift_id, author) = setup().await;
+        for i in 0..3 {
+            db.insert_chat_message(rift_id, author, "alice", &format!("chat {}", i)).await.unwrap();
+        }
+        for _ in 0..5 {
+            db.insert_rift_event(rift_id, Some(author), FILE_SAVED, "{}").await.unwrap();
+        }
+
+        db.prune_rift_events(2).await.unwrap();
+
+        let rows = db.list_rift_events(rift_id, 0, 100).await.unwrap();
+        let files = rows.iter().filter(|row| row.event_type == FILE_SAVED).count();
+        let chats = rows.iter().filter(|row| row.event_type == events::CHAT).count();
+        assert_eq!(files, 2);
+        assert_eq!(chats, 3);
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn window_returns_chat_between_two_points_in_time() {
+        let (db, rift_id, author) = setup().await;
+        db.insert_chat_message(rift_id, author, "alice", "first").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let boundary = Utc::now();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        db.insert_chat_message(rift_id, author, "alice", "second").await.unwrap();
+        let end = Utc::now();
+
+        let before = db.list_chat_messages_between(rift_id, None, boundary).await.unwrap();
+        let before: Vec<&str> = before.iter().map(|m| m.content.as_str()).collect();
+        assert_eq!(before, vec!["first"]);
+
+        let after = db.list_chat_messages_between(rift_id, Some(boundary), end).await.unwrap();
+        let after: Vec<&str> = after.iter().map(|m| m.content.as_str()).collect();
+        assert_eq!(after, vec!["second"]);
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn history_off_broadcasts_without_logging() {
+        let (db, rift_id, author) = setup().await;
+        let (tx, mut rx) = broadcast::channel(16);
+
+        let message = post_chat_message(&db, &tx, &settings(false), rift_id, author, "not kept")
+            .await
+            .unwrap();
+        assert_eq!(message.content, "not kept");
+
+        let broadcast = rx.recv().await.unwrap();
+        assert!(matches!(broadcast.1, SyncMessage::ChatMessageReceived { .. }));
+        assert!(db.list_chat_messages(rift_id, 10).await.unwrap().is_empty());
+        assert!(db.list_rift_events(rift_id, 0, 10).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn backfill_moves_legacy_chat_rows_into_the_event_log_once() {
+        let (db, rift_id, author) = setup().await;
+        let url = std::env::var("TEST_DATABASE_URL").unwrap();
+        let pool = sqlx::PgPool::connect(&url).await.unwrap();
+
+        // Recreate the legacy table as it used to be, with one row for a real rift and one orphan
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS chat_messages (\
+                id UUID PRIMARY KEY, rift_id UUID NOT NULL, author_id UUID NOT NULL, \
+                author_username VARCHAR(255) NOT NULL, content TEXT NOT NULL, \
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let legacy_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO chat_messages (id, rift_id, author_id, author_username, content, created_at) \
+             VALUES ($1, $2, $3, 'alice', 'legacy hello', '2020-01-02T03:04:05Z'), \
+                    ($4, $5, $3, 'alice', 'orphan', NOW())",
+        )
+        .bind(legacy_id)
+        .bind(rift_id)
+        .bind(author)
+        .bind(Uuid::new_v4())
+        .bind(Uuid::new_v4())
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+
+        db.ensure_schema().await.unwrap();
+        db.ensure_schema().await.unwrap();
+
+        let read = db.list_chat_messages(rift_id, 10).await.unwrap();
+        assert_eq!(read.len(), 1);
+        assert_eq!(read[0].id, legacy_id);
+        assert_eq!(read[0].content, "legacy hello");
+        assert_eq!(read[0].timestamp.to_rfc3339(), "2020-01-02T03:04:05+00:00");
+        assert_eq!(db.list_rift_events(rift_id, 0, 10).await.unwrap().len(), 1);
     }
 }
 
@@ -320,7 +453,54 @@ pub async fn get_chat_history(
     Ok(Json(ApiResponse::success(messages)))
 }
 
-/// POST /api/rifts/:id/chat, stores and broadcasts a message
+/// GET /api/rifts/:id/checkpoints/:checkpoint_id/chat. Returns the chat posted after the rift's previous
+/// checkpoint and up to this one. Nothing is copied: the messages are read from the event log.
+pub async fn get_checkpoint_chat(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((rift_id, checkpoint_id)): Path<(RiftId, Uuid)>,
+) -> Result<Json<ApiResponse<Vec<ChatMessage>>>, StatusCode> {
+    let user_id = authenticated_user(&state, &headers)?;
+
+    if !state.sync.chat.enabled {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    ensure_rift_access(&state.db, rift_id, user_id)
+        .await
+        .map_err(|e| status_for(&e))?;
+
+    let checkpoint = match state.sync.storage.load_checkpoint(checkpoint_id).await {
+        Ok(Some(checkpoint)) if checkpoint.rift_id == rift_id => checkpoint,
+        Ok(_) => return Err(StatusCode::NOT_FOUND),
+        Err(e) => {
+            warn!("Failed to load checkpoint {}: {}", checkpoint_id, e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    let checkpoints = state.sync.storage.list_checkpoints(rift_id).await.map_err(|e| {
+        warn!("Failed to list checkpoints for rift {}: {}", rift_id, e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let previous = checkpoints
+        .iter()
+        .map(|cp| cp.timestamp)
+        .filter(|timestamp| *timestamp < checkpoint.timestamp)
+        .max();
+
+    let messages = state
+        .db
+        .list_chat_messages_between(rift_id, previous, checkpoint.timestamp)
+        .await
+        .map_err(|e| {
+            warn!("Failed to load chat for checkpoint {}: {}", checkpoint_id, e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(Json(ApiResponse::success(messages)))
+}
+
 pub async fn post_chat(
     State(state): State<AppState>,
     headers: HeaderMap,

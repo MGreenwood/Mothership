@@ -74,8 +74,8 @@ oauth_enabled=false
 |---------|---------|-------------|
 | `max_users_per_rift` | `50` | Maximum users per collaboration session |
 | `max_chat_message_length` | `1000` | Maximum chat message length |
-| `store_chat_history` | `true` | Store chat message history |
-| `max_chat_history` | `1000` | Maximum stored chat messages per rift |
+| `store_chat_history` | `true` | Keep chat messages in the rift event log. When `false`, chat is delivered live but not kept |
+| `max_chat_history` | `1000` | Maximum stored chat messages per rift. Event retention (`max_rift_events`) does not remove chat |
 | `presence_enabled` | `true` | Show who's online/offline |
 | `presence_update_interval` | `30` | Presence update interval in seconds |
 

@@ -4,7 +4,7 @@ A checklist of the features discussed, ordered from highest to lowest impact. Ea
 
 **Current priorities:** ease of adoption comes first. Git export is out of scope for now.
 
-**Status:** Tasks 1 through 7 are done. Task 8 (chat stored once, derived into checkpoints) is next.
+**Status:** Tasks 1 through 8 are done. Task 9 (optional verification on checkpoints) is next.
 
 ## 1. Rift event log (foundation)
 - [x] Append-only, sequenced event log per rift that every other feature reads from (`rift_events` table, global `id` as the timeline cursor)
@@ -67,9 +67,12 @@ A checklist of the features discussed, ordered from highest to lowest impact. Ea
 - [ ] Gap: the daemon's gate has no automated end-to-end test. The gate logic is tested in mothership-common. Deferred until all tasks are complete.
 
 ## 8. Chat stored once, derived into checkpoints
-- [ ] Chat is stored once in the rift's event log
-- [ ] A checkpoint shows the chat since the previous checkpoint by reference, not by copy
-- [ ] Note: chat is currently written to both `chat_messages` (for chat history) and `rift_events`. Merge into one store before this item is done.
+- [x] Chat is stored once in the rift's event log (`chat` events). The `chat_messages` table is gone; its rows were moved into the log on startup
+- [x] A checkpoint shows the chat since the previous checkpoint by reference, not by copy: `GET /api/rifts/:id/checkpoints/:checkpoint_id/chat` reads the log between the two checkpoint times
+- [x] Retention: `max_chat_history` caps chat per rift, and `max_rift_events` never removes chat
+- [x] `store_chat_history = false` keeps chat out of the log (it is only broadcast). Before, the event was still written
+- [ ] Gap: no client shows the checkpoint chat yet. The CLI and GUI have no checkpoint detail view. Deferred until all tasks are complete.
+- [ ] Gap: migrated chat keeps its original time, but the timeline orders by event id, so old chat appears at the point of the upgrade, not at its real time. Deferred until all tasks are complete.
 
 ## 9. Optional verification on checkpoints
 - [ ] Config file: `cp-config.toml` in the project root (shared with the team, decided)
