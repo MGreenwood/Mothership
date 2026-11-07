@@ -468,9 +468,10 @@ pub async fn hub_switch_rift(project_id: String, rift_name: String) -> Result<St
 pub async fn hub_create_checkpoint(
     project_id: String,
     message: Option<String>,
+    paths: Option<Vec<String>>,
 ) -> Result<CheckpointData, String> {
     client()?
-        .create_checkpoint(parse_id(&project_id)?, message.as_deref())
+        .create_checkpoint(parse_id(&project_id)?, message.as_deref(), paths.as_deref())
         .await
         .map_err(err)
 }

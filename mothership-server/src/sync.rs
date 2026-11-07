@@ -826,6 +826,7 @@ async fn handle_sync_message(message: &str, state: &SyncState, client_rift_id: &
                 user_id,
                 message.clone(),
                 false, // Manual checkpoint
+                None,  // Whole rift
             ).await?;
             
             let response = SyncMessage::CheckpointCreated {

@@ -39,6 +39,8 @@ mod wormhole;
 #[cfg(test)]
 mod chat_api_tests;
 #[cfg(test)]
+mod checkpoint_api_tests;
+#[cfg(test)]
 mod events_api_tests;
 #[cfg(test)]
 mod privacy_api_tests;
@@ -1500,7 +1502,9 @@ async fn create_checkpoint(
     headers: HeaderMap,
     Path(project_id): Path<ProjectId>,
     Json(req): Json<CreateCheckpointRequest>,
-) -> Result<Json<ApiResponse<CheckpointData>>, StatusCode> {
+) -> Result<axum::response::Response, StatusCode> {
+    use axum::response::IntoResponse;
+
     // Extract user ID from JWT token
     let auth_header = headers.get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -1548,6 +1552,7 @@ async fn create_checkpoint(
         user_id,
         req.message,
         false, // Manual checkpoint
+        req.paths.as_deref(),
     ).await {
         Ok(checkpoint) => {
             let checkpoint_data = CheckpointData {
@@ -1565,9 +1570,13 @@ async fn create_checkpoint(
                     "checkpoint_id": checkpoint.id,
                     "message": checkpoint.message,
                     "file_count": checkpoint.changes.len(),
+                    "partial": checkpoint.partial,
                 }),
             );
-            Ok(Json(ApiResponse::success(checkpoint_data)))
+            Ok(Json(ApiResponse::success(checkpoint_data)).into_response())
+        }
+        Err(e) if e.downcast_ref::<storage::InvalidCheckpoint>().is_some() => {
+            Ok((StatusCode::BAD_REQUEST, e.to_string()).into_response())
         }
         Err(e) => {
             error!("Failed to create checkpoint: {}", e);
@@ -1581,6 +1590,9 @@ struct CreateCheckpointRequest {
     message: Option<String>,
     #[allow(dead_code)]
     timestamp: chrono::DateTime<chrono::Utc>,
+    /// Files, or folders ending in `/`, to capture. Omitted means the whole rift.
+    #[serde(default)]
+    paths: Option<Vec<String>>,
 }
 
 #[derive(serde::Serialize)]
@@ -1791,6 +1803,11 @@ async fn delete_checkpoint(
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
+
+    // A partial checkpoint restores through its parent, so the parent cannot go while it exists
+    if state.sync.storage.has_partial_dependents(checkpoint.id).await {
+        return Err(StatusCode::CONFLICT);
+    }
 
     match state.sync.storage.delete_checkpoint(checkpoint.id).await {
         Ok(_) => {

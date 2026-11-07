@@ -4,7 +4,7 @@ A checklist of the features discussed, ordered from highest to lowest impact. Ea
 
 **Current priorities:** ease of adoption comes first. Git export is out of scope for now.
 
-**Status:** Tasks 1 (event log) and 2 (GUI timeline page) are done. Task 3 (scoped checkpoints) is next.
+**Status:** Tasks 1 (event log) and 2 (GUI timeline page) are done. Task 3 (scoped checkpoints) is done. Task 4 (restore) is next.
 
 ## 1. Rift event log (foundation)
 - [x] Append-only, sequenced event log per rift that every other feature reads from (`rift_events` table, global `id` as the timeline cursor)
@@ -27,10 +27,14 @@ A checklist of the features discussed, ordered from highest to lowest impact. Ea
 - [ ] Gap: push events over the rift WebSocket instead of long-polling. Deferred until all tasks are complete (see the end of this file).
 
 ## 3. Scoped checkpoints
-- [ ] `checkpoint` with no paths captures the whole rift (current behavior)
-- [ ] `checkpoint <paths...>` captures only the named files or folders
-- [ ] Available in both the CLI and the GUI
-- [ ] Gap: file deletions are captured by checkpoints and sent over live sync. Deletes are not in the sync protocol yet, so the event log can't record them either.
+- [x] `checkpoint` with no paths captures the whole rift (current behavior)
+- [x] `checkpoint <paths...>` captures only the named files or folders (folders end in `/`)
+- [x] Available in both the CLI and the GUI (the GUI takes one path per line)
+- [x] Partial checkpoints link to the rift's previous checkpoint and store only the selection. Restoring one returns the full rift state, folded from the nearest whole-rift checkpoint.
+- [x] The first checkpoint of a rift must be whole-rift. A partial one needs a checkpoint to build on.
+- [x] A checkpoint that a partial checkpoint builds on cannot be deleted (409). Delete the later partial checkpoints first.
+- [x] Checkpoint history is loaded from disk at startup, so parent links survive a server restart
+- [ ] Gap: file deletions are captured by checkpoints and sent over live sync. Deletes are not in the sync protocol yet, so the event log can't record them either. Deferred until all tasks are complete.
 
 ## 4. Restore
 - [ ] Restore a full checkpoint (whole rift)

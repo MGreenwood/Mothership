@@ -130,7 +130,11 @@ pub async fn handle_status(config_manager: &ConfigManager) -> Result<()> {
     Ok(())
 }
 
-pub async fn handle_checkpoint(config_manager: &ConfigManager, message: Option<String>) -> Result<()> {
+pub async fn handle_checkpoint(
+    config_manager: &ConfigManager,
+    message: Option<String>,
+    paths: Vec<std::path::PathBuf>,
+) -> Result<()> {
     // Check if authenticated
     if !config_manager.is_authenticated()? {
         print_api_error("Not authenticated. Run 'mothership auth' to get started.");
@@ -140,8 +144,12 @@ pub async fn handle_checkpoint(config_manager: &ConfigManager, message: Option<S
     // Find the current project
     let (project_id, project_name) = find_current_project()?;
     let checkpoint_msg = message.unwrap_or_else(|| "Manual checkpoint".to_string());
+    let selectors = selectors_for_paths(&std::env::current_dir()?, &paths)?;
     
     print_info(&format!("Creating checkpoint for {}: {}", project_name, checkpoint_msg));
+    if let Some(selectors) = &selectors {
+        print_info(&format!("Only capturing: {}", selectors.join(", ")));
+    }
 
     let config = config_manager.load_config()?;
     let server_url = get_server_url(config_manager)?;
@@ -150,17 +158,23 @@ pub async fn handle_checkpoint(config_manager: &ConfigManager, message: Option<S
     // Create checkpoint via API
     // Server expects the plural 'checkpoints' path and a timestamp in the JSON body
     let checkpoint_url = format!("{}/projects/{}/checkpoints", server_url, project_id);
+    let mut body = serde_json::json!({
+        "message": checkpoint_msg,
+        "timestamp": chrono::Utc::now()
+    });
+    if let Some(selectors) = &selectors {
+        body["paths"] = serde_json::json!(selectors);
+    }
     let response = client
         .post(&checkpoint_url)
-        .json(&serde_json::json!({
-            "message": checkpoint_msg,
-            "timestamp": chrono::Utc::now()
-        }))
+        .json(&body)
         .send()
         .await?;
 
     if !response.status().is_success() {
-        return Err(anyhow!("Failed to create checkpoint: {}", response.status()));
+        let status = response.status();
+        let reason = response.text().await.unwrap_or_default();
+        return Err(anyhow!("Failed to create checkpoint: {} {}", status, reason.trim()));
     }
 
     let checkpoint_response: ApiResponse<CheckpointData> = response.json().await?;
@@ -378,6 +392,12 @@ pub async fn handle_delete_checkpoint(config_manager: &ConfigManager, checkpoint
     let delete_url = format!("{}/projects/{}/checkpoints/{}", server_url, project_id, checkpoint_uuid);
     let response = client.delete(&delete_url).send().await?;
 
+    if response.status() == reqwest::StatusCode::CONFLICT {
+        return Err(anyhow!(
+            "Checkpoint {} can't be deleted yet: a partial checkpoint was built on it. Delete the later partial checkpoints first.",
+            &checkpoint_id[..8]
+        ));
+    }
     if !response.status().is_success() {
         return Err(anyhow!("Failed to delete checkpoint: {}", response.status()));
     }
@@ -386,6 +406,96 @@ pub async fn handle_delete_checkpoint(config_manager: &ConfigManager, checkpoint
     Ok(())
 }
 
+/// Turns the paths given to `mothership checkpoint` into selectors relative to the project folder.
+/// A folder gets a trailing `/`. Returns `None` when no paths were given, or when they name the
+/// project folder itself, which means a whole-rift checkpoint.
+fn selectors_for_paths(cwd: &std::path::Path, paths: &[std::path::PathBuf]) -> Result<Option<Vec<String>>> {
+    if paths.is_empty() {
+        return Ok(None);
+    }
+
+    let root = lexical_normalize(cwd);
+    let mut selectors = Vec::with_capacity(paths.len());
+    for path in paths {
+        let joined = if path.is_absolute() { path.clone() } else { cwd.join(path) };
+        let target = lexical_normalize(&joined);
+        let rel = target
+            .strip_prefix(&root)
+            .map_err(|_| anyhow!("'{}' is outside this project", path.display()))?;
+        if rel.as_os_str().is_empty() {
+            return Ok(None);
+        }
+
+        let mut selector = rel
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("/");
+        if joined.is_dir() {
+            selector.push('/');
+        }
+        selectors.push(selector);
+    }
+    Ok(Some(selectors))
+}
+
+/// Resolves `.` and `..` without touching the disk, so paths that no longer exist still work
+fn lexical_normalize(path: &std::path::Path) -> std::path::PathBuf {
+    use std::path::Component;
+
+    let mut out = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod checkpoint_path_tests {
+    use super::selectors_for_paths;
+    use std::path::PathBuf;
+
+    fn project() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("mothership-selectors-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("src/util")).unwrap();
+        std::fs::write(dir.join("README.md"), "readme").unwrap();
+        dir
+    }
+
+    #[test]
+    fn no_paths_or_the_project_folder_means_whole_rift() {
+        let dir = project();
+        assert!(selectors_for_paths(&dir, &[]).unwrap().is_none());
+        assert!(selectors_for_paths(&dir, &[PathBuf::from(".")]).unwrap().is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn files_and_folders_become_project_relative_selectors() {
+        let dir = project();
+        let selectors = selectors_for_paths(
+            &dir,
+            &[PathBuf::from("README.md"), PathBuf::from("src"), PathBuf::from("src/../README.md")],
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(selectors, vec!["README.md", "src/", "README.md"]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn paths_outside_the_project_are_rejected() {
+        let dir = project();
+        assert!(selectors_for_paths(&dir, &[PathBuf::from("../elsewhere")]).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
 
 /// Find the current project by looking for .mothership/project.json
 fn find_current_project() -> Result<(uuid::Uuid, String)> {

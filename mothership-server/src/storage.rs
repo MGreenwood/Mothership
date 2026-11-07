@@ -1,12 +1,24 @@
 use anyhow::Result;
 use chrono::Utc;
-use mothership_common::{Checkpoint, CheckpointId, FileChange, ChangeType, RiftId, UserId};
+use mothership_common::{select_paths, Checkpoint, CheckpointId, FileChange, ChangeType, RiftId, UserId};
 use sha2::{Sha256, Digest};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::sync::RwLock;
 use uuid::Uuid;
+
+/// A checkpoint request the rift cannot satisfy. Handlers report it as 400, not 500.
+#[derive(Debug)]
+pub struct InvalidCheckpoint(pub String);
+
+impl std::fmt::Display for InvalidCheckpoint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for InvalidCheckpoint {}
 
 /// Content-Addressable Storage + Checkpoint Management
 pub struct StorageEngine {
@@ -25,10 +37,28 @@ impl StorageEngine {
         fs::create_dir_all(storage_root.join("content")).await?;  // CAS storage
         fs::create_dir_all(storage_root.join("checkpoints")).await?;  // Checkpoint metadata
         fs::create_dir_all(storage_root.join("live")).await?;  // Working state
+
+        // Load existing checkpoints so parent links and history work after a restart
+        let mut index = HashMap::new();
+        let mut entries = fs::read_dir(storage_root.join("checkpoints")).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            match fs::read_to_string(&path).await.map_err(anyhow::Error::from).and_then(|json| {
+                serde_json::from_str::<Checkpoint>(&json).map_err(anyhow::Error::from)
+            }) {
+                Ok(checkpoint) => {
+                    index.insert(checkpoint.id, checkpoint);
+                }
+                Err(e) => tracing::warn!("Skipping unreadable checkpoint {}: {}", path.display(), e),
+            }
+        }
         
         Ok(Self {
             storage_root,
-            checkpoint_index: RwLock::new(HashMap::new()),
+            checkpoint_index: RwLock::new(index),
             live_state: RwLock::new(HashMap::new()),
         })
     }
@@ -152,30 +182,47 @@ impl StorageEngine {
         Err(anyhow::anyhow!("File not found in rift {}: {}", rift_id, path.display()))
     }
 
-    /// Create a new checkpoint from current live state
+    /// Create a checkpoint from the rift's live state. Without `paths` it records the whole rift.
+    /// With `paths` it records only the selected files, and the rest of the state comes from the
+    /// rift's latest checkpoint, so a partial checkpoint needs an earlier one to build on.
     pub async fn create_checkpoint(
         &self,
         rift_id: RiftId,
         author: UserId,
         message: Option<String>,
         auto_generated: bool,
+        paths: Option<&[String]>,
     ) -> Result<Checkpoint> {
         let checkpoint_id = Uuid::new_v4();
         let timestamp = Utc::now();
-        
-        // Get current live state
+        let parent = self.latest_checkpoint_id(rift_id).await;
+
         let live_files = self.get_live_state(rift_id).await?;
+        let (files, partial) = match paths {
+            Some(selectors) => {
+                if parent.is_none() {
+                    return Err(InvalidCheckpoint(
+                        "this rift has no checkpoint yet; make a whole-rift checkpoint first".to_string(),
+                    )
+                    .into());
+                }
+                let selected = select_paths(&live_files, selectors)
+                    .map_err(InvalidCheckpoint)?;
+                (selected, true)
+            }
+            None => (live_files, false),
+        };
         
         // TODO: For now, treat all files as new/modified
         // In production, this would diff against parent checkpoint
-        let mut changes = Vec::new();
+        let mut changes = Vec::with_capacity(files.len());
         
-        for (path, content) in live_files {
+        for (path, content) in files {
             let content_hash = self.store_content(&content).await?;
             let size = content.len() as u64;
             
             changes.push(FileChange {
-                path: path.clone(),
+                path,
                 change_type: ChangeType::Modified, // Simplified for now
                 content_hash,
                 diff: None, // TODO: Generate diff
@@ -189,9 +236,10 @@ impl StorageEngine {
             author,
             timestamp,
             changes,
-            parent: None, // TODO: Link to parent checkpoint
+            parent,
             message,
             auto_generated,
+            partial,
         };
         
         // Store checkpoint metadata
@@ -249,18 +297,58 @@ impl StorageEngine {
         }
     }
 
-    /// Get all files at a specific checkpoint
+    /// The newest checkpoint recorded for a rift, used as the parent of the next one
+    async fn latest_checkpoint_id(&self, rift_id: RiftId) -> Option<CheckpointId> {
+        let index = self.checkpoint_index.read().await;
+        index
+            .values()
+            .filter(|cp| cp.rift_id == rift_id)
+            .max_by_key(|cp| cp.timestamp)
+            .map(|cp| cp.id)
+    }
+
+    /// Whether a partial checkpoint is built on this one. Deleting it would leave that one unrestorable.
+    pub async fn has_partial_dependents(&self, checkpoint_id: CheckpointId) -> bool {
+        let index = self.checkpoint_index.read().await;
+        index
+            .values()
+            .any(|cp| cp.partial && cp.parent == Some(checkpoint_id))
+    }
+
+    /// The complete file set at a checkpoint. It starts from the nearest full checkpoint at or
+    /// before it and applies each later partial checkpoint in order. Full checkpoints and older
+    /// checkpoints hold the whole rift, so they need no earlier history.
     pub async fn get_checkpoint_files(&self, checkpoint_id: CheckpointId) -> Result<HashMap<PathBuf, String>> {
+        let mut chain = Vec::new();
+        let mut next = Some(checkpoint_id);
+        while let Some(id) = next {
+            let checkpoint = self
+                .load_checkpoint(id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("checkpoint history is incomplete: {} is missing", id))?;
+            next = if checkpoint.partial { checkpoint.parent } else { None };
+            chain.push(checkpoint);
+        }
+
+        if chain.last().is_some_and(|base| base.partial) {
+            anyhow::bail!("checkpoint history is incomplete: no full checkpoint before {}", checkpoint_id);
+        }
+
         let mut files = HashMap::new();
-        
-        if let Some(checkpoint) = self.load_checkpoint(checkpoint_id).await? {
-            for change in checkpoint.changes {
-                if let Some(content) = self.get_content(&change.content_hash).await? {
-                    files.insert(change.path, content);
+        for checkpoint in chain.iter().rev() {
+            for change in &checkpoint.changes {
+                match change.change_type {
+                    ChangeType::Deleted => {
+                        files.remove(&change.path);
+                    }
+                    _ => {
+                        if let Some(content) = self.get_content(&change.content_hash).await? {
+                            files.insert(change.path.clone(), content);
+                        }
+                    }
                 }
             }
         }
-        
         Ok(files)
     }
 
@@ -362,6 +450,149 @@ impl StorageStats {
         self.total_size_bytes as f64 / (1024.0 * 1024.0)
     }
 } 
+
+#[cfg(test)]
+mod checkpoint_tests {
+    use super::*;
+
+    fn temp_root() -> PathBuf {
+        std::env::temp_dir().join(format!("mothership-checkpoint-{}", Uuid::new_v4()))
+    }
+
+    async fn live(engine: &StorageEngine, rift: RiftId, files: &[(&str, &str)]) {
+        for (path, content) in files {
+            engine
+                .update_live_state(rift, PathBuf::from(path), content.to_string())
+                .await
+                .unwrap();
+        }
+    }
+
+    fn selectors(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[tokio::test]
+    async fn whole_rift_checkpoint_records_everything_and_is_not_partial() {
+        let root = temp_root();
+        let engine = StorageEngine::new(root.clone()).await.unwrap();
+        let rift = Uuid::new_v4();
+        live(&engine, rift, &[("README.md", "readme"), ("src/main.rs", "main")]).await;
+
+        let cp = engine.create_checkpoint(rift, Uuid::new_v4(), None, false, None).await.unwrap();
+        assert!(!cp.partial);
+        assert_eq!(cp.changes.len(), 2);
+        assert_eq!(engine.get_checkpoint_files(cp.id).await.unwrap().len(), 2);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn partial_checkpoint_keeps_unselected_files_from_its_parent() {
+        let root = temp_root();
+        let engine = StorageEngine::new(root.clone()).await.unwrap();
+        let rift = Uuid::new_v4();
+        live(&engine, rift, &[("README.md", "v1"), ("src/main.rs", "v1")]).await;
+        let base = engine.create_checkpoint(rift, Uuid::new_v4(), None, false, None).await.unwrap();
+
+        live(&engine, rift, &[("README.md", "v2"), ("src/main.rs", "v2")]).await;
+        let partial = engine
+            .create_checkpoint(rift, Uuid::new_v4(), None, false, Some(&selectors(&["src/"])))
+            .await
+            .unwrap();
+
+        assert!(partial.partial);
+        assert_eq!(partial.parent, Some(base.id));
+        assert_eq!(partial.changes.len(), 1, "only the selected folder is recorded");
+
+        // At the partial checkpoint, src/ is new and README.md is still the base version
+        let files = engine.get_checkpoint_files(partial.id).await.unwrap();
+        assert_eq!(files.get(&PathBuf::from("src/main.rs")).map(String::as_str), Some("v2"));
+        assert_eq!(files.get(&PathBuf::from("README.md")).map(String::as_str), Some("v1"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn partial_checkpoint_needs_an_earlier_checkpoint() {
+        let root = temp_root();
+        let engine = StorageEngine::new(root.clone()).await.unwrap();
+        let rift = Uuid::new_v4();
+        live(&engine, rift, &[("README.md", "v1")]).await;
+
+        let err = engine
+            .create_checkpoint(rift, Uuid::new_v4(), None, false, Some(&selectors(&["README.md"])))
+            .await
+            .unwrap_err();
+        assert!(err.downcast_ref::<InvalidCheckpoint>().is_some());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn unmatched_selector_is_rejected_and_nothing_is_recorded() {
+        let root = temp_root();
+        let engine = StorageEngine::new(root.clone()).await.unwrap();
+        let rift = Uuid::new_v4();
+        live(&engine, rift, &[("README.md", "v1")]).await;
+        engine.create_checkpoint(rift, Uuid::new_v4(), None, false, None).await.unwrap();
+
+        let err = engine
+            .create_checkpoint(rift, Uuid::new_v4(), None, false, Some(&selectors(&["nope.rs"])))
+            .await
+            .unwrap_err();
+        assert!(err.downcast_ref::<InvalidCheckpoint>().is_some());
+        assert!(err.to_string().contains("nope.rs"));
+        assert_eq!(engine.list_checkpoints(rift).await.unwrap().len(), 1);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn history_survives_restart_so_parents_and_restores_still_work() {
+        let root = temp_root();
+        let rift = Uuid::new_v4();
+        let (base_id, partial_id) = {
+            let engine = StorageEngine::new(root.clone()).await.unwrap();
+            live(&engine, rift, &[("README.md", "v1"), ("src/main.rs", "v1")]).await;
+            let base = engine.create_checkpoint(rift, Uuid::new_v4(), None, false, None).await.unwrap();
+            live(&engine, rift, &[("src/main.rs", "v2")]).await;
+            let partial = engine
+                .create_checkpoint(rift, Uuid::new_v4(), None, false, Some(&selectors(&["src/main.rs"])))
+                .await
+                .unwrap();
+            (base.id, partial.id)
+        };
+
+        let restarted = StorageEngine::new(root.clone()).await.unwrap();
+        let partial = restarted.load_checkpoint(partial_id).await.unwrap().unwrap();
+        assert_eq!(partial.parent, Some(base_id));
+        let files = restarted.get_checkpoint_files(partial_id).await.unwrap();
+        assert_eq!(files.get(&PathBuf::from("src/main.rs")).map(String::as_str), Some("v2"));
+        assert_eq!(files.get(&PathBuf::from("README.md")).map(String::as_str), Some("v1"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn checkpoint_with_a_partial_child_reports_dependents() {
+        let root = temp_root();
+        let engine = StorageEngine::new(root.clone()).await.unwrap();
+        let rift = Uuid::new_v4();
+        live(&engine, rift, &[("README.md", "v1"), ("src/main.rs", "v1")]).await;
+        let base = engine.create_checkpoint(rift, Uuid::new_v4(), None, false, None).await.unwrap();
+        assert!(!engine.has_partial_dependents(base.id).await);
+
+        engine
+            .create_checkpoint(rift, Uuid::new_v4(), None, false, Some(&selectors(&["src/"])))
+            .await
+            .unwrap();
+        assert!(engine.has_partial_dependents(base.id).await);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
 #[cfg(test)]
 mod persistence_tests {
     use super::*;

@@ -17,6 +17,7 @@ export default function Hub({ onOpenInEditor, onGatewayChange, onRiftChanged }) 
   const [newProject, setNewProject] = useState({ name: '', description: '', folder: '' })
   const [newRiftName, setNewRiftName] = useState('')
   const [checkpointMsg, setCheckpointMsg] = useState('')
+  const [checkpointPaths, setCheckpointPaths] = useState('')
   const [restoreId, setRestoreId] = useState(null)
   const [auth, setAuth] = useState(null)
 
@@ -193,11 +194,17 @@ export default function Hub({ onOpenInEditor, onGatewayChange, onRiftChanged }) 
 
   const createCheckpoint = () =>
     run('Checkpoint created', async () => {
+      const paths = checkpointPaths
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
       await invoke('hub_create_checkpoint', {
         projectId: selected.id,
         message: checkpointMsg.trim() || null,
+        paths: paths.length ? paths : null,
       })
       setCheckpointMsg('')
+      setCheckpointPaths('')
       setCheckpoints(await invoke('hub_checkpoint_history', { projectId: selected.id }))
     })
 
@@ -357,6 +364,12 @@ export default function Hub({ onOpenInEditor, onGatewayChange, onRiftChanged }) 
               />
               <button onClick={createCheckpoint} disabled={busy}>Create checkpoint</button>
             </div>
+            <textarea
+              rows={3}
+              placeholder={'Only these paths (optional, one per line; end folders with /). Empty means the whole rift.'}
+              value={checkpointPaths}
+              onChange={(e) => setCheckpointPaths(e.target.value)}
+            />
             <ul className="list">
               {checkpoints.map((c) => (
                 <li key={c.id}>

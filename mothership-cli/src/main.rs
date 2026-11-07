@@ -80,6 +80,9 @@ enum Commands {
         /// Checkpoint message (defaults to "<rift> <date time>")
         #[arg(short = 'm', long = "message")]
         name: Option<String>,
+        /// Only capture these files or folders (default: the whole rift)
+        #[arg(value_name = "PATH")]
+        paths: Vec<PathBuf>,
     },
     /// Sync with remote Mothership
     Sync,
@@ -428,7 +431,7 @@ async fn run(command: Commands, config_manager: &ConfigManager) -> Result<()> {
             println!("{}", "Checking sync status...".cyan().bold());
             sync::handle_status(&config_manager).await?;
         }
-        Commands::Checkpoint { action, name } => {
+        Commands::Checkpoint { action, name, paths } => {
             // Validate authentication before checkpoint operations
             if let Err(e) = validate_authentication(&config_manager).await {
                 print_auth_error(&e.to_string());
@@ -445,7 +448,7 @@ async fn run(command: Commands, config_manager: &ConfigManager) -> Result<()> {
                         None => default_checkpoint_name().await,
                     };
                     println!("{}", "Creating checkpoint...".cyan().bold());
-                    sync::handle_checkpoint(&config_manager, Some(checkpoint_name)).await?;
+                    sync::handle_checkpoint(&config_manager, Some(checkpoint_name), paths).await?;
                 }
             }
         }

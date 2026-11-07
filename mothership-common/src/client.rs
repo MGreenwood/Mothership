@@ -578,6 +578,9 @@ struct SwitchRiftRequest<'a> {
 struct CreateCheckpointRequest<'a> {
     message: Option<&'a str>,
     timestamp: DateTime<Utc>,
+    /// Files or folders (ending in `/`) to capture. Omitted for a whole-rift checkpoint.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    paths: Option<&'a [String]>,
 }
 
 /// Client for the Mothership server REST API.
@@ -843,10 +846,18 @@ impl MothershipClient {
         Self::unwrap_api(resp)
     }
 
-    pub async fn create_checkpoint(&self, project_id: Uuid, message: Option<&str>) -> Result<CheckpointData> {
+    /// Creates a checkpoint. With `paths`, only those files and folders (folders end in `/`) are
+    /// captured; without them the whole rift is.
+    pub async fn create_checkpoint(
+        &self,
+        project_id: Uuid,
+        message: Option<&str>,
+        paths: Option<&[String]>,
+    ) -> Result<CheckpointData> {
         let body = CreateCheckpointRequest {
             message,
             timestamp: Utc::now(),
+            paths,
         };
         let project_id = project_id.to_string();
         let resp: ApiResponse<CheckpointData> = self

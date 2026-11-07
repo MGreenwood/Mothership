@@ -475,8 +475,12 @@ async fn manage_rift_members(
 #[derive(Deserialize)]
 struct CheckpointReq {
     message: Option<String>,
+    #[serde(default)]
+    paths: Option<Vec<String>>,
 }
 
+/// Mirrors the server: a whole-rift checkpoint records every file; a partial one records only the
+/// selection and keeps the rest of the previous checkpoint's state.
 async fn create_checkpoint(
     State(state): State<MockServerState>,
     headers: HeaderMap,
@@ -486,9 +490,32 @@ async fn create_checkpoint(
     check_auth(&headers)?;
     let mut inner = state.inner.write().await;
     let rift_id = *inner.active_rift_by_project.get(&project_id).unwrap();
-    let files = inner.rifts.get(&rift_id).unwrap().files.clone();
+    let live = inner.rifts.get(&rift_id).unwrap().files.clone();
+    let previous = inner
+        .checkpoints
+        .get(&project_id)
+        .and_then(|v| v.last())
+        .map(|(cp, files)| (cp.id, files.clone()));
+
+    let (recorded, partial, parent, full_state) = match req.paths.as_deref() {
+        None => (live.clone(), false, None, live.clone()),
+        Some(selectors) => {
+            let Some((parent_id, base)) = previous else {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "this rift has no checkpoint yet; make a whole-rift checkpoint first".into(),
+                ));
+            };
+            let picked = mothership_common::select_paths(&live, selectors)
+                .map_err(|message| (StatusCode::BAD_REQUEST, message))?;
+            let mut full = base;
+            full.extend(picked.clone());
+            (picked, true, Some(parent_id), full)
+        }
+    };
+
     let cp_id = Uuid::new_v4();
-    let changes: Vec<FileChange> = files
+    let changes: Vec<FileChange> = recorded
         .iter()
         .map(|(p, c)| FileChange {
             path: p.clone(),
@@ -498,20 +525,22 @@ async fn create_checkpoint(
             size: c.len() as u64,
         })
         .collect();
+    let file_count = changes.len();
     let cp = Checkpoint {
         id: cp_id,
         rift_id,
         author: Uuid::new_v4(),
         timestamp: Utc::now(),
         changes,
-        parent: None,
+        parent,
         message: req.message,
         auto_generated: false,
+        partial,
     };
-    inner.checkpoints.entry(project_id).or_default().push((cp, files.clone()));
+    inner.checkpoints.entry(project_id).or_default().push((cp, full_state));
     Ok(Json(ApiResponse::success(CheckpointData {
         checkpoint_id: cp_id,
-        file_count: files.len(),
+        file_count,
     })))
 }
 
