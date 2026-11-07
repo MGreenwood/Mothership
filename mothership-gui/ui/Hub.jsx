@@ -19,6 +19,7 @@ export default function Hub({ onOpenInEditor, onGatewayChange, onRiftChanged }) 
   const [checkpointMsg, setCheckpointMsg] = useState('')
   const [checkpointPaths, setCheckpointPaths] = useState('')
   const [restoreId, setRestoreId] = useState(null)
+  const [restorePaths, setRestorePaths] = useState('')
   const [auth, setAuth] = useState(null)
 
   useEffect(() => {
@@ -210,11 +211,17 @@ export default function Hub({ onOpenInEditor, onGatewayChange, onRiftChanged }) 
 
   const restoreCheckpoint = (checkpointId) =>
     run('', async () => {
+      const paths = restorePaths
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
       const result = await invoke('hub_restore_checkpoint', {
         projectId: selected.id,
         checkpointId,
+        paths: paths.length ? paths : null,
       })
       setRestoreId(null)
+      setRestorePaths('')
       onRiftChanged?.()
       const skipped = result.skipped_unsafe.length
       setMessage({
@@ -378,8 +385,13 @@ export default function Hub({ onOpenInEditor, onGatewayChange, onRiftChanged }) 
                   {restoreId === c.id ? (
                     <span className="row">
                       <span className="bad">Overwrite local files with this checkpoint?</span>
+                      <input
+                        placeholder="Only these paths (optional; folders end with /)"
+                        value={restorePaths}
+                        onChange={(e) => setRestorePaths(e.target.value)}
+                      />
                       <button className="danger" onClick={() => restoreCheckpoint(c.id)} disabled={busy}>Yes</button>
-                      <button onClick={() => setRestoreId(null)}>No</button>
+                      <button onClick={() => { setRestoreId(null); setRestorePaths('') }}>No</button>
                     </span>
                   ) : (
                     <button onClick={() => setRestoreId(c.id)} disabled={busy}>Restore</button>

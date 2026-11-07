@@ -1676,7 +1676,10 @@ async fn restore_checkpoint(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((project_id, checkpoint_id)): Path<(ProjectId, uuid::Uuid)>,
-) -> Result<Json<ApiResponse<RestoreData>>, StatusCode> {
+    body: Option<Json<RestoreRequest>>,
+) -> Result<axum::response::Response, StatusCode> {
+    use axum::response::IntoResponse;
+
     // Extract user ID from JWT token
     let auth_header = headers.get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -1724,13 +1727,23 @@ async fn restore_checkpoint(
         Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
 
-    // Get all files at this checkpoint
-    let files = match state.sync.storage.get_checkpoint_files(checkpoint_id).await {
+    // Get all files at this checkpoint: the full rift state at that point
+    let all_files = match state.sync.storage.get_checkpoint_files(checkpoint_id).await {
         Ok(files) => files,
         Err(e) => {
             error!("Failed to get checkpoint files: {}", e);
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
+    };
+
+    // With paths, only those files come back; the rest of the rift is left alone
+    let selection = body.and_then(|Json(req)| req.paths);
+    let files = match &selection {
+        Some(selectors) => match mothership_common::select_paths(&all_files, selectors) {
+            Ok(picked) => picked,
+            Err(message) => return Ok((StatusCode::BAD_REQUEST, message).into_response()),
+        },
+        None => all_files,
     };
 
     let restore_data = RestoreData {
@@ -1746,11 +1759,19 @@ async fn restore_checkpoint(
         serde_json::json!({
             "checkpoint_id": checkpoint_id,
             "file_count": restore_data.files.len(),
+            "paths": selection,
         }),
     );
 
     info!("Restore data prepared with {} files", restore_data.files.len());
-    Ok(Json(ApiResponse::success(restore_data)))
+    Ok(Json(ApiResponse::success(restore_data)).into_response())
+}
+
+#[derive(serde::Deserialize)]
+struct RestoreRequest {
+    /// Files, or folders ending in `/`, to restore. Omitted means the whole checkpoint.
+    #[serde(default)]
+    paths: Option<Vec<String>>,
 }
 
 /// Delete a checkpoint from the user's rift

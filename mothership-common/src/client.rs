@@ -893,12 +893,22 @@ impl MothershipClient {
         Self::unwrap_api(resp)
     }
 
-    /// Fetches a checkpoint's files from the server. Nothing is written to disk here.
-    pub async fn restore_checkpoint(&self, project_id: Uuid, checkpoint_id: Uuid) -> Result<RestoreData> {
+    /// Fetches a checkpoint's files from the server. With `paths`, only those files and folders come
+    /// back. Nothing is written to disk here.
+    pub async fn restore_checkpoint(
+        &self,
+        project_id: Uuid,
+        checkpoint_id: Uuid,
+        paths: Option<&[String]>,
+    ) -> Result<RestoreData> {
         let project_id = project_id.to_string();
         let checkpoint_id = checkpoint_id.to_string();
         let url = self.endpoint(&["projects", &project_id, "checkpoints", &checkpoint_id, "restore"])?;
-        let response = self.authed(self.http.post(url)).send().await?;
+        let mut request = self.authed(self.http.post(url));
+        if let Some(paths) = paths {
+            request = request.json(&serde_json::json!({ "paths": paths }));
+        }
+        let response = request.send().await?;
         let response = Self::ensure_success(response).await?;
         let resp: ApiResponse<RestoreData> = response.json().await?;
         Self::unwrap_api(resp)

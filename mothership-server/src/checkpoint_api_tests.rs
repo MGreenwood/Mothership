@@ -243,3 +243,30 @@ async fn a_checkpoint_with_partial_children_cannot_be_deleted() {
     let (status, _) = delete(base_id).await;
     assert_eq!(status, StatusCode::OK);
 }
+
+#[tokio::test]
+#[ignore]
+async fn restore_with_paths_returns_only_the_selection() {
+    let fx = fixture().await;
+    let app = create_api_router(fx.state.clone());
+    let token = token_for(&fx.state, &fx.owner);
+
+    set_live(&fx, &[("README.md", "v1"), ("src/main.rs", "v1")]).await;
+    let (_, whole) = checkpoint(&app, &fx, &token, None).await;
+    let checkpoint_id = whole["data"]["checkpoint_id"].as_str().unwrap().to_string();
+    let restore_uri = format!("/projects/{}/checkpoints/{}/restore", fx.project_id, checkpoint_id);
+
+    let (status, body) = send(&app, Method::POST, restore_uri.clone(), &token, Some(json!({ "paths": ["src/"] }))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["files"]["src/main.rs"], "v1");
+    assert!(body["data"]["files"].get("README.md").is_none(), "README.md was not selected");
+
+    let (status, body) = send(&app, Method::POST, restore_uri.clone(), &token, Some(json!({ "paths": ["nope.rs"] }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.is_null() || body.get("data").is_none(), "a refused restore returns no files");
+
+    // With no body the whole checkpoint comes back, as before
+    let (status, body) = send(&app, Method::POST, restore_uri, &token, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["files"].as_object().unwrap().len(), 2);
+}

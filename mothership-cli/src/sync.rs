@@ -281,7 +281,12 @@ pub async fn handle_history(config_manager: &ConfigManager, limit: usize) -> Res
     Ok(())
 }
 
-pub async fn handle_restore(config_manager: &ConfigManager, checkpoint_id: String, force: bool) -> Result<()> {
+pub async fn handle_restore(
+    config_manager: &ConfigManager,
+    checkpoint_id: String,
+    paths: Vec<std::path::PathBuf>,
+    force: bool,
+) -> Result<()> {
     // Check if authenticated
     if !config_manager.is_authenticated()? {
         print_api_error("Not authenticated. Run 'mothership auth' to get started.");
@@ -294,9 +299,16 @@ pub async fn handle_restore(config_manager: &ConfigManager, checkpoint_id: Strin
     // Parse checkpoint ID
     let checkpoint_uuid = uuid::Uuid::parse_str(&checkpoint_id)
         .map_err(|_| anyhow!("Invalid checkpoint ID format. Use the full checkpoint ID from 'mothership history'"))?;
+    let selectors = selectors_for_paths(&std::env::current_dir()?, &paths)?;
 
     if !force {
-        println!("\n{}", " This will overwrite your current files with the checkpoint state.".yellow().bold());
+        match &selectors {
+            Some(selectors) => println!(
+                "\n{}",
+                format!(" This will overwrite these paths with the checkpoint's version: {}", selectors.join(", ")).yellow().bold()
+            ),
+            None => println!("\n{}", " This will overwrite your current files with the checkpoint state.".yellow().bold()),
+        }
         println!("{}", format!("Project: {}", project_name.blue().bold()));
         println!("{}", format!("Checkpoint: {}", checkpoint_id.yellow()));
         print!("{}", "Are you sure you want to continue? (y/N): ".white().bold());
@@ -319,10 +331,16 @@ pub async fn handle_restore(config_manager: &ConfigManager, checkpoint_id: Strin
 
     // Request checkpoint files from server
     let restore_url = format!("{}/projects/{}/checkpoints/{}/restore", server_url, project_id, checkpoint_uuid);
-    let response = client.post(&restore_url).send().await?;
+    let mut request = client.post(&restore_url);
+    if let Some(selectors) = &selectors {
+        request = request.json(&serde_json::json!({ "paths": selectors }));
+    }
+    let response = request.send().await?;
 
     if !response.status().is_success() {
-        return Err(anyhow!("Failed to restore checkpoint: {}", response.status()));
+        let status = response.status();
+        let reason = response.text().await.unwrap_or_default();
+        return Err(anyhow!("Failed to restore checkpoint: {} {}", status, reason.trim()));
     }
 
     let restore_response: ApiResponse<RestoreData> = response.json().await?;

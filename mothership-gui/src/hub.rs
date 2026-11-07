@@ -1,7 +1,7 @@
 use mothership_common::beam::{
     beam_project, beam_wormhole_files, default_search_roots, ensure_daemon_running,
     index_local_projects, read_project_metadata, register_with_daemon, restore_files_into,
-    WormholeMarker,
+    write_files_into, WormholeMarker,
 };
 use mothership_common::client::{
     clear_oauth_token, load_oauth_token, save_oauth_token, scan_text_files, start_browser_login,
@@ -508,10 +508,12 @@ pub struct RestoreResult {
 }
 
 /// Overwrites matching files in the project's local folder with the checkpoint's contents.
+/// With `paths`, only those files are written and nothing else is touched.
 #[tauri::command]
 pub async fn hub_restore_checkpoint(
     project_id: String,
     checkpoint_id: String,
+    paths: Option<Vec<String>>,
 ) -> Result<RestoreResult, String> {
     let project = parse_id(&project_id)?;
     let checkpoint = parse_id(&checkpoint_id)?;
@@ -522,11 +524,15 @@ pub async fn hub_restore_checkpoint(
         .ok_or_else(|| "This project has no local folder. Beam it first.".to_string())?;
 
     let data = client()?
-        .restore_checkpoint(project, checkpoint)
+        .restore_checkpoint(project, checkpoint, paths.as_deref())
         .await
         .map_err(err)?;
 
-    let outcome = restore_files_into(&local_path, &data.files).map_err(|e| format!("{:#}", e))?;
+    let outcome = match paths {
+        Some(_) => write_files_into(&local_path, &data.files),
+        None => restore_files_into(&local_path, &data.files),
+    }
+    .map_err(|e| format!("{:#}", e))?;
     Ok(RestoreResult {
         local_path: local_path.display().to_string(),
         written: outcome.written,

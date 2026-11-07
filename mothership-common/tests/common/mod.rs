@@ -589,10 +589,19 @@ async fn rift_events(
     Ok(Json(ApiResponse::success(selected)))
 }
 
+#[derive(Deserialize, Default)]
+struct RestoreReq {
+    #[serde(default)]
+    paths: Option<Vec<String>>,
+}
+
+/// Mirrors the server: a whole restore replaces the rift's files; a partial restore returns only the
+/// selection and merges it into the rift, leaving the rest alone.
 async fn restore_checkpoint(
     State(state): State<MockServerState>,
     headers: HeaderMap,
     AxPath((project_id, cid)): AxPath<(Uuid, Uuid)>,
+    body: Option<Json<RestoreReq>>,
 ) -> Result<Json<ApiResponse<RestoreData>>, (StatusCode, String)> {
     check_auth(&headers)?;
     let mut inner = state.inner.write().await;
@@ -603,8 +612,20 @@ async fn restore_checkpoint(
         .cloned()
         .ok_or_else(|| (StatusCode::NOT_FOUND, "checkpoint not found".into()))?;
     let rift_id = *inner.active_rift_by_project.get(&project_id).unwrap();
-    inner.rifts.get_mut(&rift_id).unwrap().files = files.clone();
-    Ok(Json(ApiResponse::success(RestoreData { checkpoint: cp, files })))
+
+    let selection = body.and_then(|Json(req)| req.paths);
+    match selection {
+        None => {
+            inner.rifts.get_mut(&rift_id).unwrap().files = files.clone();
+            Ok(Json(ApiResponse::success(RestoreData { checkpoint: cp, files })))
+        }
+        Some(selectors) => {
+            let picked = mothership_common::select_paths(&files, &selectors)
+                .map_err(|message| (StatusCode::BAD_REQUEST, message))?;
+            inner.rifts.get_mut(&rift_id).unwrap().files.extend(picked.clone());
+            Ok(Json(ApiResponse::success(RestoreData { checkpoint: cp, files: picked })))
+        }
+    }
 }
 
 async fn ws_rift(

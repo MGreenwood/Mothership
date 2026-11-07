@@ -40,7 +40,7 @@ async fn e2e_scoped_checkpoint_captures_the_selection_and_restores_the_folded_st
     assert_eq!(partial.file_count, 1, "only the folder's file is captured");
 
     // Restoring the partial checkpoint gives src/ at the new version and README.md at the base version
-    let restored = client.restore_checkpoint(project.id, partial.checkpoint_id).await.unwrap();
+    let restored = client.restore_checkpoint(project.id, partial.checkpoint_id, None).await.unwrap();
     assert_eq!(restored.files.get(&PathBuf::from("src/main.rs")).map(String::as_str), Some("v2"));
     assert_eq!(restored.files.get(&PathBuf::from("README.md")).map(String::as_str), Some("v1"));
 
@@ -50,6 +50,38 @@ async fn e2e_scoped_checkpoint_captures_the_selection_and_restores_the_folded_st
         .await;
     assert!(missing.is_err());
     assert_eq!(client.checkpoint_history(project.id).await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn e2e_partial_restore_returns_only_the_selection() {
+    let (url, state) = spawn_test_server().await;
+    let client = MothershipClient::new(&url, Some(TEST_TOKEN.to_string())).unwrap();
+    let dir = TempDir::new("restore-paths");
+    let project = client.create_gateway("restore-paths", "Restore paths", &dir.0).await.unwrap();
+    let rift = *state.inner.read().await.active_rift_by_project.get(&project.id).unwrap();
+
+    {
+        let mut inner = state.inner.write().await;
+        let files = &mut inner.rifts.get_mut(&rift).unwrap().files;
+        files.insert(PathBuf::from("README.md"), "v1".to_string());
+        files.insert(PathBuf::from("src/main.rs"), "v1".to_string());
+    }
+    let whole = client.create_checkpoint(project.id, Some("base"), None).await.unwrap();
+
+    let selected = client
+        .restore_checkpoint(project.id, whole.checkpoint_id, Some(&["src/".to_string()]))
+        .await
+        .unwrap();
+    assert_eq!(selected.files.len(), 1);
+    assert_eq!(selected.files.get(&PathBuf::from("src/main.rs")).map(String::as_str), Some("v1"));
+
+    let everything = client.restore_checkpoint(project.id, whole.checkpoint_id, None).await.unwrap();
+    assert_eq!(everything.files.len(), 2);
+
+    let missing = client
+        .restore_checkpoint(project.id, whole.checkpoint_id, Some(&["nope.rs".to_string()]))
+        .await;
+    assert!(missing.is_err());
 }
 
 #[tokio::test]

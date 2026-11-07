@@ -96,6 +96,9 @@ enum Commands {
     Restore {
         /// Checkpoint ID to restore to
         checkpoint_id: String,
+        /// Only restore these files or folders (default: the whole checkpoint)
+        #[arg(value_name = "PATH")]
+        paths: Vec<PathBuf>,
         /// Force restore without confirmation
         #[arg(short, long)]
         force: bool,
@@ -466,7 +469,7 @@ async fn run(command: Commands, config_manager: &ConfigManager) -> Result<()> {
             println!("{}", "Loading project history...".cyan().bold());
             sync::handle_history(&config_manager, limit).await?;
         }
-        Commands::Restore { checkpoint_id, force } => {
+        Commands::Restore { checkpoint_id, paths, force } => {
             // Validate authentication before restore operations
             if let Err(e) = validate_authentication(&config_manager).await {
                 print_auth_error(&e.to_string());
@@ -474,7 +477,7 @@ async fn run(command: Commands, config_manager: &ConfigManager) -> Result<()> {
             }
 
             println!("{}", format!("Restoring to checkpoint {}...", checkpoint_id).cyan().bold());
-            sync::handle_restore(&config_manager, checkpoint_id, force).await?;
+            sync::handle_restore(&config_manager, checkpoint_id, paths, force).await?;
         }
         Commands::Delete { project_name, force } => {
             // Validate authentication before delete operations

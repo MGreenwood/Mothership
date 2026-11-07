@@ -106,19 +106,24 @@ pub struct RestoreOutcome {
 /// Writes checkpoint files into a linked project folder, overwriting matching files
 /// and removing non-ignored files that are not in the checkpoint (after backing them up).
 pub fn restore_files_into(project_dir: &Path, files: &HashMap<PathBuf, String>) -> Result<RestoreOutcome> {
+    let keep: std::collections::HashSet<String> = files
+        .keys()
+        .filter_map(|raw| safe_relative_path(raw))
+        .map(|rel| crate::normalize_rel_path(&rel))
+        .collect();
+    let _ = remove_stale_local_files(project_dir, &keep);
+    write_files_into(project_dir, files)
+}
+
+/// Writes checkpoint files into a linked project folder, overwriting matching files. Other files
+/// are left alone, so this is the write for restoring only some paths.
+pub fn write_files_into(project_dir: &Path, files: &HashMap<PathBuf, String>) -> Result<RestoreOutcome> {
     let mut outcome = RestoreOutcome::default();
-    let mut keep = std::collections::HashSet::new();
-    let mut valid_files = Vec::new();
     for (raw, content) in files {
         let Some(rel) = safe_relative_path(raw) else {
             outcome.skipped_unsafe.push(raw.display().to_string());
             continue;
         };
-        keep.insert(crate::normalize_rel_path(&rel));
-        valid_files.push((rel, content));
-    }
-    let _ = remove_stale_local_files(project_dir, &keep);
-    for (rel, content) in valid_files {
         let target = project_dir.join(&rel);
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent)
@@ -547,6 +552,21 @@ mod tests {
         assert_eq!(safe_relative_path(Path::new("a/../../evil.txt")), None);
         assert_eq!(safe_relative_path(Path::new(".mothership/project.json")), None);
         assert_eq!(safe_relative_path(Path::new("")), None);
+    }
+
+    #[test]
+    fn partial_write_leaves_other_local_files_alone() {
+        let dir = temp_dir("partial");
+        fs::write(dir.join("keep.txt"), "local only").unwrap();
+        let mut files = HashMap::new();
+        files.insert(PathBuf::from("src/main.rs"), "fn main() {}".to_string());
+
+        let outcome = write_files_into(&dir, &files).unwrap();
+
+        assert_eq!(outcome.written, 1);
+        assert_eq!(fs::read_to_string(dir.join("keep.txt")).unwrap(), "local only");
+        assert_eq!(fs::read_to_string(dir.join("src").join("main.rs")).unwrap(), "fn main() {}");
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
