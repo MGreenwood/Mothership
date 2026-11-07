@@ -13,7 +13,9 @@ A checklist of the features discussed, ordered from highest to lowest impact. Ea
 - [x] Log file changes on every save (not debounced)
 - [x] Retention set by the server owner (`collaboration.max_rift_events`); `-1` keeps everything
 - [x] Read endpoint: `GET /api/rifts/:id/events` with `after`, `before`, `latest`, `limit`, and `wait` (long-poll), collaborators only
+- [x] Tests: `mothership-server/src/events_api_tests.rs` (HTTP, long-poll, socket hooks) and `mothership-common/tests/e2e_rift_events.rs` (client against the mock)
 - [x] GUI timeline page reads the endpoint (task 2)
+- [ ] Gap: concurrent events can be stored out of order. Writes are fire-and-forget, so two events written at the same moment can get ids in either order. Deferred until all tasks are complete.
 
 ## 2. GUI timeline page
 - [x] A dedicated Timeline view in the GUI that shows the event log as it happens
@@ -80,7 +82,8 @@ A checklist of the features discussed, ordered from highest to lowest impact. Ea
 - [ ] Hunk-level and line-level checkpoints (per-file scoping is the starting point)
 
 ## Deferred until all tasks are complete
-- [ ] HTTP-level tests for `GET /api/rifts/:id/events`, including the long-poll wait and access checks. Current tests cover the database layer, the notify, and the wait helper, not the HTTP route.
 - [ ] Push events over the rift WebSocket instead of long-polling (item 2). Lower latency, but it needs a protocol change, and the CLI and daemon would have to ignore the new message.
-- [ ] Fix the pre-existing failing test `privacy_api_tests::switch_enforces_rift_membership` (returns 403 where 404 is expected). It is not related to the event log.
 - [ ] Fix the pre-existing `mothership-common` test `e2e_projects_rifts`, which imports `start_oauth_login` and `verify_oauth_token`. Neither exists in `client.rs`, on `HEAD` or now.
+- [ ] Fix the pre-existing startup panic in `create_combined_router` (`mothership-server/src/main.rs`). It registers `/auth/finalize` and also merges the web UI routes, which register it again, so single-port mode panics. The tests use `create_api_router` instead.
+- [ ] GUI tests. The GUI has no JavaScript test runner (`package.json` has only dev, build, and preview). Decide whether to add one, such as Vitest, for `Timeline.jsx` and the Tauri command wrappers.
+- [ ] Retention task test. The prune query is tested, but the timer that runs it is not.

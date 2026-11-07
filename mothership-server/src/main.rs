@@ -39,6 +39,8 @@ mod wormhole;
 #[cfg(test)]
 mod chat_api_tests;
 #[cfg(test)]
+mod events_api_tests;
+#[cfg(test)]
 mod privacy_api_tests;
 
 use auth::AuthService;

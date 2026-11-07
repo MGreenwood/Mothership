@@ -210,8 +210,29 @@ async fn switch_enforces_rift_membership() {
     // Project member who is not a collaborator on the rift: forbidden, prompts a request
     assert_eq!(switch(&app, &member_token, fx.project_id, "secret").await, StatusCode::FORBIDDEN);
     assert_eq!(switch(&app, &owner_token, fx.project_id, "secret").await, StatusCode::OK);
-    // Outsider has no project access, so the rift is simply not found
-    assert_eq!(switch(&app, &outsider_token, fx.project_id, "main").await, StatusCode::NOT_FOUND);
+
+    // The fixture project is public, so any authenticated user can see it. An outsider sees the
+    // public `main` rift but is not a collaborator on it: forbidden, same as a project member.
+    assert_eq!(switch(&app, &outsider_token, fx.project_id, "main").await, StatusCode::FORBIDDEN);
+
+    // A private project the outsider has no access to: its rifts are simply not found
+    let private_project = fx
+        .state
+        .db
+        .create_project_with_privacy(
+            format!("private-switch-{}", fx.owner.id.simple()),
+            "private switch test".to_string(),
+            vec![fx.owner.id],
+            true,
+        )
+        .await
+        .unwrap();
+    fx.state
+        .db
+        .create_rift(private_project.id, fx.owner.id, Some("main".to_string()))
+        .await
+        .unwrap();
+    assert_eq!(switch(&app, &outsider_token, private_project.id, "main").await, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

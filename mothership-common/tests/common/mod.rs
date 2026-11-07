@@ -19,7 +19,7 @@ use axum::{
 use chrono::Utc;
 use mothership_common::{
     auth::{OAuthRequest, OAuthResponse},
-    client::{CheckpointData, RestoreData, RiftAccessRequestInfo, RiftInfo},
+    client::{CheckpointData, RestoreData, RiftAccessRequestInfo, RiftEvent, RiftInfo},
     merge::Resolution,
     protocol::{ApiResponse, BeamRequest, BeamResponse, SyncMessage},
     ChangeType, Checkpoint, FileChange, Project, ProjectSettings,
@@ -80,6 +80,8 @@ pub struct InnerState {
     pub rift_members: HashMap<Uuid, HashSet<String>>,
     /// Pending access requests per rift: (username, requested_at).
     pub access_requests: HashMap<Uuid, Vec<(String, chrono::DateTime<Utc>)>>,
+    /// Event log per rift, oldest first. Tests append to it directly.
+    pub rift_events: HashMap<Uuid, Vec<RiftEvent>>,
 }
 
 /// A rift's owner is its author. Private rifts are visible to the owner and to members.
@@ -148,6 +150,7 @@ pub async fn spawn_test_server() -> (String, MockServerState) {
         .route("/api/rifts", get(list_rifts).post(create_rift))
         .route("/api/rifts/switch", post(switch_rift))
         .route("/api/rifts/access-requests", get(list_access_requests).post(request_rift_access))
+        .route("/api/rifts/:id/events", get(rift_events))
         .route("/api/rifts/members", post(manage_rift_members))
         .route("/api/wormholes", get(wormhole_handlers::list_wormholes).post(wormhole_handlers::create_wormhole))
         .route("/api/wormholes/:id", get(wormhole_handlers::get_wormhole).delete(wormhole_handlers::delete_wormhole))
@@ -525,6 +528,36 @@ async fn checkpoint_history(
         .map(|v| v.iter().map(|(c, _)| c.clone()).collect())
         .unwrap_or_default();
     Ok(Json(ApiResponse::success(list)))
+}
+
+/// Mirrors the server's paging: `latest`, `before`, or forward reads from `after`. It does not
+/// long-poll; the server tests cover `wait`.
+async fn rift_events(
+    State(state): State<MockServerState>,
+    headers: HeaderMap,
+    AxPath(rift_id): AxPath<Uuid>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<ApiResponse<Vec<RiftEvent>>>, (StatusCode, String)> {
+    check_auth(&headers)?;
+    let inner = state.inner.read().await;
+    if !can_access_rift(&inner, rift_id) {
+        return Err((StatusCode::FORBIDDEN, "not a rift collaborator".into()));
+    }
+
+    let number = |key: &str| params.get(key).and_then(|v| v.parse::<i64>().ok());
+    let limit = number("limit").unwrap_or(200).clamp(1, 1000) as usize;
+    let events = inner.rift_events.get(&rift_id).cloned().unwrap_or_default();
+
+    let selected: Vec<RiftEvent> = if params.get("latest").is_some_and(|v| v == "true") {
+        events[events.len().saturating_sub(limit)..].to_vec()
+    } else if let Some(before) = number("before") {
+        let older: Vec<RiftEvent> = events.into_iter().filter(|e| e.id < before).collect();
+        older[older.len().saturating_sub(limit)..].to_vec()
+    } else {
+        let after = number("after").unwrap_or(0);
+        events.into_iter().filter(|e| e.id > after).take(limit).collect()
+    };
+    Ok(Json(ApiResponse::success(selected)))
 }
 
 async fn restore_checkpoint(
