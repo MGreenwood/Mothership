@@ -33,21 +33,22 @@ Mothership is an experimental version control system that eliminates the complex
 - **Conflict detection**: Built-in collision handling
 - **Perfect isolation**: Each rift has its own collaboration space
 
-#### **Contextual Chat Integration** *Next Priority*
+#### **Contextual Chat Integration** *Partially Working*
+- **Basic rift chat**: `mothership rift chat` sends, reads, and interactively enters chat for a rift
 - **Chat lives in rifts**: Conversations tied to specific development contexts
 - **Persistent history**: All discussions preserved as part of the project timeline
-- **File/line discussions**: Chat about specific code with context preserved
-- **Decision trails**: Why changes were made, captured forever
-- **Smart notifications**: Know when teammates discuss your code
+- **File/line discussions**: Chat about specific code with context preserved *(planned)*
+- **Decision trails**: Why changes were made, captured forever *(planned)*
+- **Smart notifications**: Know when teammates discuss your code *(planned)*
 
-#### **Wormholes: Preview Merge System** *The Cool Experiment*
-- **Live merge preview**: See how different rifts will combine before committing
-- **Collaborative resolution**: Teams resolve conflicts together in real-time
+#### **Wormholes: Preview Merge System** *Working, Experimental*
+- **Live merge preview**: Create a wormhole from two or more rifts and see the merged state and conflicts
+- **Collaborative resolution**: Resolve conflicts per file and conflict, and share the result within the wormhole
 - **Non-destructive testing**: Try integrations without affecting source rifts
-- **Zero-surprise convergence**: Know exactly how the merge will work
+- **Converge when clean**: Create a new rift from the merged result once no conflicts remain
 
 #### **Background Intelligence** *Working Now*
-- **Automatic checkpointing**: Every meaningful change preserved
+- **Checkpoints**: `mothership checkpoint` snapshots your work, with a message
 - **Smart daemon**: Background sync without console blocking
 - **Zero-ceremony beaming**: Join projects instantly, leave gracefully
 - **File watching**: Changes detected and synced automatically
@@ -83,7 +84,7 @@ mothership history
 The central server that orchestrates all development activity. It manages projects, user access, and coordinates real-time collaboration across all connected clients.
 
 ### Gateway
-The entry point to your development universe. Running `mothership gateway` reveals all projects you have access to, their current activity, and collaboration opportunities.
+The entry point to your development universe. Running `mothership gateway list` reveals all projects you have access to, and `mothership status` shows the current environment.
 
 ### Beam
 The action of connecting to and syncing with a project. "Beaming into" a project either syncs an existing local copy or creates a new one. Once beamed in, you're live-connected to the project's collaborative space.
@@ -92,7 +93,7 @@ The action of connecting to and syncing with a project. "Beaming into" a project
 A parallel development dimension within a project. Like Git branches, but with real-time collaboration and integrated chat. Multiple developers can work within the same rift, seeing each other's changes and discussing them in context - all preserved as part of the development history.
 
 ### Checkpoint
-Automatic snapshots of your work. Every file save, every meaningful change is checkpointed without manual intervention. You can navigate through time within your rift's history, including seeing the conversations that led to each change.
+Snapshots of your work, created with `mothership checkpoint -m "message"`. You can view them with `mothership history` and restore one with `mothership restore`. The goal is for every meaningful change to be captured without manual steps, with conversations linked to each checkpoint.
 
 ### Wormhole
 A **live preview bridge** connecting two or more rifts, allowing developers to see exactly how their separate features will integrate **before** converging them permanently. Think of it as a "test merge" that you can establish and dissolve instantly without affecting the source rifts.
@@ -104,9 +105,10 @@ The process of merging rifts back together. Unlike traditional merging, this can
 
 ### Initial Setup
 ```bash
-# One-time machine authentication
-mothership auth
-# Opens browser, completes OAuth flow
+# One-time machine setup: point at a server, then sign in
+mothership connect https://your-mothership-server.com
+mothership auth google    # or: mothership auth ghostid
+# Opens the browser sign-in flow
 # Stores machine certificate locally
 ```
 
@@ -119,7 +121,7 @@ mothership gateway list
 
 # Deploy new project  
 cd my-awesome-app
-mothership deploy "My Awesome App"
+mothership init "My Awesome App"
 
 # Beam into existing project
 mothership beam "My Awesome App"
@@ -130,7 +132,9 @@ mothership beam "My Awesome App"
 #### **Real-Time Collaborative Development**
 ```bash
 # Multiple developers beam into the same rift
-mothership beam "My Awesome App" --rift="alice/new-feature"
+mothership beam "My Awesome App"
+mothership rift switch new-feature
+# Rifts are created with: mothership rift new <name>
 
 # Now you can:
 # - See each other's changes in real-time
@@ -142,42 +146,40 @@ mothership beam "My Awesome App" --rift="alice/new-feature"
 #### **Contextual Conversations** *The Innovation*
 ```bash
 # Chat is integrated into the development flow
-mothership chat
+mothership rift chat enter
 > alice: "Why are we using this approach for auth?"
 > bob: "Let me show you" [shares code at line 47]
 > alice: "Oh I see, but what about refresh tokens?"
 > bob: [makes change to handle refresh tokens]
 > alice: "Perfect! Let's checkpoint this"
 
-# All preserved forever as part of the project's living history
-mothership history --include-chat
-# Shows interleaved code changes and conversations
+# Chat history is read separately from checkpoint history
+mothership rift chat history
+mothership history
 ```
 
 #### **Advanced Integration with Wormholes**
 ```bash
 # Test how features will integrate before merging
-mothership wormhole create "alice/auth" "bob/user-interface"
+mothership wormhole create auth-ui alice-auth bob-ui
 # Both teams see combined result immediately
-# Chat in wormhole about integration challenges
+# Chat in wormhole about integration challenges (planned)
 # Resolve conflicts collaboratively
-# Converge only when perfect
+mothership wormhole resolve auth-ui <path> <conflict-id> --side alice-auth
 
-mothership rift converge --via-wormhole auth_ui_wormhole_123
-# Guaranteed successful merge
+# Converge only when no conflicts remain
+mothership wormhole converge auth-ui
 ```
 
 #### **Time Navigation with Full Context**
 ```bash
-# Navigate through history with full context
-mothership timeline
-# Interactive timeline showing code changes AND conversations
+# Review the checkpoint history
+mothership history
 
-mothership goto checkpoint:abc123
-# Jump to any point in time
+mothership restore <checkpoint-id>
 
-mothership diff checkpoint:abc123 checkpoint:def456
-# See what changed AND why (from preserved conversations)
+mothership rift diff checkpoint:abc123 checkpoint:def456
+# See what changed between two checkpoints
 ```
 
 ## Technical Architecture
@@ -215,6 +217,8 @@ mothership diff checkpoint:abc123 checkpoint:def456
 ```
 
 ### Core Data Models
+
+> Design sketch. Field names and types may differ from the current implementation.
 
 ```rust
 struct Project {
@@ -271,6 +275,8 @@ struct Wormhole {
 
 ### Real-Time Communication Protocol
 
+> Design sketch. Message names may differ from the current implementation.
+
 ```rust
 enum SyncMessage {
     // Rift collaboration
@@ -309,7 +315,7 @@ enum SyncMessage {
 - [x] **Server Architecture** - Rust + Tokio + Axum running on port 7523
 - [x] **Authentication System** - OAuth + JWT with PostgreSQL persistence
 - [x] **CLI Tools** - Complete command set with intuitive UX
-- [x] **Project Management** - Gateway creation, deployment, beaming
+- [x] **Project Management** - Gateway creation, `init`, beaming
 - [x] **Database Foundation** - PostgreSQL with proper schemas and relationships
 - [x] **Docker Deployment** - One-click development environment
 - [x] **Cross-platform Support** - Windows, macOS, Linux compatibility
@@ -321,27 +327,27 @@ enum SyncMessage {
 - [x] **Conflict Detection** - Built-in collision handling framework
 - [x] **Perfect Isolation** - Rift-specific broadcast channels
 
-### Phase 3: Chat Integration & Context **CURRENT FOCUS**
+### Phase 3: Chat Integration & Context **IN PROGRESS**
 **Goal: Make conversations part of the development history**
-- [ ] **Chat Engine** - Real-time messaging within rifts
+- [x] **Chat Engine** - Messaging within rifts (`mothership rift chat`)
 - [ ] **Context Preservation** - Link conversations to code, files, and changes
 - [ ] **Persistent History** - All conversations stored with checkpoints
 - [ ] **Smart Notifications** - Context-aware alerts about relevant discussions
 - [ ] **Code References** - Share and discuss specific lines/files in chat
 - [ ] **Decision Trails** - Capture why changes were made, not just what changed
 
-### Phase 4: Wormhole System **THE EXPERIMENT**
+### Phase 4: Wormhole System **IN PROGRESS**
 **Goal: Preview merges with collaborative resolution**
-- [ ] **Wormhole Creation** - Connect rifts for integration testing
-- [ ] **Live Merge Preview** - See combined state in real-time
-- [ ] **Collaborative Resolution** - Teams work together on conflicts
+- [x] **Wormhole Creation** - Connect two or more rifts for integration testing
+- [x] **Live Merge Preview** - See the combined state and conflicts
+- [x] **Collaborative Resolution** - Resolve conflicts per file and conflict
 - [ ] **Wormhole Chat** - Dedicated discussion space for integration
-- [ ] **Zero-surprise Convergence** - Guaranteed successful merges
-- [ ] **Multi-rift Wormholes** - Complex 3+ way integrations
+- [x] **Zero-surprise Convergence** - Converge blocked while conflicts remain
+- [x] **Multi-rift Wormholes** - Create with two or more rifts
 
 ### Phase 5: Advanced User Experience (Future)
 **Goal: Professional development environment**
-- [ ] **Desktop GUI** - Native app with integrated chat and file explorer
+- [~] **Desktop GUI** - Tauri app in `mothership-gui/` for sign-in and project management
 - [ ] **IDE Plugins** - VS Code, JetBrains integration
 - [ ] **Mobile Companion** - Review and chat from phone/tablet
 - [ ] **Timeline Visualization** - Interactive history with chat context
@@ -356,21 +362,24 @@ enum SyncMessage {
 - [ ] **Compliance Features** - Audit logs, security controls
 - [ ] **API Ecosystem** - Third-party integrations
 
-## Current Status (January 2025)
+## Current Status (November 2026)
 
 ### **What's Working Now**
 - **Real-time collaboration**: Multiple developers can edit the same rift simultaneously
 - **Background sync**: File changes detected and synced automatically
 - **Zero-friction beaming**: Join projects instantly with automatic daemon management
-- **PostgreSQL persistence**: Production-ready database with proper relationships
+- **Checkpoints and history**: Create, view, and restore checkpoints
+- **Rift chat**: Send and read chat messages within a rift
+- **Wormholes (experimental)**: Create, inspect, resolve, and converge merge previews
+- **PostgreSQL persistence**: Projects, rifts, and checkpoints stored in PostgreSQL
 - **Cross-platform CLI**: Works on Windows, macOS, Linux
-- **OAuth authentication**: Seamless login with Google integration
+- **Sign-in**: Google login or GhostID wallet login
 
 ### **What We're Building Next**
-- **Chat integration**: Real-time messaging within rifts
-- **Context preservation**: Link conversations to specific code and changes
+- **Context preservation**: Link conversations to specific code, files, and changes
 - **Smart notifications**: Know when teammates discuss your code
-- **Wormhole preview**: Test how different rifts will merge together
+- **Wormhole chat**: A dedicated discussion space for each wormhole
+- **Desktop GUI**: Bring chat and file views into the Tauri app
 
 ### **The Big Dream**
 A development environment where:
