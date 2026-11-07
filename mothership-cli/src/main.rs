@@ -89,6 +89,8 @@ enum Commands {
     },
     /// Review files held back because they contain a secret
     Secrets,
+    /// Run the project's checks (cp-config.toml) and record the result
+    Verify,
     /// Sync with remote Mothership
     Sync,
     /// View project history and checkpoints
@@ -404,7 +406,14 @@ async fn run(command: Commands, config_manager: &ConfigManager) -> Result<()> {
             });
 
             println!("{}", format!("Initializing {}...", project_name).cyan().bold());
-            
+
+            // Written before the gateway is created, because the create step uploads the folder's files
+            match mothership_common::verify::write_template_if_missing(&current_dir) {
+                Ok(true) => print_info("Created cp-config.toml. Uncomment the examples you want to run on each checkpoint."),
+                Ok(false) => {}
+                Err(e) => print_info(&format!("Could not create cp-config.toml: {}", e)),
+            }
+
             // Create the gateway/project (CRITICAL FIX: Properly handle errors)
             match gateway::handle_gateway_create(&config_manager, project_name.clone(), current_dir.clone(), private).await {
                 Ok(_project) => {
@@ -461,6 +470,13 @@ async fn run(command: Commands, config_manager: &ConfigManager) -> Result<()> {
                     sync::handle_checkpoint(&config_manager, Some(checkpoint_name), paths).await?;
                 }
             }
+        }
+        Commands::Verify => {
+            if let Err(e) = validate_authentication(&config_manager).await {
+                print_auth_error(&e.to_string());
+                return Ok(());
+            }
+            sync::handle_verify(&config_manager).await?;
         }
         Commands::Secrets => {
             secrets::handle_secrets()?;
@@ -1819,6 +1835,10 @@ fn print_verbose_help() {
     
     print_command_section("", "sync", "Synchronization", &[]);
     println!("    {} {}", "mothership sync".green().bold(), "                         Sync with remote".dimmed());
+    println!();
+
+    print_command_section("", "verify", "Checks", &[]);
+    println!("    {} {}", "mothership verify".green().bold(), "                       Run the checks in cp-config.toml".dimmed());
     println!();
     
     print_command_section("", "history", "Project History", &[]);

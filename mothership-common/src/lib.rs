@@ -17,6 +17,7 @@ pub mod secrets;
 pub mod streaming;
 pub mod text_diff;
 pub mod transaction;
+pub mod verify;
 
 pub use auth::*;
 pub use crdt::*;
@@ -341,6 +342,9 @@ pub struct Checkpoint {
     /// `changes` is the whole rift.
     #[serde(default)]
     pub partial: bool,
+    /// Result of the project's checks (`cp-config.toml`), if they ran for this checkpoint
+    #[serde(default)]
+    pub verification: Option<verify::VerificationResult>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

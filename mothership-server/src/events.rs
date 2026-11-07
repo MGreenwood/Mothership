@@ -25,6 +25,7 @@ pub const JOIN: &str = "join";
 pub const LEAVE: &str = "leave";
 pub const ACCESS_CHANGE: &str = "access_change";
 pub const WORMHOLE: &str = "wormhole";
+pub const VERIFICATION: &str = "verification";
 
 const RETENTION_INTERVAL: Duration = Duration::from_secs(10 * 60);
 

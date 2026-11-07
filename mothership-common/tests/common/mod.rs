@@ -84,6 +84,8 @@ pub struct InnerState {
     pub access_requests: HashMap<Uuid, Vec<(String, chrono::DateTime<Utc>)>>,
     /// Event log per rift, oldest first. Tests append to it directly.
     pub rift_events: HashMap<Uuid, Vec<RiftEvent>>,
+    /// Check results posted per project, in order. Tests read these to see what was recorded.
+    pub verifications: HashMap<Uuid, Vec<mothership_common::verify::VerificationReport>>,
 }
 
 /// A rift's owner is its author. Private rifts are visible to the owner and to members.
@@ -147,6 +149,7 @@ pub async fn spawn_test_server() -> (String, MockServerState) {
         .route("/projects/:id/files", post(upload_files))
         .route("/projects/:id/beam", post(beam_project))
         .route("/projects/:id/checkpoints", post(create_checkpoint))
+        .route("/projects/:id/verifications", post(record_verification))
         .route("/projects/:id/history", get(checkpoint_history))
         .route("/projects/:id/checkpoints/:cid/restore", post(restore_checkpoint))
         .route("/api/rifts", get(list_rifts).post(create_rift))
@@ -540,12 +543,35 @@ async fn create_checkpoint(
         message: req.message,
         auto_generated: false,
         partial,
+        verification: None,
     };
     inner.checkpoints.entry(project_id).or_default().push((cp, full_state));
     Ok(Json(ApiResponse::success(CheckpointData {
         checkpoint_id: cp_id,
         file_count,
     })))
+}
+
+/// Mirrors the server: a result with a checkpoint id is attached to that checkpoint. Every result is kept.
+async fn record_verification(
+    State(state): State<MockServerState>,
+    headers: HeaderMap,
+    AxPath(project_id): AxPath<Uuid>,
+    Json(report): Json<mothership_common::verify::VerificationReport>,
+) -> Result<Json<ApiResponse<String>>, (StatusCode, String)> {
+    check_auth(&headers)?;
+    let mut inner = state.inner.write().await;
+    if let Some(checkpoint_id) = report.checkpoint_id {
+        if let Some((cp, _)) = inner
+            .checkpoints
+            .get_mut(&project_id)
+            .and_then(|list| list.iter_mut().find(|(cp, _)| cp.id == checkpoint_id))
+        {
+            cp.verification = Some(report.result.clone());
+        }
+    }
+    inner.verifications.entry(project_id).or_default().push(report);
+    Ok(Json(ApiResponse::success("recorded".to_string())))
 }
 
 async fn checkpoint_history(

@@ -867,6 +867,19 @@ impl MothershipClient {
         Self::unwrap_api(resp)
     }
 
+    /// Records a check result for a project. With a checkpoint id it is also attached to that checkpoint.
+    pub async fn record_verification(
+        &self,
+        project_id: Uuid,
+        report: crate::verify::VerificationReport,
+    ) -> Result<()> {
+        let project_id = project_id.to_string();
+        let resp: ApiResponse<String> = self
+            .post_api(&["projects", &project_id, "verifications"], &report)
+            .await?;
+        Self::unwrap_api(resp).map(|_| ())
+    }
+
     /// Lists the files that differ between two sides. A side is a rift name or `checkpoint:<id>`.
     /// With `full`, each file carries its unified diff text.
     pub async fn rift_diff(&self, from: &str, to: &str, full: bool) -> Result<Vec<FileDiff>> {

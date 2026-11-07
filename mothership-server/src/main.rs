@@ -48,6 +48,8 @@ mod diff_api_tests;
 mod events_api_tests;
 #[cfg(test)]
 mod privacy_api_tests;
+#[cfg(test)]
+mod verification_api_tests;
 
 use auth::AuthService;
 use config::{ServerConfig, UserWhitelist};
@@ -279,6 +281,7 @@ fn create_api_router(state: AppState) -> Router {
         // Gateway routes
         .route("/gateway", post(gateway))
         .route("/gateway/create", post(create_gateway))
+        .route("/projects/:id/verifications", post(record_verification))
         // Rift routes
         .route("/api/rifts/:id/checkpoints/:checkpoint_id/chat", get(chat::get_checkpoint_chat))
         .route("/api/rifts/diff/file", get(handlers::get_rift_file_diff))
@@ -372,6 +375,7 @@ fn create_combined_router(state: AppState) -> Router {
         .route("/gateway", post(gateway))
         .route("/gateway/create", post(create_gateway))
 
+        .route("/projects/:id/verifications", post(record_verification))
         // Rift and wormhole routes
         .route("/api/rifts/:id/checkpoints/:checkpoint_id/chat", get(chat::get_checkpoint_chat))
         .route("/api/rifts/diff/file", get(handlers::get_rift_file_diff))
@@ -1780,6 +1784,60 @@ struct RestoreRequest {
     /// Files, or folders ending in `/`, to restore. Omitted means the whole checkpoint.
     #[serde(default)]
     paths: Option<Vec<String>>,
+}
+
+/// Record a check result for the caller's rift. With a checkpoint id, the result is also attached to
+/// that checkpoint, which must be in the same rift.
+async fn record_verification(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<ProjectId>,
+    Json(report): Json<mothership_common::verify::VerificationReport>,
+) -> Result<Json<ApiResponse<String>>, StatusCode> {
+    let user_id = chat::authenticated_user(&state, &headers)?;
+
+    if !state.db.user_has_project_access(user_id, project_id).await.unwrap_or(false) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let rift = match state.db.get_user_rift(project_id, user_id).await {
+        Ok(Some(rift)) => rift,
+        Ok(None) => return Err(StatusCode::NOT_FOUND),
+        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+    };
+
+    if let Some(checkpoint_id) = report.checkpoint_id {
+        match state.sync.storage.load_checkpoint(checkpoint_id).await {
+            Ok(Some(checkpoint)) if checkpoint.rift_id == rift.id => {}
+            Ok(_) => return Err(StatusCode::NOT_FOUND),
+            Err(e) => {
+                error!("Failed to load checkpoint {}: {}", checkpoint_id, e);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+        state
+            .sync
+            .storage
+            .set_checkpoint_verification(checkpoint_id, report.result.clone())
+            .await
+            .map_err(|e| {
+                error!("Failed to save verification for checkpoint {}: {}", checkpoint_id, e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+    }
+
+    events::record(
+        &state.db,
+        rift.id,
+        Some(user_id),
+        events::VERIFICATION,
+        serde_json::json!({
+            "checkpoint_id": report.checkpoint_id,
+            "passed": report.result.passed,
+            "checks": report.result.checks,
+            "ran_at": report.result.ran_at,
+        }),
+    );
+    Ok(Json(ApiResponse::success("recorded".to_string())))
 }
 
 /// Delete a checkpoint from the user's rift

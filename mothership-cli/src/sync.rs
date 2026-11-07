@@ -1,11 +1,11 @@
 use anyhow::{anyhow, Result};
 use colored::*;
-use mothership_common::{Checkpoint, protocol::ApiResponse};
+use mothership_common::{Checkpoint, client::MothershipClient, protocol::ApiResponse, verify};
 use serde::{Serialize, Deserialize};
 use std::io::{self, Write};
 use uuid;
 
-use crate::{config::ConfigManager, get_http_client, print_api_error, print_info, print_success, connections};
+use crate::{config::ConfigManager, get_http_client, get_oauth_token, print_api_error, print_info, print_success, connections};
 
 /// Get the server URL to use for sync operations
 /// Prioritizes active server connection over config file
@@ -184,7 +184,73 @@ pub async fn handle_checkpoint(
 
     print_success(&format!("Checkpoint {} created", &checkpoint_data.checkpoint_id.to_string()[..8]));
     print_info(&format!("Captured {} file changes", checkpoint_data.file_count));
+    run_verification(config_manager, project_id, &std::env::current_dir()?, Some(checkpoint_data.checkpoint_id)).await;
     
+    Ok(())
+}
+
+/// Client for recording check results, signed in the same way as the other CLI requests
+fn verification_client(config_manager: &ConfigManager) -> Result<MothershipClient> {
+    let config = config_manager.load_config()?;
+    let server_url = get_server_url(config_manager)?;
+    let token = get_oauth_token().or_else(|| config.auth_token.clone());
+    MothershipClient::new(&server_url, token)
+}
+
+/// Runs the project's checks and prints the outcome. Problems are printed rather than returned, so
+/// the checks never fail the checkpoint that triggered them.
+async fn run_verification(
+    config_manager: &ConfigManager,
+    project_id: uuid::Uuid,
+    project_root: &std::path::Path,
+    checkpoint_id: Option<uuid::Uuid>,
+) {
+    let client = match verification_client(config_manager) {
+        Ok(client) => client,
+        Err(e) => {
+            print_info(&format!("Checks skipped: {}", e));
+            return;
+        }
+    };
+    match verify::run_and_record(&client, project_id, project_root, checkpoint_id).await {
+        Ok(None) => {}
+        Ok(Some(result)) => print_verification(&result),
+        Err(e) => print_info(&format!("Checks could not run or be recorded: {}", e)),
+    }
+}
+
+fn print_verification(result: &verify::VerificationResult) {
+    for check in &result.checks {
+        if check.passed {
+            println!("  {} {}", "✓".green(), check.name);
+        } else {
+            let outcome = match check.exit_code {
+                Some(code) => format!("exit code {}", code),
+                None => "did not run".to_string(),
+            };
+            println!("  {} {} ({})", "✗".red(), check.name, outcome);
+        }
+    }
+    if result.passed {
+        print_success("Checks passed");
+    } else {
+        let failed = result.checks.iter().filter(|c| !c.passed).count();
+        println!("{}", format!("Checks failed: {} of {}", failed, result.checks.len()).red());
+    }
+}
+
+/// `mothership verify`: runs the project's checks now and records the result in the rift's log
+pub async fn handle_verify(config_manager: &ConfigManager) -> Result<()> {
+    let (project_id, _) = find_current_project()?;
+    let project_root = std::env::current_dir()?;
+    match verify::load_config(&project_root)? {
+        Some(config) if !config.check.is_empty() => {}
+        _ => {
+            print_info("No checks configured. Add [[check]] entries to cp-config.toml to run them.");
+            return Ok(());
+        }
+    }
+    run_verification(config_manager, project_id, &project_root, None).await;
     Ok(())
 }
 
@@ -260,6 +326,15 @@ pub async fn handle_history(config_manager: &ConfigManager, limit: usize) -> Res
             if checkpoint.changes.len() == 1 { "" } else { "s" }
         );
         
+        if let Some(verification) = &checkpoint.verification {
+            if verification.passed {
+                println!("   {}", "checks passed".green());
+            } else {
+                let failed = verification.checks.iter().filter(|c| !c.passed).count();
+                println!("   {}", format!("checks failed: {} of {}", failed, verification.checks.len()).red());
+            }
+        }
+
         // Show file changes (first few)
         let display_changes = checkpoint.changes.iter().take(3);
         for change in display_changes {

@@ -262,6 +262,9 @@ pub async fn hub_create_project(
         .await
         .map_err(err)?;
 
+    // Written before the upload scan below, so the template is part of the first upload
+    let _ = mothership_common::verify::write_template_if_missing(&dir);
+
     let max = c.max_upload_size().await.unwrap_or(DEFAULT_MAX_UPLOAD_BYTES);
     let report = scan_text_files(&dir, max).map_err(err)?;
     let uploaded_files = report.files.len();
@@ -472,10 +475,32 @@ pub async fn hub_create_checkpoint(
     message: Option<String>,
     paths: Option<Vec<String>>,
 ) -> Result<CheckpointData, String> {
-    client()?
-        .create_checkpoint(parse_id(&project_id)?, message.as_deref(), paths.as_deref())
+    let project = parse_id(&project_id)?;
+    let data = client()?
+        .create_checkpoint(project, message.as_deref(), paths.as_deref())
         .await
-        .map_err(err)
+        .map_err(err)?;
+
+    // Checks run in the background, so the checkpoint returns without waiting for them
+    if let Some(root) = local_project_root(project).await {
+        let checkpoint_id = data.checkpoint_id;
+        tauri::async_runtime::spawn(async move {
+            let Ok(client) = client() else { return };
+            if let Err(e) = mothership_common::verify::run_and_record(&client, project, &root, Some(checkpoint_id)).await {
+                eprintln!("Checks for checkpoint {} did not run: {}", checkpoint_id, e);
+            }
+        });
+    }
+    Ok(data)
+}
+
+/// The project's folder on this machine, if it is linked here
+async fn local_project_root(project: uuid::Uuid) -> Option<std::path::PathBuf> {
+    tauri::async_runtime::spawn_blocking(|| index_local_projects(&default_search_roots()))
+        .await
+        .ok()?
+        .get(&project)
+        .cloned()
 }
 
 #[tauri::command]

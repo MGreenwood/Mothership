@@ -4,12 +4,12 @@ A checklist of the features discussed, ordered from highest to lowest impact. Ea
 
 **Current priorities:** ease of adoption comes first. Git export is out of scope for now.
 
-**Status:** Tasks 1 through 8 are done. Task 9 (optional verification on checkpoints) is next.
+**Status:** Tasks 1 through 9 are done. Task 10 (git import) is next.
 
 ## 1. Rift event log (foundation)
 - [x] Append-only, sequenced event log per rift that every other feature reads from (`rift_events` table, global `id` as the timeline cursor)
 - [x] Record: file saved, checkpoint created, chat message, join/leave, restore, wormhole create/resolve/converge/toggle/dissolve/delete, access granted/removed
-- [ ] Record: verification pass/fail (added with item 9)
+- [x] Record: verification pass/fail (added with item 9)
 - [x] Log file changes on every save (not debounced)
 - [x] Retention set by the server owner (`collaboration.max_rift_events`); `-1` keeps everything
 - [x] Read endpoint: `GET /api/rifts/:id/events` with `after`, `before`, `latest`, `limit`, and `wait` (long-poll), collaborators only
@@ -75,11 +75,16 @@ A checklist of the features discussed, ordered from highest to lowest impact. Ea
 - [ ] Gap: migrated chat keeps its original time, but the timeline orders by event id, so old chat appears at the point of the upgrade, not at its real time. Deferred until all tasks are complete.
 
 ## 9. Optional verification on checkpoints
-- [ ] Config file: `cp-config.toml` in the project root (shared with the team, decided)
-- [ ] Optional personal config as well, on the user's machine
-- [ ] Runs on the local daemon, using the user's own tools
-- [ ] Runs on checkpoint and can also be started manually
-- [ ] Failure is labeled on the checkpoint; it never blocks saving
+- [x] Config file: `cp-config.toml` in the project root, shared with the team. Each `[[check]]` has a `name` and a `run` command
+- [x] Team config only. There is no personal config, so teams can use it to run their tests on every checkpoint
+- [x] A check passes on exit code 0 and fails otherwise. No timeout, since checks run locally
+- [x] Runs in the local CLI or GUI that creates the checkpoint, using shared code in mothership-common. The daemon is unchanged. The checkpoint's files are not touched
+- [x] Runs after each checkpoint, and can also be started by hand with `mothership verify`
+- [x] The result is stored on the checkpoint and written to the rift event log as a `verification` event. Failure never blocks saving
+- [x] `mothership verify` runs the checks by hand. `mothership history` shows each checkpoint's result
+- [x] `mothership init` and the GUI's new-project flow create a `cp-config.toml` with every example commented out. An existing file is never overwritten
+- [ ] Gap: the GUI runs the checks in the background but doesn't show the result yet. Its checkpoint list needs a label. Deferred until all tasks are complete.
+- [ ] Gap: the checks are not run from the daemon, so a checkpoint made by another machine's client has no result here. Deferred until all tasks are complete.
 
 ## 10. Git import
 - [ ] `mothership import git` converts a Git repo into a Mothership rift

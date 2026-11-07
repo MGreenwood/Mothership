@@ -240,6 +240,7 @@ impl StorageEngine {
             message,
             auto_generated,
             partial,
+            verification: None,
         };
         
         // Store checkpoint metadata
@@ -252,6 +253,21 @@ impl StorageEngine {
         }
         
         Ok(checkpoint)
+    }
+
+    /// Attach a check result to a checkpoint and save it. Returns false when the checkpoint is unknown.
+    pub async fn set_checkpoint_verification(
+        &self,
+        checkpoint_id: CheckpointId,
+        verification: mothership_common::verify::VerificationResult,
+    ) -> Result<bool> {
+        let Some(mut checkpoint) = self.load_checkpoint(checkpoint_id).await? else {
+            return Ok(false);
+        };
+        checkpoint.verification = Some(verification);
+        self.store_checkpoint(&checkpoint).await?;
+        self.checkpoint_index.write().await.insert(checkpoint_id, checkpoint);
+        Ok(true)
     }
 
     /// Store checkpoint metadata to disk

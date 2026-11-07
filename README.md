@@ -114,6 +114,19 @@ mothership checkpoint delete <checkpoint-id> [-f]     # Delete a checkpoint
 mothership history [-l <limit>]                       # Show checkpoint history
 mothership restore <checkpoint-id> [PATH...] [-f]     # Restore the whole checkpoint, or only the named paths
 mothership secrets                                    # Review files held back because they contain a secret, and allow or keep them
+mothership verify                                     # Run the checks in cp-config.toml now and record the result
+```
+
+Checks are optional. `mothership init` creates a `cp-config.toml` with every example commented out, so nothing runs until you uncomment one. A project's `cp-config.toml` lists commands that run from the project folder after each checkpoint. A check passes when its command exits with code 0. Results appear in `mothership history` and in the rift log, and a failing check never stops a checkpoint from being saved:
+
+```toml
+[[check]]
+name = "unit tests"
+run = "cargo test"
+
+[[check]]
+name = "lint"
+run = "cargo clippy -- -D warnings"
 ```
 
 ### **Wormholes (Merge Previews)**
