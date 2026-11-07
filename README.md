@@ -8,7 +8,7 @@ Check it out live at: https://app.mothership.rest
 
 **This is proprietary software. The source code is made available for viewing and evaluation purposes only. Commercial use, redistribution, or deployment requires a commercial license.**
 
-For licensing inquiries: **licensing@mothership.dev**
+For licensing inquiries: **licensing@mothership.rest**
 
 ## What is Mothership?
 
