@@ -41,6 +41,8 @@ mod chat_api_tests;
 #[cfg(test)]
 mod checkpoint_api_tests;
 #[cfg(test)]
+mod diff_api_tests;
+#[cfg(test)]
 mod events_api_tests;
 #[cfg(test)]
 mod privacy_api_tests;
@@ -276,6 +278,7 @@ fn create_api_router(state: AppState) -> Router {
         .route("/gateway", post(gateway))
         .route("/gateway/create", post(create_gateway))
         // Rift routes
+        .route("/api/rifts/diff/file", get(handlers::get_rift_file_diff))
         .route("/api/rifts/:id/events", get(events::list_rift_events))
         .route("/api/rifts", get(handlers::list_rifts).post(handlers::create_rift))
         .route("/api/rifts/switch", post(handlers::switch_rift))
@@ -367,6 +370,7 @@ fn create_combined_router(state: AppState) -> Router {
         .route("/gateway/create", post(create_gateway))
 
         // Rift and wormhole routes
+        .route("/api/rifts/diff/file", get(handlers::get_rift_file_diff))
         .route("/api/rifts/:id/events", get(events::list_rift_events))
         .route("/api/rifts", get(handlers::list_rifts).post(handlers::create_rift))
         .route("/api/rifts/switch", post(handlers::switch_rift))

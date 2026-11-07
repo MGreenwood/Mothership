@@ -15,6 +15,7 @@ use uuid::Uuid;
 use crate::ignore::IgnoreRules;
 use crate::merge::Choice;
 use crate::protocol::{ApiResponse, BeamRequest, BeamResponse};
+use crate::text_diff::FileDiff;
 use crate::{Checkpoint, Project};
 
 /// Fallback when the server does not report its upload limit.
@@ -863,6 +864,27 @@ impl MothershipClient {
         let resp: ApiResponse<CheckpointData> = self
             .post_api(&["projects", &project_id, "checkpoints"], &body)
             .await?;
+        Self::unwrap_api(resp)
+    }
+
+    /// Lists the files that differ between two sides. A side is a rift name or `checkpoint:<id>`.
+    /// With `full`, each file carries its unified diff text.
+    pub async fn rift_diff(&self, from: &str, to: &str, full: bool) -> Result<Vec<FileDiff>> {
+        let url = self.endpoint(&["api", "rifts", "diff"])?;
+        let query = [("from", from), ("to", to), ("full", if full { "true" } else { "false" })];
+        let response = self.authed(self.http.get(url).query(&query)).send().await?;
+        let response = Self::ensure_success(response).await?;
+        let resp: ApiResponse<Vec<FileDiff>> = response.json().await?;
+        Self::unwrap_api(resp)
+    }
+
+    /// The unified diff for one file between two sides.
+    pub async fn rift_file_diff(&self, from: &str, to: &str, path: &str) -> Result<FileDiff> {
+        let url = self.endpoint(&["api", "rifts", "diff", "file"])?;
+        let query = [("from", from), ("to", to), ("path", path)];
+        let response = self.authed(self.http.get(url).query(&query)).send().await?;
+        let response = Self::ensure_success(response).await?;
+        let resp: ApiResponse<FileDiff> = response.json().await?;
         Self::unwrap_api(resp)
     }
 

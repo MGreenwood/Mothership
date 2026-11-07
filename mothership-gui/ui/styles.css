@@ -344,6 +344,35 @@ button:hover {
   white-space: nowrap;
 }
 
+.diff-list li {
+  display: grid;
+  grid-template-columns: 24px 1fr 60px 60px;
+  gap: 8px;
+  cursor: pointer;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+}
+
+.diff-list li.active {
+  background: #2a2d2e;
+}
+
+.diff-mark {
+  font-weight: bold;
+}
+
+.diff-text {
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  max-height: 320px;
+  overflow: auto;
+  background: #1e1e1e;
+  border: 1px solid #3c3c3c;
+  border-radius: 4px;
+  padding: 8px;
+  white-space: pre;
+}
+
 .wormhole-detail {
   margin-top: 12px;
   border-top: 1px solid #3c3c3c;

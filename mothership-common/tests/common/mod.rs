@@ -21,7 +21,9 @@ use mothership_common::{
     auth::{OAuthRequest, OAuthResponse},
     client::{CheckpointData, RestoreData, RiftAccessRequestInfo, RiftEvent, RiftInfo},
     merge::Resolution,
+    normalize_rel_path,
     protocol::{ApiResponse, BeamRequest, BeamResponse, SyncMessage},
+    text_diff::{diff_files, file_diff, FileDiff},
     ChangeType, Checkpoint, FileChange, Project, ProjectSettings,
 };
 use serde::Deserialize;
@@ -151,6 +153,8 @@ pub async fn spawn_test_server() -> (String, MockServerState) {
         .route("/api/rifts/switch", post(switch_rift))
         .route("/api/rifts/access-requests", get(list_access_requests).post(request_rift_access))
         .route("/api/rifts/:id/events", get(rift_events))
+        .route("/api/rifts/diff", get(rift_diff))
+        .route("/api/rifts/diff/file", get(rift_file_diff))
         .route("/api/rifts/members", post(manage_rift_members))
         .route("/api/wormholes", get(wormhole_handlers::list_wormholes).post(wormhole_handlers::create_wormhole))
         .route("/api/wormholes/:id", get(wormhole_handlers::get_wormhole).delete(wormhole_handlers::delete_wormhole))
@@ -626,6 +630,78 @@ async fn restore_checkpoint(
             Ok(Json(ApiResponse::success(RestoreData { checkpoint: cp, files: picked })))
         }
     }
+}
+
+/// One side of a diff, as the server resolves it: a rift name the caller can see, or `checkpoint:<id>`
+/// whose rift the caller can see.
+fn mock_side(inner: &InnerState, spec: &str) -> Result<HashMap<PathBuf, String>, (StatusCode, String)> {
+    if let Some(id) = spec.strip_prefix("checkpoint:") {
+        let cid = Uuid::parse_str(id).map_err(|_| (StatusCode::BAD_REQUEST, "bad checkpoint id".into()))?;
+        let (cp, files) = inner
+            .checkpoints
+            .values()
+            .flatten()
+            .find(|(cp, _)| cp.id == cid)
+            .ok_or_else(|| (StatusCode::NOT_FOUND, "checkpoint not found".into()))?;
+        if !can_access_rift(inner, cp.rift_id) {
+            return Err((StatusCode::FORBIDDEN, "not a rift collaborator".into()));
+        }
+        return Ok(files.clone());
+    }
+    inner
+        .rifts
+        .values()
+        .find(|r| r.info.name == spec && can_access_rift(inner, r.info.id))
+        .map(|r| r.files.clone())
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "rift not found".into()))
+}
+
+#[derive(Deserialize)]
+struct DiffQuery {
+    from: String,
+    to: String,
+    #[serde(default)]
+    full: bool,
+}
+
+#[derive(Deserialize)]
+struct FileDiffQuery {
+    from: String,
+    to: String,
+    path: String,
+}
+
+async fn rift_diff(
+    State(state): State<MockServerState>,
+    headers: HeaderMap,
+    Query(query): Query<DiffQuery>,
+) -> Result<Json<ApiResponse<Vec<FileDiff>>>, (StatusCode, String)> {
+    check_auth(&headers)?;
+    let inner = state.inner.read().await;
+    let left = mock_side(&inner, &query.from)?;
+    let right = mock_side(&inner, &query.to)?;
+    Ok(Json(ApiResponse::success(diff_files(&left, &right, query.full))))
+}
+
+async fn rift_file_diff(
+    State(state): State<MockServerState>,
+    headers: HeaderMap,
+    Query(query): Query<FileDiffQuery>,
+) -> Result<Json<ApiResponse<FileDiff>>, (StatusCode, String)> {
+    check_auth(&headers)?;
+    let inner = state.inner.read().await;
+    let left = mock_side(&inner, &query.from)?;
+    let right = mock_side(&inner, &query.to)?;
+    let path = normalize_rel_path(std::path::Path::new(&query.path));
+    let content_at = |files: &HashMap<PathBuf, String>| {
+        files
+            .iter()
+            .find(|(p, _)| normalize_rel_path(p) == path)
+            .map(|(_, c)| c.clone())
+    };
+    let diff = file_diff(&path, content_at(&left).as_deref(), content_at(&right).as_deref(), true)
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "no difference for this file".into()))?;
+    Ok(Json(ApiResponse::success(diff)))
 }
 
 async fn ws_rift(

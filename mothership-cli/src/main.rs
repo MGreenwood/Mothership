@@ -1,4 +1,5 @@
 use mothership_common::ClientConfig;
+use mothership_common::text_diff::{DiffStatus, FileDiff};
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::{CompleteEnv, engine::ArgValueCandidates};
 use clap_complete::env::{Bash, Elvish, EnvCompleter, Fish, Shells, Zsh};
@@ -227,13 +228,21 @@ enum RiftAction {
     },
     /// Show current rift status
     Status,
-    /// Compare rifts (flexible arguments)
+    /// Compare rifts or checkpoints. A side is a rift name or checkpoint:<id>
     Diff {
-        /// First rift to compare (optional)
+        /// First side (optional). A rift name, or checkpoint:<id>
         from: Option<String>,
         
-        /// Second rift to compare (optional)
+        /// Second side (optional). A rift name, or checkpoint:<id>
         to: Option<String>,
+
+        /// Show the full unified diff for every changed file
+        #[arg(long)]
+        full: bool,
+
+        /// Show the unified diff for one file only
+        #[arg(long, value_name = "PATH")]
+        file: Option<String>,
     },
     /// List and delete local backup copies saved before overwrites
     Purge,
@@ -297,12 +306,6 @@ struct ChatMessage {
 }
 
 // Local types
-#[derive(Debug, Serialize, Deserialize)]
-struct RiftDiff {
-    path: PathBuf,
-    change_count: usize,
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 struct RiftInfo {
     id: Uuid,
@@ -549,8 +552,8 @@ async fn run(command: Commands, config_manager: &ConfigManager) -> Result<()> {
                 RiftAction::Status => {
                     handle_rift_status_command().await?;
                 }
-                RiftAction::Diff { from, to } => {
-                    handle_rift_diff_command(from, to).await?;
+                RiftAction::Diff { from, to, full, file } => {
+                    handle_rift_diff_command(from, to, full, file).await?;
                 }
                 RiftAction::Purge => {
                     handle_rift_purge_command()?;
@@ -928,15 +931,26 @@ fn active_server_and_token() -> Result<(String, String)> {
 }
 
 
-async fn handle_rift_diff_command(from: Option<String>, to: Option<String>) -> Result<()> {
-    let (from_rift, to_rift) = match (from, to) {
+async fn handle_rift_diff_command(
+    from: Option<String>,
+    to: Option<String>,
+    full: bool,
+    file: Option<String>,
+) -> Result<()> {
+    let (from_side, to_side) = match (from, to) {
         // No args: current rift vs main
         (None, None) => {
             let current = get_current_rift().await?
                 .ok_or_else(|| anyhow!("Not currently in any rift"))?;
             (current.name, "main".to_string())
         }
-        // One arg: <to>'s main vs <to>
+        // One checkpoint: what changed in the current rift since that checkpoint
+        (None, Some(to_side)) if to_side.starts_with("checkpoint:") => {
+            let current = get_current_rift().await?
+                .ok_or_else(|| anyhow!("Not currently in any rift"))?;
+            (to_side, current.name)
+        }
+        // One rift: <to>'s main vs <to>
         (None, Some(to_name)) => {
             ("main".to_string(), to_name)
         }
@@ -950,20 +964,38 @@ async fn handle_rift_diff_command(from: Option<String>, to: Option<String>) -> R
         }
     };
 
-    let diffs = get_rift_diffs(&from_rift, &to_rift).await?;
-    
-    if diffs.is_empty() {
-        println!("No differences found between {} and {}", from_rift, to_rift);
+    if let Some(path) = file {
+        let diff = get_rift_file_diff(&from_side, &to_side, &path).await?;
+        println!("{}", format!("{} -> {}: {}", from_side, to_side, path).bold());
+        println!("{}", diff.unified.unwrap_or_default());
         return Ok(());
     }
 
-    println!("\nDifferences between {} and {}:", from_rift, to_rift);
-    println!("{:-<50}", "");
-    for diff in diffs {
-        println!("File: {}", diff.path.display());
-        println!("Changes: {} lines modified", diff.change_count);
-        println!("{:-<50}", "");
+    let diffs = get_rift_diffs(&from_side, &to_side, full).await?;
+    
+    if diffs.is_empty() {
+        println!("No differences found between {} and {}", from_side, to_side);
+        return Ok(());
     }
+
+    println!("\nDifferences between {} and {}:", from_side, to_side);
+    println!("{:-<50}", "");
+    let (mut added_total, mut removed_total) = (0, 0);
+    for diff in &diffs {
+        let mark = match diff.status {
+            DiffStatus::Added => "A".green(),
+            DiffStatus::Removed => "D".red(),
+            DiffStatus::Modified => "M".yellow(),
+        };
+        println!("{} {}  {} {}", mark, diff.path, format!("+{}", diff.added).green(), format!("-{}", diff.removed).red());
+        added_total += diff.added;
+        removed_total += diff.removed;
+        if let Some(text) = &diff.unified {
+            println!("{}", text);
+        }
+    }
+    println!("{:-<50}", "");
+    println!("{} file(s) changed, {} line(s) added, {} removed", diffs.len(), added_total, removed_total);
 
     Ok(())
 }
@@ -1445,8 +1477,8 @@ async fn switch_to_rift(rift_name: &str) -> Result<bool> {
     Ok(true)
 }
 
-/// Get differences between two rifts
-async fn get_rift_diffs(from_rift: &str, to_rift: &str) -> Result<Vec<RiftDiff>> {
+/// Get the files that differ between two sides (rift names or checkpoint:<id>)
+async fn get_rift_diffs(from_rift: &str, to_rift: &str, full: bool) -> Result<Vec<FileDiff>> {
     // Check if we're in a project directory
     let _project_metadata = get_current_project_metadata()?;
     
@@ -1465,7 +1497,7 @@ async fn get_rift_diffs(from_rift: &str, to_rift: &str) -> Result<Vec<RiftDiff>>
     let response = client
         .get(&url)
         .header("Authorization", format!("Bearer {}", auth_token))
-        .query(&[("from", from_rift), ("to", to_rift)])
+        .query(&[("from", from_rift), ("to", to_rift), ("full", if full { "true" } else { "false" })])
         .send()
         .await?;
     
@@ -1475,7 +1507,7 @@ async fn get_rift_diffs(from_rift: &str, to_rift: &str) -> Result<Vec<RiftDiff>>
     }
     
     // Parse ApiResponse format
-    let api_response: ApiResponse<Vec<RiftDiff>> = response.json().await?;
+    let api_response: ApiResponse<Vec<FileDiff>> = response.json().await?;
     
     if !api_response.success {
         let error_msg = api_response.error.unwrap_or_else(|| "Unknown error".to_string());
@@ -1484,6 +1516,31 @@ async fn get_rift_diffs(from_rift: &str, to_rift: &str) -> Result<Vec<RiftDiff>>
     
     let diffs = api_response.data.ok_or_else(|| anyhow!("No diff data received"))?;
     Ok(diffs)
+}
+
+/// The unified diff for one file between two sides
+async fn get_rift_file_diff(from_rift: &str, to_rift: &str, path: &str) -> Result<FileDiff> {
+    let active_server = connections::get_active_server()?
+        .ok_or_else(|| anyhow!("No active server connection. Please run 'mothership connect <server-url>' first."))?;
+    let auth_token = get_oauth_token()
+        .ok_or_else(|| anyhow!("Not authenticated. Please run 'mothership auth' first."))?;
+
+    let response = http_client()
+        .get(format!("{}/api/rifts/diff/file", active_server.url))
+        .header("Authorization", format!("Bearer {}", auth_token))
+        .send()
+        .await?;
+
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Err(anyhow!("{} has no differences from {} in {}", from_rift, to_rift, path));
+    }
+    if !response.status().is_success() {
+        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+        return Err(anyhow!("Failed to get file diff: {}", error_text));
+    }
+
+    let api_response: ApiResponse<FileDiff> = response.json().await?;
+    api_response.data.ok_or_else(|| anyhow!("No diff data received"))
 }
 
 /// List every local backup file in the current project with size and modified time, then delete them all on confirmation

@@ -4,7 +4,7 @@ A checklist of the features discussed, ordered from highest to lowest impact. Ea
 
 **Current priorities:** ease of adoption comes first. Git export is out of scope for now.
 
-**Status:** Tasks 1 (event log), 2 (GUI timeline page), 3 (scoped checkpoints), and 4 (restore) are done. Task 5 (diffs) is next.
+**Status:** Tasks 1 (event log), 2 (GUI timeline page), 3 (scoped checkpoints), 4 (restore), and 5 (diffs) are done. Task 6 (chat anchored to code) is next.
 
 ## 1. Rift event log (foundation)
 - [x] Append-only, sequenced event log per rift that every other feature reads from (`rift_events` table, global `id` as the timeline cursor)
@@ -43,9 +43,11 @@ A checklist of the features discussed, ordered from highest to lowest impact. Ea
 - [ ] Gap: a whole restore behaves differently in each client. The GUI removes local files that aren't in the checkpoint, but the CLI only overwrites. Pick one behavior and make both match. Deferred until all tasks are complete.
 
 ## 5. Diffs
-- [ ] Compare the current rift against a checkpoint
-- [ ] Compare the current rift against another rift
-- [ ] Show a full diff and a per-file view
+- [x] Compare the current rift against a checkpoint (`mothership rift diff checkpoint:<id>` shows what changed since it; the GUI Compare panel does the same)
+- [x] Compare the current rift against another rift, with real line counts (the old placeholder count is gone)
+- [x] Show a full diff (`--full`, or "Show all changes" in the GUI) and a per-file view (`--file <path>`, or click a file in the GUI)
+- [ ] Gap: a file deleted locally isn't shown as removed until deletions sync (same gap as item 3). Deferred until all tasks are complete.
+- [ ] Gap: a rift name that exists in more than one project is refused as ambiguous (409). Pick a project-scoped form. Deferred until all tasks are complete.
 
 ## 6. Chat anchored to code
 - [ ] Anchor syntax: `path:line` for a line, `path/` (or `path`) for a folder

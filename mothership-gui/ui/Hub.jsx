@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { ask, open } from '@tauri-apps/plugin-dialog'
 import DaemonPanel from './DaemonPanel.jsx'
+import DiffPanel from './DiffPanel.jsx'
 import WormholePanel from './WormholePanel.jsx'
 
 const errText = (e) => (typeof e === 'string' ? e : e?.message ?? String(e))
@@ -400,6 +401,8 @@ export default function Hub({ onOpenInEditor, onGatewayChange, onRiftChanged }) 
               ))}
             </ul>
           </section>
+
+          <DiffPanel project={selected} rifts={rifts} checkpoints={checkpoints} />
 
           <WormholePanel
             project={selected}

@@ -3403,6 +3403,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "similar",
  "sqlx",
  "thiserror 1.0.69",
  "tokio",
@@ -5586,6 +5587,15 @@ name = "simd-adler32"
 version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d66dc143e6b11c1eddc06d5c423cfc97062865baf299914ab64caa38182078fe"
+
+[[package]]
+name = "similar"
+version = "3.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2f8bec09ae8fae0f4f265a4559a9334be3929d8504e9b536df0a41302bd1733"
+dependencies = [
+ "bstr",
+]
 
 [[package]]
 name = "simple_asn1"

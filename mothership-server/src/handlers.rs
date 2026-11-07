@@ -1,8 +1,11 @@
 use anyhow::{anyhow, Result};
 use mothership_common::{
+    normalize_rel_path,
     protocol::{BeamRequest, BeamResponse, ApiResponse},
+    text_diff::{diff_files, file_diff, FileDiff},
     ProjectId, UserId,
 };
+use std::collections::HashMap;
 use tracing::{error, info};
 use axum::{
     extract::{Query, State},
@@ -178,16 +181,22 @@ pub struct RiftAccessRequestInfo {
     pub requested_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct RiftDiff {
-    pub path: PathBuf,
-    pub change_count: usize,
+#[derive(Debug, Deserialize)]
+pub struct RiftDiffQuery {
+    /// A rift name, or `checkpoint:<id>`
+    pub from: String,
+    /// A rift name, or `checkpoint:<id>`
+    pub to: String,
+    /// Include unified diff text for every changed file
+    #[serde(default)]
+    pub full: bool,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct RiftDiffQuery {
+pub struct RiftFileDiffQuery {
     pub from: String,
     pub to: String,
+    pub path: String,
 }
 
 // Real rift handlers with proper authentication and database integration
@@ -586,96 +595,106 @@ pub async fn get_current_rift(
     Ok(ResponseJson(ApiResponse::success(None)))
 }
 
-pub async fn get_rift_diffs(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Query(query): Query<RiftDiffQuery>,
-) -> Result<ResponseJson<ApiResponse<Vec<RiftDiff>>>, StatusCode> {
-    // Extract user ID from JWT token
-    let auth_header = headers.get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .ok_or(StatusCode::UNAUTHORIZED)?;
-
-    if !auth_header.starts_with("Bearer ") {
-        return Err(StatusCode::UNAUTHORIZED);
+/// Files on one side of a diff: a rift's live state, or the full state at a checkpoint.
+/// A side is either a rift name the caller collaborates on, or `checkpoint:<id>`.
+async fn diff_side(state: &AppState, user_id: Uuid, spec: &str) -> Result<HashMap<PathBuf, String>, StatusCode> {
+    if let Some(id) = spec.strip_prefix("checkpoint:") {
+        let checkpoint_id = Uuid::parse_str(id).map_err(|_| StatusCode::BAD_REQUEST)?;
+        let checkpoint = state
+            .sync
+            .storage
+            .load_checkpoint(checkpoint_id)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .ok_or(StatusCode::NOT_FOUND)?;
+        crate::chat::ensure_rift_access(&state.db, checkpoint.rift_id, user_id)
+            .await
+            .map_err(|e| crate::chat::status_for(&e))?;
+        return state
+            .sync
+            .storage
+            .get_checkpoint_files(checkpoint_id)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
     }
 
-    let token = auth_header.trim_start_matches("Bearer ");
-    let claims = match state.auth.verify_token(token) {
-        Ok(claims) => claims,
-        Err(_) => return Err(StatusCode::UNAUTHORIZED),
-    };
-    
-    let user_id = uuid::Uuid::parse_str(&claims.sub)
-        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+    let rift_id = rift_named_for_user(state, user_id, spec).await?;
+    state
+        .sync
+        .storage
+        .get_live_state(rift_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
 
-    // Find the rifts by name in user's projects
-    let projects = match state.db.get_user_projects(user_id).await {
-        Ok(projects) => projects,
-        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
-    };
+/// The caller's rift with this name. Rift names repeat across projects, so an ambiguous name is a conflict.
+async fn rift_named_for_user(state: &AppState, user_id: Uuid, name: &str) -> Result<Uuid, StatusCode> {
+    let projects = state
+        .db
+        .get_user_projects(user_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let mut from_rift = None;
-    let mut to_rift = None;
-
+    let mut matches = Vec::new();
     for project in projects {
         let rifts = match state.db.get_project_rifts(project.id).await {
             Ok(rifts) => rifts,
             Err(_) => continue,
         };
-
-        for rift in rifts {
-            if rift.collaborators.contains(&user_id) {
-                if rift.name == query.from {
-                    from_rift = Some(rift.clone());
-                }
-                if rift.name == query.to {
-                    to_rift = Some(rift.clone());
-                }
-            }
-        }
+        matches.extend(
+            rifts
+                .into_iter()
+                .filter(|rift| rift.name == name && rift.collaborators.contains(&user_id))
+                .map(|rift| rift.id),
+        );
     }
 
-    let from_rift = from_rift.ok_or(StatusCode::NOT_FOUND)?;
-    let to_rift = to_rift.ok_or(StatusCode::NOT_FOUND)?;
-
-    // Get file states from storage engine
-    let from_files = match state.sync.storage.get_live_state(from_rift.id).await {
-        Ok(files) => files,
-        Err(_) => return Ok(ResponseJson(ApiResponse::success(vec![]))),
-    };
-
-    let to_files = match state.sync.storage.get_live_state(to_rift.id).await {
-        Ok(files) => files,
-        Err(_) => return Ok(ResponseJson(ApiResponse::success(vec![]))),
-    };
-
-    // Calculate differences
-    let mut diffs = Vec::new();
-    let mut all_paths = std::collections::HashSet::new();
-    
-    for path in from_files.keys() {
-        all_paths.insert(path.clone());
+    match matches.len() {
+        0 => Err(StatusCode::NOT_FOUND),
+        1 => Ok(matches[0]),
+        _ => Err(StatusCode::CONFLICT),
     }
-    for path in to_files.keys() {
-        all_paths.insert(path.clone());
-    }
+}
 
-    for path in all_paths {
-        let from_content = from_files.get(&path);
-        let to_content = to_files.get(&path);
+/// GET /api/rifts/diff?from=&to=&full=: one summary per changed file, with unified text when `full`
+pub async fn get_rift_diffs(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<RiftDiffQuery>,
+) -> Result<ResponseJson<ApiResponse<Vec<FileDiff>>>, StatusCode> {
+    let user_id = authenticated_user(&state, &headers)?;
+    let left = diff_side(&state, user_id, &query.from).await?;
+    let right = diff_side(&state, user_id, &query.to).await?;
+    Ok(ResponseJson(ApiResponse::success(diff_files(&left, &right, query.full))))
+}
 
-        if from_content != to_content {
-            // Simple change count - in reality this would be more sophisticated
-            let change_count = 1; // Placeholder
-            diffs.push(RiftDiff {
-                path,
-                change_count,
-            });
-        }
-    }
+/// GET /api/rifts/diff/file?from=&to=&path=: the unified diff for one file
+pub async fn get_rift_file_diff(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<RiftFileDiffQuery>,
+) -> Result<ResponseJson<ApiResponse<FileDiff>>, StatusCode> {
+    let user_id = authenticated_user(&state, &headers)?;
+    let left = diff_side(&state, user_id, &query.from).await?;
+    let right = diff_side(&state, user_id, &query.to).await?;
 
-    Ok(ResponseJson(ApiResponse::success(diffs)))
+    let path = normalize_rel_path(std::path::Path::new(&query.path));
+    let diff = file_diff(
+        &path,
+        content_at(&left, &path),
+        content_at(&right, &path),
+        true,
+    )
+    .ok_or(StatusCode::NOT_FOUND)?;
+    Ok(ResponseJson(ApiResponse::success(diff)))
+}
+
+/// Looks a file up by its normalized path, so `src\main.rs` and `src/main.rs` match the same file
+fn content_at<'a>(files: &'a HashMap<PathBuf, String>, path: &str) -> Option<&'a str> {
+    files
+        .iter()
+        .find(|(p, _)| normalize_rel_path(p) == path)
+        .map(|(_, content)| content.as_str())
 }
 
 fn is_valid_rift_name(name: &str) -> bool {

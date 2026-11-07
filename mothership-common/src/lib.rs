@@ -13,6 +13,7 @@ pub mod ignore;
 pub mod merge;
 pub mod protocol;
 pub mod streaming;
+pub mod text_diff;
 pub mod transaction;
 
 pub use auth::*;

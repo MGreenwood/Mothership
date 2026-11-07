@@ -11,6 +11,7 @@ use mothership_common::client::{
 use mothership_common::daemon::{self, DaemonStatus, TrackedProject};
 use mothership_common::merge::Choice;
 use mothership_common::{Checkpoint, Project};
+use mothership_common::text_diff::FileDiff;
 use serde::Serialize;
 use std::path::PathBuf;
 use tauri_plugin_opener::open_url;
@@ -498,6 +499,19 @@ pub async fn hub_rift_events(
         .rift_events(parse_id(&rift_id)?, &query)
         .await
         .map_err(err)
+}
+
+/// Files that differ between two sides (rift names or `checkpoint:<id>`). With `full`, each carries its
+/// unified diff text.
+#[tauri::command]
+pub async fn hub_diff(from: String, to: String, full: bool) -> Result<Vec<FileDiff>, String> {
+    client()?.rift_diff(&from, &to, full).await.map_err(err)
+}
+
+/// The unified diff for one file between two sides
+#[tauri::command]
+pub async fn hub_file_diff(from: String, to: String, path: String) -> Result<FileDiff, String> {
+    client()?.rift_file_diff(&from, &to, &path).await.map_err(err)
 }
 
 #[derive(Serialize)]
