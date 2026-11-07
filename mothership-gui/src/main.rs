@@ -40,6 +40,8 @@ fn main() {
             hub::hub_rift_events,
         hub::hub_diff,
         hub::hub_file_diff,
+        hub::hub_secret_holds,
+        hub::hub_allow_secret,
             hub::hub_restore_checkpoint,
             hub::hub_server_info,
             hub::hub_daemon_status,

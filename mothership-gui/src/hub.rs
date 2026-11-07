@@ -12,6 +12,7 @@ use mothership_common::daemon::{self, DaemonStatus, TrackedProject};
 use mothership_common::merge::Choice;
 use mothership_common::{Checkpoint, Project};
 use mothership_common::text_diff::FileDiff;
+use mothership_common::secrets::{allow_held_file, pending_holds, SecretFinding};
 use serde::Serialize;
 use std::path::PathBuf;
 use tauri_plugin_opener::open_url;
@@ -499,6 +500,37 @@ pub async fn hub_rift_events(
         .rift_events(parse_id(&rift_id)?, &query)
         .await
         .map_err(err)
+}
+
+/// The local folder a project is beamed into. Secret holds live there, so the GUI reads them from it.
+fn local_folder_for(project: Uuid) -> Result<PathBuf, String> {
+    index_local_projects(&default_search_roots())
+        .get(&project)
+        .cloned()
+        .ok_or_else(|| "This project has no local folder. Beam it first.".to_string())
+}
+
+#[derive(Serialize)]
+pub struct SecretHold {
+    pub path: String,
+    pub findings: Vec<SecretFinding>,
+}
+
+/// Files held back because they contain a secret nobody has allowed
+#[tauri::command]
+pub async fn hub_secret_holds(project_id: String) -> Result<Vec<SecretHold>, String> {
+    let folder = local_folder_for(parse_id(&project_id)?)?;
+    Ok(pending_holds(&folder)
+        .into_iter()
+        .map(|(path, findings)| SecretHold { path, findings })
+        .collect())
+}
+
+/// Allows the secrets holding a file back, so the daemon syncs it
+#[tauri::command]
+pub async fn hub_allow_secret(project_id: String, path: String) -> Result<(), String> {
+    let folder = local_folder_for(parse_id(&project_id)?)?;
+    allow_held_file(&folder, &path).map_err(|e| format!("{:#}", e))
 }
 
 /// Files that differ between two sides (rift names or `checkpoint:<id>`). With `full`, each carries its

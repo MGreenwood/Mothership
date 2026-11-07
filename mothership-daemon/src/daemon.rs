@@ -529,6 +529,33 @@ impl MothershipDaemon {
         outgoing_channels: &Arc<RwLock<HashMap<Uuid, mpsc::UnboundedSender<SyncMessage>>>>,
         base_hashes: &BaseHashes,
     ) -> Result<()> {
+        // Secret gate: a file with a secret nobody allowed stays on this machine. The rest of the rift keeps syncing.
+        let project_dir = tracked_projects
+            .read()
+            .await
+            .get(&event.project_id)
+            .map(|project| project.project_path.clone());
+        if let Some(project_dir) = project_dir {
+            // Large files arrive without content and are streamed later, so scan them from disk
+            let streamed = if event.content.is_empty() && event.file_size > 0 {
+                tokio::fs::read_to_string(project_dir.join(&event.file_path)).await.ok()
+            } else {
+                None
+            };
+            let content = streamed.as_deref().unwrap_or(&event.content);
+            if let mothership_common::secrets::SecretGate::Hold(findings) =
+                mothership_common::secrets::gate_file(&project_dir, &event.file_path, content)
+            {
+                let lines: Vec<String> = findings.iter().map(|f| f.line.to_string()).collect();
+                warn!(
+                    "Not syncing {}: a secret was found on line {}. Run 'mothership secrets' to review it.",
+                    event.file_path.display(),
+                    lines.join(", ")
+                );
+                return Ok(());
+            }
+        }
+
         // Check if file requires streaming (empty content indicates streaming file)
         if event.content.is_empty() && event.file_size > 0 {
             return Self::send_file_via_streaming(event, tracked_projects, outgoing_channels, base_hashes).await;

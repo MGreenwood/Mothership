@@ -129,7 +129,7 @@ async fn e2e_rifts_fork_switch_checkpoints_and_restore() {
     v1_files.insert(PathBuf::from("config.toml"), "version = 1".into());
     client.upload_files(project.id, v1_files).await.unwrap();
 
-    let cp1 = client.create_checkpoint(project.id, Some("v1 release")).await.unwrap();
+    let cp1 = client.create_checkpoint(project.id, Some("v1 release"), None).await.unwrap();
     assert_eq!(cp1.file_count, 1);
 
     // Fork a feature rift from main
@@ -147,7 +147,7 @@ async fn e2e_rifts_fork_switch_checkpoints_and_restore() {
     v2_files.insert(PathBuf::from("config.toml"), "version = 2".into());
     v2_files.insert(PathBuf::from("extra.txt"), "extra".into());
     client.upload_files(project.id, v2_files).await.unwrap();
-    let _cp2 = client.create_checkpoint(project.id, Some("v2 feature")).await.unwrap();
+    let _cp2 = client.create_checkpoint(project.id, Some("v2 feature"), None).await.unwrap();
 
     let history = client.checkpoint_history(project.id).await.unwrap();
     assert_eq!(history.len(), 2);
@@ -156,7 +156,7 @@ async fn e2e_rifts_fork_switch_checkpoints_and_restore() {
     std::fs::write(dir.0.join("config.toml"), "version = 2 (local dirty)").unwrap();
     std::fs::write(dir.0.join("extra.txt"), "extra").unwrap();
 
-    let restore_data = client.restore_checkpoint(project.id, cp1.checkpoint_id).await.unwrap();
+    let restore_data = client.restore_checkpoint(project.id, cp1.checkpoint_id, None).await.unwrap();
     let restore_outcome = restore_files_into(&dir.0, &restore_data.files).unwrap();
     assert_eq!(restore_outcome.written, 1);
     assert_eq!(std::fs::read_to_string(dir.0.join("config.toml")).unwrap(), "version = 1");

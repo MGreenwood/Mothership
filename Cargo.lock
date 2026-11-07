@@ -3399,6 +3399,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "ignore",
+ "regex",
  "reqwest 0.11.27",
  "serde",
  "serde_json",

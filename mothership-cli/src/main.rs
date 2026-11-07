@@ -25,6 +25,7 @@ mod gateway;
 #[cfg(test)]
 mod profiling;
 mod project_index;
+mod secrets;
 mod shell;
 mod sync;
 mod update;
@@ -86,6 +87,8 @@ enum Commands {
         #[arg(value_name = "PATH")]
         paths: Vec<PathBuf>,
     },
+    /// Review files held back because they contain a secret
+    Secrets,
     /// Sync with remote Mothership
     Sync,
     /// View project history and checkpoints
@@ -458,6 +461,9 @@ async fn run(command: Commands, config_manager: &ConfigManager) -> Result<()> {
                     sync::handle_checkpoint(&config_manager, Some(checkpoint_name), paths).await?;
                 }
             }
+        }
+        Commands::Secrets => {
+            secrets::handle_secrets()?;
         }
         Commands::Sync => {
             println!("{}", "Syncing with remote Mothership...".cyan().bold());

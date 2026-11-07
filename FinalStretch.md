@@ -4,7 +4,7 @@ A checklist of the features discussed, ordered from highest to lowest impact. Ea
 
 **Current priorities:** ease of adoption comes first. Git export is out of scope for now.
 
-**Status:** Tasks 1 through 6 are done. Task 7 (secret scanning before sync) is next.
+**Status:** Tasks 1 through 7 are done. Task 8 (chat stored once, derived into checkpoints) is next.
 
 ## 1. Rift event log (foundation)
 - [x] Append-only, sequenced event log per rift that every other feature reads from (`rift_events` table, global `id` as the timeline cursor)
@@ -58,9 +58,13 @@ A checklist of the features discussed, ordered from highest to lowest impact. Ea
 - [ ] Gap: the GUI has no chat panel yet. Anchors are clickable only in the timeline. Deferred until all tasks are complete.
 
 ## 7. Secret scanning before sync
-- [ ] Scan files before they leave the machine (pre-sync)
-- [ ] When a secret is found, block sync and show a y/n prompt so the user can fix it or allow it
-- [ ] Remember an "allow" decision per exact secret in a local file; ask again only if the secret changes
+- [x] Scan files before they leave the machine. The daemon checks every outgoing change, including the first sync and streamed large files.
+- [x] When a secret is found, hold back only that file and tell the user. The CLI asks y/N with `mothership secrets`. The GUI Secrets panel has an "Allow syncing" button.
+- [x] Remember an allowance per exact secret (a hash, stored in `.mothership/allowed-secrets.json`). The file is asked about again only if the secret changes.
+- [x] Built-in patterns: AWS access key IDs, GitHub and Slack tokens, private key headers, and secret values in assignments. Obvious placeholders such as `changeme` and `${TOKEN}` are ignored.
+- [x] Removing the secret releases the file without an allowance
+- [ ] Gap: binary files are read as text, so a secret in a binary file is not detected. Deferred until all tasks are complete.
+- [ ] Gap: the daemon's gate has no automated end-to-end test. The gate logic is tested in mothership-common. Deferred until all tasks are complete.
 
 ## 8. Chat stored once, derived into checkpoints
 - [ ] Chat is stored once in the rift's event log
